@@ -461,7 +461,7 @@ const exportPdf = () => {
           </div>
           
           <div class="p-6">
-            <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden relative dropdown-container">
+            <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-visible relative dropdown-container">
               <button @click="toggleDropdown('sectionLabel')" class="w-full flex items-center justify-between p-4 active:bg-gray-50">
                 <span class="text-[17px] font-semibold text-gray-800">Sección</span>
                 <span class="text-[17px] text-[#34C759] font-bold flex items-center gap-1">{{ tempSectionLabel }} <svg class="w-4 h-4" :class="{'rotate-180': activeDropdown === 'sectionLabel'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg></span>
