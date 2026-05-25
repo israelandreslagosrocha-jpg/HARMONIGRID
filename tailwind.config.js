@@ -21,7 +21,7 @@ export default {
         sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Text"', '"Segoe UI"', 'Roboto', 'sans-serif'],
       },
       animation: {
-        'slide-up-ios': 'slideUpIos 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+        'slide-up-ios': 'slideUpIos 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards',
         'fade-in': 'fadeIn 0.3s ease-out forwards',
       },
       keyframes: {

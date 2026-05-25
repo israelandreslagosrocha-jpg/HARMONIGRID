@@ -15,7 +15,9 @@ export const CHORD_TYPES = [
   { id: '7', label: 'Dominante 7', suffix: '7' },
   { id: 'm7b5', label: 'Semi-disminuido', suffix: 'm7b5' },
   { id: 'dim7', label: 'Disminuido 7', suffix: 'dim7' },
-  { id: 'mM7', label: 'Menor Maj 7', suffix: 'mM7' }
+  { id: 'mM7', label: 'Menor Maj 7', suffix: 'mM7' },
+  { id: 'maj7#5', label: 'Maj 7 (#5)', suffix: 'maj7(#5)' },
+  { id: '7#5', label: '7 (#5)', suffix: '7(#5)' }
 ]
 
 export const TENSIONS = [
@@ -27,7 +29,7 @@ export const TENSIONS = [
 
 /**
  * Formatea un acorde para visualización
- * @param {Object} chordObj - { root: 'C', type: 'maj7', tension: '9', bass: 'E' }
+ * @param {Object} chordObj - { root: 'C', type: 'maj7', tension: '9', tensions: ['9', '#11'], bass: 'E' }
  */
 export function formatChord(chordObj) {
   if (!chordObj || !chordObj.root) return ''
@@ -39,9 +41,11 @@ export function formatChord(chordObj) {
     result += typeDef ? typeDef.suffix : chordObj.type
   }
   
-  if (chordObj.tension) {
-    // Si la tensión es una alteración, la encerramos en paréntesis o la añadimos tal cual, 
-    // dependerá del estilo preferido. Ej: G7(b9) o G7b9
+  // Soporte para múltiples tensiones
+  if (chordObj.tensions && chordObj.tensions.length > 0) {
+    result += `(${chordObj.tensions.join(', ')})`
+  } else if (chordObj.tension) {
+    // Fallback para tensión única tradicional
     if (['b9', '#9', '#11', 'b13', 'b5', '#5'].includes(chordObj.tension)) {
       result += `(${chordObj.tension})`
     } else {
