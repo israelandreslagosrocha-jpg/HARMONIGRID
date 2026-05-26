@@ -21,6 +21,7 @@ const configMeasuresCount = ref(8)
 const configKey = ref('C')
 const configScale = ref('major')
 const configTimeSignature = ref(4)
+const configTimeSignatureUnit = ref(4)
 const handleMeasuresInput = (event) => {
   let val = parseInt(event.target.value, 10)
   if (isNaN(val)) {
@@ -62,6 +63,7 @@ const SECTIONS = ['Ninguna', 'INTRO', 'A', 'B', 'C', 'PRE CORO', 'CORO', 'PUENTE
 // --- PROJECT STATE ---
 const title = ref('')
 const timeSignature = ref(4)
+const timeSignatureUnit = ref(4)
 const key = ref('C')
 const scaleType = ref('major')
 const measures = ref([])
@@ -909,6 +911,13 @@ const runSuggestion = (suggestion) => {
 const isMeasureOptionsOpen = ref(false)
 const selectedMeasureIndex = ref(null)
 const tempSectionLabel = ref('Ninguna')
+// --- LOCAL METRIC / TIME SIGNATURE STATE ---
+const isLocalMetricSubMenuOpen = ref(false)
+const localMetricBeats = ref(4)
+const localMetricUnit = ref(4)
+const localMetricGrouping = ref([4])
+const isMetricInfoModalOpen = ref(false)
+
 // --- KEY CHANGE / MODULATION STATE ---
 const isKeyChangeSubMenuOpen = ref(false)
 const keyChangeStep = ref(1)
@@ -1012,6 +1021,95 @@ const removeKeyChangeFromMeasure = (measure) => {
     delete measures.value[origIdx].keyChange
   }
   isKeyChangeInfoOpen.value = false
+}
+
+// --- LOCAL METRIC / TIME SIGNATURE MODIFICATION HELPERS ---
+const startLocalMetricSetup = () => {
+  if (currentPlan.value !== 'PRO') {
+    upgradeReason.value = 'metrica'
+    isUpgradeModalOpen.value = true
+    return
+  }
+  const m = measures.value[selectedMeasureIndex.value]
+  if (m.timeSignature) {
+    localMetricBeats.value = m.timeSignature.beats
+    localMetricUnit.value = m.timeSignature.unit
+    localMetricGrouping.value = m.grouping || getDefaultGrouping(m.timeSignature.beats, m.timeSignature.unit)
+  } else {
+    const sig = getMeasureTimeSignature(selectedMeasureIndex.value)
+    localMetricBeats.value = sig.beats
+    localMetricUnit.value = sig.unit
+    localMetricGrouping.value = getMeasureGrouping(selectedMeasureIndex.value)
+  }
+  isLocalMetricSubMenuOpen.value = true
+}
+
+const selectLocalMetricItem = (beats, unit) => {
+  localMetricBeats.value = beats
+  localMetricUnit.value = unit
+  localMetricGrouping.value = getDefaultGrouping(beats, unit)
+}
+
+const getMetricGroupingPresets = (beats, unit) => {
+  if (unit === 8) {
+    if (beats === 5) return [[2, 3], [3, 2]]
+    if (beats === 7) return [[2, 2, 3], [3, 2, 2], [2, 3, 2]]
+    if (beats === 11) return [[3, 3, 3, 2], [2, 3, 3, 3], [3, 2, 3, 3], [3, 3, 2, 3]]
+    if (beats === 13) return [[3, 3, 3, 2, 2], [3, 3, 2, 3, 2], [2, 2, 3, 3, 3]]
+  }
+  if (unit === 4) {
+    if (beats === 5) return [[2, 3], [3, 2]]
+    if (beats === 7) return [[3, 4], [4, 3], [2, 2, 3], [3, 2, 2]]
+  }
+  return [Array.from({ length: beats }, () => 1)]
+}
+
+const isAdvancedLocalMetric = computed(() => {
+  const b = localMetricBeats.value
+  const u = localMetricUnit.value
+  return (u === 8 && (b === 5 || b === 7 || b === 11 || b === 13)) || (u === 4 && (b === 5 || b === 7))
+})
+
+const saveLocalTimeSignature = () => {
+  if (selectedMeasureIndex.value !== null) {
+    const m = measures.value[selectedMeasureIndex.value]
+    m.timeSignature = {
+      beats: localMetricBeats.value,
+      unit: localMetricUnit.value
+    }
+    m.grouping = localMetricGrouping.value
+    
+    syncMeasuresBeats()
+    
+    isLocalMetricSubMenuOpen.value = false
+    isMeasureOptionsOpen.value = false
+    showToast(`Métrica local del compás ${selectedMeasureIndex.value + 1} cambiada a ${localMetricBeats.value}/${localMetricUnit.value}`)
+  }
+}
+
+const removeLocalTimeSignature = () => {
+  if (selectedMeasureIndex.value !== null) {
+    const m = measures.value[selectedMeasureIndex.value]
+    delete m.timeSignature
+    delete m.grouping
+    
+    syncMeasuresBeats()
+    
+    isLocalMetricSubMenuOpen.value = false
+    isMeasureOptionsOpen.value = false
+    showToast(`Métrica local del compás ${selectedMeasureIndex.value + 1} eliminada`)
+  }
+}
+
+const selectWizardTimeSignature = (beats, unit, isPro) => {
+  if (isPro && currentPlan.value !== 'PRO') {
+    upgradeReason.value = 'metrica'
+    isUpgradeModalOpen.value = true
+    return
+  }
+  configTimeSignature.value = beats
+  configTimeSignatureUnit.value = unit
+  activeDropdown.value = null
 }
 const modulationAnalysis = computed(() => {
   if (!activeKeyChangeMeasure.value || !activeKeyChangeMeasure.value.keyChange) return null
@@ -2729,14 +2827,35 @@ const exportPdf = () => {
                 <button @click="toggleDropdown('timeSignature')" class="flex items-center justify-between w-full p-4 active:bg-gray-50 transition-colors">
                   <span class="text-[17px] font-semibold text-gray-800">Cifra Indicadora</span>
                   <div class="flex items-center gap-1 text-[#34C759]">
-                    <span class="text-[17px] font-semibold">{{ configTimeSignature }}/4</span>
+                    <span class="text-[17px] font-semibold">{{ configTimeSignature }}/{{ configTimeSignatureUnit }}</span>
                     <svg class="w-4 h-4 transition-transform" :class="{'rotate-180': activeDropdown === 'timeSignature'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                   </div>
                 </button>
                 <transition name="dropdown">
-                  <div v-if="activeDropdown === 'timeSignature'" class="absolute top-full right-4 mt-2 w-40 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden">
-                    <button @click="configTimeSignature = 4; activeDropdown = null" class="w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-[#34C759]/5 text-[17px] flex justify-between">4 / 4 <span v-if="configTimeSignature===4" class="text-[#34C759]">✓</span></button>
-                    <button @click="configTimeSignature = 3; activeDropdown = null" class="w-full text-left px-4 py-3 hover:bg-[#34C759]/5 text-[17px] flex justify-between">3 / 4 <span v-if="configTimeSignature===3" class="text-[#34C759]">✓</span></button>
+                  <div 
+                    v-if="activeDropdown === 'timeSignature'" 
+                    class="absolute top-full right-4 mt-2 w-52 bg-white rounded-2xl shadow-xl border border-gray-150 p-2 z-50 flex flex-col gap-1.5 text-left font-sans"
+                  >
+                    <div v-for="group in METRIC_GROUPS" :key="group.label" class="space-y-1">
+                      <div class="text-[9.5px] text-gray-400 font-black uppercase tracking-wider px-2 pt-1">{{ group.label }}</div>
+                      <div class="flex flex-col">
+                        <button
+                          v-for="item in group.items"
+                          :key="item.name"
+                          @click="selectWizardTimeSignature(item.beats, item.unit, item.isPro)"
+                          class="flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-bold text-gray-700 hover:bg-gray-50 transition-colors w-full"
+                          :class="{
+                            'text-[#34C759] bg-[#34C759]/5 border-l-2 border-l-[#34C759] pl-1.5': configTimeSignature === item.beats && configTimeSignatureUnit === item.unit
+                          }"
+                        >
+                          <div class="flex items-center gap-1.5">
+                            <span>{{ item.name }}</span>
+                            <span v-if="item.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.2 rounded font-black shrink-0">PRO</span>
+                          </div>
+                          <span v-if="configTimeSignature === item.beats && configTimeSignatureUnit === item.unit" class="text-xs font-black text-[#34C759]">✓</span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </transition>
               </div>
@@ -3005,9 +3124,26 @@ const exportPdf = () => {
                   {{ keySignatureFormatted }}
                 </span>
               </button>
-              <div class="flex flex-col items-center mt-1">
-                <div class="text-4xl md:text-5xl font-serif font-bold leading-none text-gray-800">{{ timeSignature }}</div>
-                <div class="text-4xl md:text-5xl font-serif font-bold leading-none -mt-1 text-gray-800">4</div>
+              <!-- Interactive Global Time Signature Button (Opens Educational / Metric Selection Modal) -->
+              <div class="relative w-full flex justify-center mt-2 select-none z-35">
+                <button
+                  @click.stop="isMetricInfoModalOpen = true"
+                  class="group flex flex-col items-center p-2.5 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#34C759] active:scale-[0.97] transition-all w-full text-center shadow-sm"
+                  :class="{'hover:border-violet-500': currentPlan === 'PRO'}"
+                >
+                  <span class="text-[8.5px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">Métrica</span>
+                  <div class="flex flex-col items-center leading-none">
+                    <div class="text-3xl md:text-4xl font-serif font-black text-gray-850 flex items-center gap-0.5 justify-center">
+                      <span>{{ timeSignature }}</span>
+                    </div>
+                    <!-- line separator -->
+                    <div class="w-6 h-0.5 bg-gray-400 my-0.5 group-hover:bg-[#34C759] transition-colors" :class="{'group-hover:bg-violet-500': currentPlan === 'PRO'}"></div>
+                    <div class="text-3xl md:text-4xl font-serif font-black text-gray-850">{{ timeSignatureUnit }}</div>
+                  </div>
+                  <span class="text-[8px] text-gray-400 font-bold mt-1 group-hover:text-gray-600 flex items-center gap-0.5">
+                    Ver info ℹ️
+                  </span>
+                </button>
               </div>
             </div>
             
@@ -4660,6 +4796,98 @@ const exportPdf = () => {
           <button @click="isUpgradeModalOpen = false" class="w-full mt-2 py-2 text-gray-400 hover:text-gray-600 font-bold text-sm">
             Quizás más tarde
           </button>
+        </div>
+      </div>
+    </transition>
+    <!-- ==================== EDUCATIONAL METRIC INFO MODAL ==================== -->
+    <transition name="fade">
+      <div v-if="isMetricInfoModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+        <div class="absolute inset-0" @click="isMetricInfoModalOpen = false"></div>
+        
+        <div class="relative bg-white rounded-3xl shadow-2xl p-6 max-w-lg w-full border border-gray-150 text-left animate-scale-up z-10 flex flex-col max-h-[90vh] overflow-y-auto">
+          <div class="flex items-center justify-between pb-3 border-b border-gray-100">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">⏱️</span>
+              <h3 class="text-lg font-black text-gray-900">Métrica y Cifra Indicadora</h3>
+            </div>
+            <button @click="isMetricInfoModalOpen = false" class="text-gray-400 hover:text-gray-600 text-sm font-bold bg-gray-100 w-7 h-7 rounded-full flex items-center justify-center">✕</button>
+          </div>
+          
+          <div class="py-4 space-y-4 flex-1">
+            <!-- Educational Section -->
+            <div class="bg-violet-50/50 border border-violet-100 rounded-2xl p-4 space-y-3">
+              <h4 class="text-xs font-black text-violet-750 uppercase tracking-widest">¿Qué es la cifra indicadora?</h4>
+              <p class="text-xs text-gray-600 leading-relaxed">
+                La cifra indicadora (o métrica) organiza el tiempo de la música en compases. Se expresa como una fracción:
+              </p>
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div class="bg-white p-2.5 rounded-xl border border-gray-200/60">
+                  <strong class="text-gray-800 block text-sm font-bold mb-0.5">Numerador (Pulsos)</strong>
+                  <span class="text-gray-500 block leading-tight">Cuántos pulsos tiene cada compás. Por ejemplo, en 4/4 hay 4 pulsos.</span>
+                </div>
+                <div class="bg-white p-2.5 rounded-xl border border-gray-200/60">
+                  <strong class="text-gray-800 block text-sm font-bold mb-0.5">Denominador (Figura)</strong>
+                  <span class="text-gray-500 block leading-tight">La figura que representa un pulso. <strong>4</strong> es Negra (♩) y <strong>8</strong> es Corchea (♪).</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Categories Guide -->
+            <div class="space-y-3">
+              <h4 class="text-xs font-black text-gray-400 uppercase tracking-wider">Tipos de Métricas en HarmoniGrid</h4>
+              <div class="space-y-2">
+                <div class="flex gap-3 text-xs">
+                  <span class="text-base shrink-0 select-none">🟢</span>
+                  <div>
+                    <strong class="text-gray-800 font-bold block">Métricas Simples (Subdivisión Binaria)</strong>
+                    <span class="text-gray-500 block leading-tight">Cada pulso se divide naturalmente en dos (♩ = ♫). Ejemplos: 3/4 y 4/4.</span>
+                  </div>
+                </div>
+                <div class="flex gap-3 text-xs">
+                  <span class="text-base shrink-0 select-none">🔵</span>
+                  <div>
+                    <strong class="text-gray-800 font-bold block">Métricas Compuestas (Subdivisión Ternaria)</strong>
+                    <span class="text-gray-500 block leading-tight">Los pulsos se agrupan en tres (♩. = ♫♪). Ejemplos: 6/8, 9/8, 12/8.</span>
+                  </div>
+                </div>
+                <div class="flex gap-3 text-xs">
+                  <span class="text-base shrink-0 select-none">🟣</span>
+                  <div>
+                    <strong class="text-gray-800 font-bold block">Métricas Avanzadas (Amalgama e Irregulares)</strong>
+                    <span class="text-gray-500 block leading-tight">Pulsos asimétricos con agrupamientos rítmicos dinámicos (ej: 7/8 agrupado en 2+2+3).</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Global selector inside modal -->
+            <div class="pt-4 border-t border-gray-200 space-y-3">
+              <h4 class="text-xs font-black text-gray-400 uppercase tracking-wider">Cambiar Métrica Global del Score</h4>
+              <p class="text-[11px] text-gray-400">Puedes seleccionar una métrica para reestructurar todo tu score. Las métricas avanzadas requieren el plan PRO:</p>
+              
+              <div class="space-y-4">
+                <div v-for="group in METRIC_GROUPS" :key="group.label" class="space-y-1.5">
+                  <div class="text-[9.5px] text-gray-400 font-black uppercase tracking-wider">{{ group.label }}</div>
+                  <div class="grid grid-cols-3 gap-2">
+                    <button
+                      v-for="item in group.items"
+                      :key="item.name"
+                      @click="changeGlobalTimeSignature(item.beats, item.unit); isMetricInfoModalOpen = false"
+                      class="flex flex-col items-center justify-center p-2.5 rounded-xl border text-center transition-all active:scale-95 text-xs font-bold"
+                      :class="timeSignature === item.beats && timeSignatureUnit === item.unit
+                        ? 'bg-violet-650 border-violet-650 text-white shadow-md'
+                        : 'bg-gray-550 border-gray-200 text-gray-750 hover:bg-gray-100 bg-white'"
+                    >
+                      <div class="flex items-center gap-0.5">
+                        <span>{{ item.name }}</span>
+                        <span v-if="item.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.1 rounded font-black shrink-0 scale-90">PRO</span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </transition>
