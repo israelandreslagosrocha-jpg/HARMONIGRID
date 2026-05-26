@@ -2641,6 +2641,7 @@ const exportPdf = () => {
       key: key.value,
       scaleType: scaleType.value,
       timeSignature: timeSignature.value,
+      timeSignatureUnit: timeSignatureUnit.value,
       measures: displayedMeasures.value,
       repeats: [],
       keySignatureStr: keySignatureStr.value,
@@ -2653,6 +2654,7 @@ const exportPdf = () => {
       key: key.value,
       scaleType: scaleType.value,
       timeSignature: timeSignature.value,
+      timeSignatureUnit: timeSignatureUnit.value,
       measures: measuresWithKey.value,
       repeats: repeats.value,
       keySignatureStr: keySignatureStr.value,
@@ -3809,6 +3811,19 @@ const exportPdf = () => {
                   </div>
                   <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 </button>
+                <button @click="startLocalMetricSetup" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 text-left">
+                  <div class="flex items-center gap-3">
+                    <span class="text-xl">⏱️</span>
+                    <div>
+                      <span class="block text-[16px] font-bold text-gray-800 flex items-center gap-2">
+                        Cambiar métrica
+                        <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black flex items-center gap-0.5">👑 PRO</span>
+                      </span>
+                      <span class="block text-xs text-gray-400 mt-0.5">Redefinir métrica a partir de este compás</span>
+                    </div>
+                  </div>
+                  <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                </button>
               </div>
             </div>
           </template>
@@ -3905,6 +3920,75 @@ const exportPdf = () => {
                     Eliminar cambio de tonalidad
                   </button>
                 </div>
+              </div>
+            </div>
+          </template>
+          
+          <!-- LOCAL METRIC SETUP SUB-MENU -->
+          <template v-else-if="isLocalMetricSubMenuOpen">
+            <div class="bg-white px-4 py-4 flex items-center justify-between border-b border-gray-200 rounded-t-[16px] shrink-0">
+              <button @click="isLocalMetricSubMenuOpen = false" class="text-gray-500 text-[17px] font-medium bg-gray-50 hover:bg-gray-100 px-3 py-1 rounded-full transition-colors">Atrás</button>
+              <h3 class="text-[17px] font-bold text-gray-900 pointer-events-none">Métrica Local</h3>
+              <button @click="saveLocalTimeSignature" class="text-violet-650 text-[17px] font-bold">Aplicar</button>
+            </div>
+            
+            <div class="p-6 overflow-y-auto space-y-6">
+              <div>
+                <h4 class="text-base font-extrabold text-gray-800">Selecciona la métrica para este compás</h4>
+                <p class="text-xs text-gray-500 mt-1 font-medium">Afectará a este compás y a los siguientes en el timeline hasta encontrar otro cambio de métrica.</p>
+              </div>
+
+              <!-- Metric selection options -->
+              <div class="space-y-4">
+                <div v-for="group in METRIC_GROUPS" :key="group.label" class="space-y-2">
+                  <div class="text-[10px] font-black text-gray-400 uppercase tracking-wider">{{ group.label }}</div>
+                  <div class="grid grid-cols-2 gap-2">
+                    <button 
+                      v-for="item in group.items"
+                      :key="item.name"
+                      @click="selectLocalMetricItem(item.beats, item.unit)"
+                      class="flex flex-col items-center justify-center p-3 rounded-xl border text-center transition-all active:scale-95 text-[14px] font-bold"
+                      :class="localMetricBeats === item.beats && localMetricUnit === item.unit 
+                        ? 'bg-violet-600 border-violet-600 text-white shadow-md shadow-violet-200' 
+                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50 bg-white'"
+                    >
+                      <div class="flex items-center gap-1">
+                        <span>{{ item.name }}</span>
+                        <span v-if="item.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.2 rounded font-black shrink-0">PRO</span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Advanced metric groupings selection -->
+              <div v-if="isAdvancedLocalMetric" class="space-y-3 pt-4 border-t border-gray-200">
+                <h5 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Agrupamiento de Pulsos (Subdivisión)</h5>
+                <p class="text-[11px] text-gray-500">Elige cómo se agruparán visualmente los {{ localMetricBeats }} pulsos en este compás:</p>
+                
+                <div class="grid grid-cols-2 gap-2">
+                  <button
+                    v-for="preset in getMetricGroupingPresets(localMetricBeats, localMetricUnit)"
+                    :key="preset.join('+')"
+                    @click="localMetricGrouping = preset"
+                    class="py-2.5 px-3 rounded-xl border text-center font-bold text-xs transition-all active:scale-95"
+                    :class="localMetricGrouping && localMetricGrouping.join('+') === preset.join('+')
+                      ? 'bg-violet-600 border-violet-600 text-white shadow-md shadow-violet-200'
+                      : 'bg-white border-gray-200 text-gray-750 hover:bg-gray-50 bg-white'"
+                  >
+                    {{ preset.join(' + ') }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Remove local time signature override if present -->
+              <div v-if="measures[selectedMeasureIndex] && measures[selectedMeasureIndex].timeSignature" class="pt-4 border-t border-gray-200">
+                <button 
+                  @click="removeLocalTimeSignature"
+                  class="w-full py-3 bg-red-50 text-red-650 font-extrabold rounded-xl border border-red-100 hover:bg-red-100 transition-colors active:scale-98"
+                >
+                  Eliminar métrica local (Heredar anterior/global)
+                </button>
               </div>
             </div>
           </template>

@@ -181,13 +181,33 @@ export function generatePDF(project) {
       doc.setFont("times", "bold")
       doc.setFontSize(22)
       doc.text(project.timeSignature.toString(), marginX - 12, lineY - 0.5)
-      doc.text("4", marginX - 12, lineY + 6.5)
+      doc.text((project.timeSignatureUnit || 4).toString(), marginX - 12, lineY + 6.5)
+    }
+
+    // Pre-calculate measure widths and start positions for this row
+    const rowTotalDuration = rowMeasures.reduce((sum, m) => {
+      const sig = m.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      return sum + (sig.beats * (4 / sig.unit))
+    }, 0)
+
+    const measureWidths = rowMeasures.map(m => {
+      const sig = m.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      const duration = sig.beats * (4 / sig.unit)
+      return (duration / rowTotalDuration) * usableWidth
+    })
+
+    const measureStarts = []
+    let currentAccumulatedX = startX
+    for (let colIdx = 0; colIdx < rowMeasures.length; colIdx++) {
+      measureStarts.push(currentAccumulatedX)
+      currentAccumulatedX += measureWidths[colIdx]
     }
 
     // 1. Acordes y Secciones
     rowMeasures.forEach((measure, colIdx) => {
       const globalMeasureIndex = absoluteRowStartIndex + colIdx
-      const mStartX = startX + (colIdx * measureWidth)
+      const currentMeasureWidth = measureWidths[colIdx]
+      const mStartX = measureStarts[colIdx]
 
       // Casilla Brackets (Modo Compacto)
       const casillaData = getCasillaData(globalMeasureIndex)
@@ -196,7 +216,7 @@ export function generatePDF(project) {
         const hookLength = 2.5
         
         doc.setLineWidth(0.4)
-        doc.line(mStartX, bracketY, mStartX + measureWidth, bracketY) // horizontal line
+        doc.line(mStartX, bracketY, mStartX + currentMeasureWidth, bracketY) // horizontal line
         
         if (casillaData.isStart) {
           doc.line(mStartX, bracketY, mStartX, bracketY + hookLength) // left hook
@@ -207,7 +227,7 @@ export function generatePDF(project) {
           doc.text(label, mStartX + 1.5, bracketY - 1)
         }
         if (casillaData.isEnd) {
-          doc.line(mStartX + measureWidth, bracketY, mStartX + measureWidth, bracketY + hookLength) // right hook
+          doc.line(mStartX + currentMeasureWidth, bracketY, mStartX + currentMeasureWidth, bracketY + hookLength) // right hook
         }
       }
 
@@ -241,7 +261,10 @@ export function generatePDF(project) {
           return ""
         }
         
-        measure.beats.forEach((b, bIdx) => {
+        // Use active time signature beats for iteration
+        const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+        const measureBeats = measure.beats.slice(0, sig.beats)
+        measureBeats.forEach((b, bIdx) => {
           if (b.harmonicRhythm && b.harmonicRhythm !== 'auto') {
             const inherited = GROOVE_PATTERNS[project.globalGroove || 'Ninguno']?.[bIdx] || 'quarter'
             if (b.harmonicRhythm !== inherited) {
@@ -266,13 +289,27 @@ export function generatePDF(project) {
         doc.setTextColor(0, 0, 0)
       }
 
+      // Local Time Signature Change Indicator (PRO only, when measure.timeSignature exists)
+      let timeSigOffset = 0
+      const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      if (measure.timeSignature) {
+        doc.setFont("times", "bold")
+        doc.setFontSize(13)
+        doc.text(measure.timeSignature.beats.toString(), mStartX + 2.5, lineY - 0.5)
+        doc.text(measure.timeSignature.unit.toString(), mStartX + 2.5, lineY + 4.5)
+        timeSigOffset = 8 // mm of indentation for beats drawing
+      }
+
       // 2. Acordes y Slashes
-      const beatWidth = measureWidth / project.timeSignature
-      measure.beats.forEach((beat, bIdx) => {
+      const effectiveMeasureWidth = currentMeasureWidth - timeSigOffset
+      const beatWidth = effectiveMeasureWidth / sig.beats
+      measure.beats.slice(0, sig.beats).forEach((beat, bIdx) => {
         const rhythm = getEffectiveRhythm(measure, beat, bIdx)
         const subCount = getSubdivisionCount(rhythm)
         const hasSubdivisions = subCount > 1
         
+        const startXForBeats = mStartX + timeSigOffset
+
         if (hasSubdivisions) {
           const slots = getBeatSlots(measure, beat, bIdx)
           
@@ -297,7 +334,7 @@ export function generatePDF(project) {
 
           const subWidth = beatWidth / subCount
           visibleSlots.forEach((sub) => {
-            const subX = mStartX + (bIdx * beatWidth) + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
+            const subX = startXForBeats + (bIdx * beatWidth) + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
             
             if (rhythm === 'offbeat' && sub.originalIndex === 0) {
               doc.setFont("helvetica", "normal")
@@ -320,7 +357,7 @@ export function generatePDF(project) {
             }
             
             // Draw subdivisions line indicators at the center of the visible slot
-            const subSlashX = mStartX + (bIdx * beatWidth) + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
+            const subSlashX = startXForBeats + (bIdx * beatWidth) + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
             doc.setLineWidth(0.15)
             doc.line(subSlashX - 1, lineY + 2, subSlashX + 1, lineY - 2)
           })
@@ -330,11 +367,11 @@ export function generatePDF(project) {
 
             doc.setFont("helvetica", "bold")
             doc.setFontSize(12)
-            doc.text(chordStr, mStartX + (bIdx * beatWidth) + (beatWidth / 2), currentY + 12, { align: "center" })
+            doc.text(chordStr, startXForBeats + (bIdx * beatWidth) + (beatWidth / 2), currentY + 12, { align: "center" })
           }
           
           // Slashes rítmicos
-          const slashX = mStartX + (bIdx * beatWidth) + (beatWidth / 2)
+          const slashX = startXForBeats + (bIdx * beatWidth) + (beatWidth / 2)
           doc.setLineWidth(0.3)
           doc.line(slashX - 2, lineY + 3, slashX + 2, lineY - 3)
         }
@@ -362,7 +399,7 @@ export function generatePDF(project) {
       }
 
       // Barra derecha del compás
-      const mEndX = mStartX + measureWidth
+      const mEndX = mStartX + currentMeasureWidth
       if (repEndData) {
         // Puntos
         doc.circle(mEndX - 3, lineY - 1.5, 0.4, "F")
@@ -383,7 +420,7 @@ export function generatePDF(project) {
     })
 
     // Líneas horizontales del sistema
-    const endX = startX + (rowMeasures.length * measureWidth)
+    const endX = startX + rowMeasures.reduce((sum, _, cIdx) => sum + measureWidths[cIdx], 0)
     doc.setLineWidth(0.5)
     doc.line(startX, lineY, endX, lineY)
 
