@@ -275,25 +275,52 @@ export function generatePDF(project) {
         
         if (hasSubdivisions) {
           const slots = getBeatSlots(measure, beat, bIdx)
+          
+          // Compute visible slots for PDF layout
+          const visibleSlots = []
+          if (rhythm !== 'sixteenth') {
+            slots.forEach((s, idx) => {
+              visibleSlots.push({ ...s, originalIndex: idx, flexGrow: 1 })
+            })
+          } else {
+            for (let i = 0; i < slots.length; i++) {
+              if (slots[i].isMerged) continue
+              let flexGrow = 1
+              let j = i + 1
+              while (j < slots.length && slots[j].isMerged) {
+                flexGrow++
+                j++
+              }
+              visibleSlots.push({ ...slots[i], originalIndex: i, flexGrow })
+            }
+          }
+
           const subWidth = beatWidth / subCount
-          slots.forEach((sub, subIdx) => {
-            const subX = mStartX + (bIdx * beatWidth) + (subIdx * subWidth) + (subWidth / 2)
+          visibleSlots.forEach((sub) => {
+            const subX = mStartX + (bIdx * beatWidth) + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
             
-            if (rhythm === 'offbeat' && subIdx === 0) {
+            if (rhythm === 'offbeat' && sub.originalIndex === 0) {
               doc.setFont("helvetica", "normal")
               doc.setFontSize(8)
               doc.setTextColor(150, 150, 150)
               doc.text("x", subX, currentY + 12, { align: "center" })
               doc.setTextColor(0, 0, 0)
+            } else if (sub.isSilence) {
+              doc.setFont("helvetica", "normal")
+              doc.setFontSize(8)
+              doc.setTextColor(150, 150, 150)
+              doc.text("𝄾", subX, currentY + 12, { align: "center" })
+              doc.setTextColor(0, 0, 0)
             } else if (sub.root) {
               const chordStr = formatChord(sub)
               doc.setFont("helvetica", "bold")
-              doc.setFontSize(subCount >= 4 ? 7 : (subCount >= 3 ? 9 : 10))
+              const effSubCount = subCount / sub.flexGrow
+              doc.setFontSize(effSubCount >= 4 ? 7 : (effSubCount >= 3 ? 9 : 10))
               doc.text(chordStr, subX, currentY + 12, { align: "center" })
             }
             
-            // Draw subdivisions line indicators
-            const subSlashX = mStartX + (bIdx * beatWidth) + (subIdx * subWidth) + (subWidth / 2)
+            // Draw subdivisions line indicators at the center of the visible slot
+            const subSlashX = mStartX + (bIdx * beatWidth) + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
             doc.setLineWidth(0.15)
             doc.line(subSlashX - 1, lineY + 2, subSlashX + 1, lineY - 2)
           })
