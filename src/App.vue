@@ -69,6 +69,17 @@ const scaleType = ref('major')
 const measures = ref([])
 const repeats = ref([])
 const globalGroove = ref('Ninguno')
+const globalShowObligado = ref(false)
+const globalShowSubdivisions = computed({
+  get() {
+    return measures.value.some(m => m.showSubdivisions !== false)
+  },
+  set(on) {
+    measures.value.forEach(m => {
+      m.showSubdivisions = on
+    })
+  }
+})
 const tempMeasureGroove = ref('global')
 // --- KEY SIGNATURE EDUCATIONAL MODAL STATE ---
 const isKeyInfoOpen = ref(false)
@@ -97,8 +108,10 @@ const setPlan = (plan) => {
     
     // Reset global groove and rhythmic overrides under FREE plan
     globalGroove.value = 'Ninguno'
+    globalShowObligado.value = false
     measures.value.forEach(m => {
       m.groove = 'global'
+      m.showObligado = false
       m.beats.forEach(b => {
         b.harmonicRhythm = 'auto'
         delete b.subdivisions
@@ -109,6 +122,10 @@ const setPlan = (plan) => {
 const startProject = () => {
   title.value = configTitle.value || 'Sin Título'
   timeSignature.value = configTimeSignature.value
+  timeSignatureUnit.value = configTimeSignatureUnit.value
+  globalGrouping.value = getDefaultGrouping(configTimeSignature.value, configTimeSignatureUnit.value)
+  customGlobalBeats.value = configTimeSignature.value
+  customGlobalUnit.value = configTimeSignatureUnit.value
   key.value = configKey.value
   scaleType.value = configScale.value
   globalGroove.value = 'Ninguno'
@@ -121,12 +138,15 @@ const startProject = () => {
     emptyMeasures.push({
       id: generateUniqueId(),
       beats: emptyBeats,
-      sectionLabel: null
+      sectionLabel: null,
+      showObligado: globalShowObligado.value,
+      showSubdivisions: true
     })
   }
   measures.value = emptyMeasures
   repeats.value = []
   isSetupMode.value = false
+  syncMeasuresBeats()
 }
 // --- TRANSLATION AND HELPERS ---
 const translateNoteToSpanish = (note) => {
@@ -421,7 +441,9 @@ const measuresWithKey = computed(() => {
       ...m,
       originalMeasureIndex: idx,
       activeKey: currentKey,
-      activeScale: currentScale
+      activeScale: currentScale,
+      activeTimeSignature: getMeasureTimeSignature(idx),
+      activeGrouping: getMeasureGrouping(idx)
     }
   })
 })
@@ -556,6 +578,7 @@ const displayedMeasures = computed(() => {
 })
 // --- GRID & MODAL STATE ---
 const isModalOpen = ref(false)
+const applyToAllSubslots = ref(true)
 const isRhythmPromptOpen = ref(false)
 const rhythmPromptTargetChord = ref(null)
 const rhythmPromptSlotIndex = ref(null)
@@ -567,6 +590,115 @@ const modalComplexity = ref('tetrad')
 const tiedSlots = ref(new Set())
 const toastMessage = ref('')
 const toastTimeout = ref(null)
+
+const autoCompleteMeasure = (measure) => {
+  if (!measure) return
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig.unit === 8
+  
+  let remaining = getMeasureRemainingBeats(measure)
+  if (remaining <= 0) return
+  
+  const numBeats = sig.beats
+  const states = Array.from({ length: numBeats }, (_, i) => ({
+    index: i,
+    beat: measure.beats[i] || { root: '', type: '' },
+    isMerged: false
+  }))
+  
+  for (let i = 0; i < numBeats; i++) {
+    if (states[i].isMerged) continue
+    const beat = states[i].beat
+    if (beat.root !== '' || (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto')) {
+      const dur = getBeatSlotDuration(measure, beat, i)
+      for (let j = 1; j < dur; j++) {
+        if (i + j < numBeats) {
+          states[i + j].isMerged = true
+        }
+      }
+    }
+  }
+
+  let idx = 0
+  while (idx < numBeats) {
+    if (states[idx].isMerged || measure.beats[idx].root !== '' || (measure.beats[idx].harmonicRhythm && measure.beats[idx].harmonicRhythm !== 'auto')) {
+      idx++
+      continue
+    }
+    
+    let consecutive = 0
+    let tempIdx = idx
+    while (tempIdx < numBeats && !states[tempIdx].isMerged && measure.beats[tempIdx].root === '' && !measure.beats[tempIdx].harmonicRhythm) {
+      consecutive++
+      tempIdx++
+    }
+    
+    let runRemaining = consecutive
+    let currentIdx = idx
+    while (runRemaining > 0) {
+      let fitRhythm = 'eighth'
+      let fitDur = 1
+      
+      if (isDenom8) {
+        if (runRemaining >= 8) {
+          fitRhythm = 'whole'
+          fitDur = 8
+        } else if (runRemaining >= 6) {
+          fitRhythm = 'dotted-half'
+          fitDur = 6
+        } else if (runRemaining >= 4) {
+          fitRhythm = 'double'
+          fitDur = 4
+        } else if (runRemaining >= 3) {
+          fitRhythm = 'dotted-quarter'
+          fitDur = 3
+        } else if (runRemaining >= 2) {
+          fitRhythm = 'quarter'
+          fitDur = 2
+        } else {
+          fitRhythm = 'eighth'
+          fitDur = 1
+        }
+      } else {
+        if (runRemaining >= 4) {
+          fitRhythm = 'whole'
+          fitDur = 4
+        } else if (runRemaining >= 3) {
+          fitRhythm = 'dotted-half'
+          fitDur = 3
+        } else if (runRemaining >= 2) {
+          fitRhythm = 'double'
+          fitDur = 2
+        } else {
+          fitRhythm = 'quarter'
+          fitDur = 1
+        }
+      }
+      
+      measure.beats[currentIdx] = {
+        root: '',
+        type: '',
+        tensions: [],
+        tension: null,
+        bass: null,
+        harmonicRhythm: fitRhythm
+      }
+      
+      for (let k = 1; k < fitDur; k++) {
+        if (currentIdx + k < numBeats) {
+          states[currentIdx + k].isMerged = true
+        }
+      }
+      
+      currentIdx += fitDur
+      runRemaining -= fitDur
+    }
+    
+    idx = tempIdx
+  }
+  
+  syncMeasuresBeats()
+}
 
 const showToast = (msg) => {
   if (toastTimeout.value) {
@@ -800,8 +932,93 @@ const suggestedBassNotes = computed(() => {
   
   return suggestions
 })
+const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
+  if (!measure || !beat) return false
+  const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+  const sig = getMeasureTimeSignature(measure)
+  const isSub = measure.showObligado && isSubdividedRhythm(rhythm, sig.unit === 8, beat)
+  if (!isSub) return false
+  
+  const slots = getBeatSlots(measure, beat, beatIdx)
+  if (slots.length <= 1) return false
+  
+  const hasSilence = slots.some(s => s.isSilence)
+  if (hasSilence) return false
+  
+  const hasAllRoot = slots.every(s => s.root)
+  if (!hasAllRoot) return false
+  
+  return slots.every(s => areChordsEqual(s, slots[0]))
+}
+
+const propagateSubdivisionMutation = (measureIndex, beatIndex, subdivisionIndex, oldChord, newChord) => {
+  if (!applyToAllSubslots.value) return
+  
+  const m = measures.value[measureIndex]
+  const beat = m ? m.beats[beatIndex] : null
+  if (!beat || !beat.subdivisions) return
+  
+  beat.subdivisions.forEach((sub, sIdx) => {
+    if (sIdx !== subdivisionIndex && sub && !sub.isMerged && !sub.isSilence) {
+      sub.root = newChord.root
+      sub.type = newChord.type
+      sub.tension = newChord.tension
+      sub.bass = newChord.bass
+      sub.tensions = newChord.tensions ? [...newChord.tensions] : []
+      sub.isSilence = false
+    }
+  })
+}
+
+const propagateChordMutation = (measureIndex, beatIndex, subdivisionIndex, oldChord, newChord) => {
+  const linearBlocks = getLinearBlocks()
+  const slotId = subdivisionIndex !== undefined
+    ? `${measureIndex}_${beatIndex}_${subdivisionIndex}`
+    : `${measureIndex}_${beatIndex}`
+    
+  const idx = linearBlocks.findIndex(b => b.id === slotId)
+  if (idx === -1) return
+  
+  let nextIdx = idx + 1
+  while (nextIdx < linearBlocks.length) {
+    const nextBlock = linearBlocks[nextIdx]
+    if (nextBlock && tiedSlots.value.has(nextBlock.id)) {
+      if (areChordsEqual(nextBlock.chord, oldChord)) {
+        nextBlock.chord.root = newChord.root
+        nextBlock.chord.type = newChord.type
+        nextBlock.chord.tension = newChord.tension
+        nextBlock.chord.bass = newChord.bass
+        nextBlock.chord.tensions = newChord.tensions ? [...newChord.tensions] : []
+        nextBlock.chord.isSilence = newChord.isSilence || false
+        
+        if (nextBlock.type === 'beat') {
+          const parentBeat = measures.value[nextBlock.measureIndex].beats[nextBlock.beatIndex]
+          parentBeat.root = newChord.root
+          parentBeat.type = newChord.type
+          parentBeat.tension = newChord.tension
+          parentBeat.bass = newChord.bass
+          parentBeat.tensions = newChord.tensions ? [...newChord.tensions] : []
+        }
+        nextIdx++
+      } else {
+        break
+      }
+    } else {
+      break
+    }
+  }
+}
+
 const toggleExtension = (tension) => {
   if (!activeEditingBeat.value) return
+  const oldChord = {
+    root: activeEditingBeat.value.root,
+    type: activeEditingBeat.value.type,
+    tension: activeEditingBeat.value.tension,
+    bass: activeEditingBeat.value.bass,
+    tensions: [...(activeEditingBeat.value.tensions || [])],
+    isSilence: activeEditingBeat.value.isSilence
+  }
   if (!activeEditingBeat.value.tensions) {
     activeEditingBeat.value.tensions = []
   }
@@ -812,10 +1029,51 @@ const toggleExtension = (tension) => {
     activeEditingBeat.value.tensions.splice(idx, 1)
   }
   activeEditingBeat.value.tension = activeEditingBeat.value.tensions.length > 0 ? activeEditingBeat.value.tensions[0] : null
+  
+  if (selectedBeat.value) {
+    const newChord = {
+      root: activeEditingBeat.value.root,
+      type: activeEditingBeat.value.type,
+      tension: activeEditingBeat.value.tension,
+      bass: activeEditingBeat.value.bass,
+      tensions: [...(activeEditingBeat.value.tensions || [])],
+      isSilence: activeEditingBeat.value.isSilence
+    }
+    const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
+    if (subdivisionIndex !== undefined) {
+      propagateSubdivisionMutation(measureIndex, beatIndex, subdivisionIndex, oldChord, newChord)
+    }
+    propagateChordMutation(measureIndex, beatIndex, subdivisionIndex, oldChord, newChord)
+  }
 }
+
 const selectBassNote = (note) => {
   if (!activeEditingBeat.value) return
+  const oldChord = {
+    root: activeEditingBeat.value.root,
+    type: activeEditingBeat.value.type,
+    tension: activeEditingBeat.value.tension,
+    bass: activeEditingBeat.value.bass,
+    tensions: [...(activeEditingBeat.value.tensions || [])],
+    isSilence: activeEditingBeat.value.isSilence
+  }
   activeEditingBeat.value.bass = note === activeEditingBeat.value.root ? null : note
+  
+  if (selectedBeat.value) {
+    const newChord = {
+      root: activeEditingBeat.value.root,
+      type: activeEditingBeat.value.type,
+      tension: activeEditingBeat.value.tension,
+      bass: activeEditingBeat.value.bass,
+      tensions: [...(activeEditingBeat.value.tensions || [])],
+      isSilence: activeEditingBeat.value.isSilence
+    }
+    const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
+    if (subdivisionIndex !== undefined) {
+      propagateSubdivisionMutation(measureIndex, beatIndex, subdivisionIndex, oldChord, newChord)
+    }
+    propagateChordMutation(measureIndex, beatIndex, subdivisionIndex, oldChord, newChord)
+  }
 }
 const isSystemSuggestionsModalOpen = ref(false)
 const activeSystemIndex = ref(0)
@@ -911,12 +1169,67 @@ const runSuggestion = (suggestion) => {
 const isMeasureOptionsOpen = ref(false)
 const selectedMeasureIndex = ref(null)
 const tempSectionLabel = ref('Ninguna')
+const tempShowSubdivisions = ref(true)
+const tempShowObligado = ref(false)
 // --- LOCAL METRIC / TIME SIGNATURE STATE ---
 const isLocalMetricSubMenuOpen = ref(false)
 const localMetricBeats = ref(4)
 const localMetricUnit = ref(4)
 const localMetricGrouping = ref([4])
 const isMetricInfoModalOpen = ref(false)
+
+// --- METRIC CONFIGURATION AND HELPERS ---
+const METRIC_GROUPS = [
+  {
+    label: 'Métricas Simples',
+    desc: 'Subdivisión Binaria: Cada pulso se divide naturalmente en dos.',
+    color: 'bg-green-500',
+    borderColor: 'border-green-200 text-green-700 hover:border-green-500',
+    activeColor: 'bg-green-500 text-white border-green-500',
+    items: [
+      { beats: 2, unit: 4, name: '2/4', isPro: true },
+      { beats: 3, unit: 4, name: '3/4', isPro: false },
+      { beats: 4, unit: 4, name: '4/4', isPro: false }
+    ]
+  },
+  {
+    label: 'Métricas Compuestas',
+    desc: 'Subdivisión Ternaria: Cada pulso se divide naturalmente en tres.',
+    color: 'bg-blue-500',
+    borderColor: 'border-blue-200 text-blue-700 hover:border-blue-500',
+    activeColor: 'bg-blue-500 text-white border-blue-500',
+    isPro: true,
+    items: [
+      { beats: 6, unit: 8, name: '6/8', isPro: true },
+      { beats: 9, unit: 8, name: '9/8', isPro: true },
+      { beats: 12, unit: 8, name: '12/8', isPro: true }
+    ]
+  },
+  {
+    label: 'Métricas Avanzadas',
+    desc: 'Amalgamas e Irregulares: Pulsos asimétricos con agrupaciones dinámicas.',
+    color: 'bg-violet-500',
+    borderColor: 'border-violet-200 text-violet-700 hover:border-violet-500',
+    activeColor: 'bg-violet-500 text-white border-violet-500',
+    isPro: true,
+    items: [
+      { beats: 5, unit: 8, name: '5/8', isPro: true },
+      { beats: 7, unit: 8, name: '7/8', isPro: true },
+      { beats: 11, unit: 8, name: '11/8', isPro: true },
+      { beats: 13, unit: 8, name: '13/8', isPro: true }
+    ]
+  }
+]
+
+const globalGrouping = ref([4])
+const customGlobalBeats = ref(4)
+const customGlobalUnit = ref(4)
+const customGlobalGroupingStr = ref('')
+const customWizardBeats = ref(4)
+const customWizardUnit = ref(4)
+const customLocalGroupingStr = ref('')
+const tempGlobalGroupingStr = ref('')
+const tempLocalGroupingStr = ref('')
 
 // --- KEY CHANGE / MODULATION STATE ---
 const isKeyChangeSubMenuOpen = ref(false)
@@ -970,6 +1283,9 @@ const getSystemColumnCount = (system, sIdx) => {
     if (currentPlan.value === 'PRO' && m.keyChange) {
       count += 1
     }
+    if (currentPlan.value === 'PRO' && m.timeSignature) {
+      count += 1
+    }
   })
   
   if (viewMode.value === 'compact' && sIdx === systems.value.length - 1) {
@@ -979,6 +1295,469 @@ const getSystemColumnCount = (system, sIdx) => {
   }
   
   return count
+}
+
+const getBeatMinWidth = (measure, beat, state) => {
+  const rhythm = getEffectiveRhythm(measure, beat, state.index)
+  let baseMin = state.durationSlots * 50
+  
+  if (rhythm === 'sixteenth') {
+    baseMin = Math.max(baseMin, 112)
+  } else if (rhythm === 'triplet') {
+    baseMin = Math.max(baseMin, 84)
+  } else if (rhythm === 'quintuplet') {
+    baseMin = Math.max(baseMin, 120)
+  }
+  
+  if (beat.root) {
+    baseMin = Math.max(baseMin, 72)
+  }
+  
+  return baseMin
+}
+
+const getMeasureFlexStyle = (measure) => {
+  const sig = getMeasureTimeSignature(measure)
+  const beats = sig.beats
+  let totalMinWidth = 0
+  const states = getMergedBeats(measure)
+  
+  states.forEach(state => {
+    if (!state.isMerged) {
+      totalMinWidth += getBeatMinWidth(measure, state.beat, state)
+    }
+  })
+  
+  totalMinWidth += 36
+  
+  return {
+    flex: `${beats} ${beats} 0%`,
+    minWidth: `${totalMinWidth}px`
+  }
+}
+
+const getAddButtonFlexStyle = () => {
+  const beats = timeSignature.value
+  const minWidth = beats * 50 + 36
+  return {
+    flex: `${beats} ${beats} 0%`,
+    minWidth: `${minWidth}px`
+  }
+}
+
+const getBeatSlotDuration = (measure, beat, beatIdx) => {
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig.unit === 8
+  const rhythm = beat.harmonicRhythm || 'auto'
+  
+  if (isDenom8) {
+    if (rhythm === 'whole') return 8
+    if (rhythm === 'dotted-half') return 6
+    if (rhythm === 'double') return 4
+    if (rhythm === 'dotted-quarter') return 3
+    if (rhythm === 'quarter') return 2
+    if (rhythm === 'sixteenth') return 2
+    if (rhythm === 'eighth') return 1
+    return 1
+  } else {
+    if (rhythm === 'whole') return 4
+    if (rhythm === 'dotted-half') return 3
+    if (rhythm === 'double') return 2
+    if (rhythm === 'quarter') return 1
+    return 1
+  }
+}
+
+const getRhythmFigureDuration = (rhythmType, isDenom8) => {
+  if (isDenom8) {
+    if (rhythmType === 'whole') return 8
+    if (rhythmType === 'dotted-half') return 6
+    if (rhythmType === 'double') return 4
+    if (rhythmType === 'dotted-quarter') return 3
+    if (rhythmType === 'quarter') return 2
+    if (rhythmType === 'sixteenth') return 2
+    if (rhythmType === 'eighth') return 1
+    return 1
+  } else {
+    if (rhythmType === 'whole') return 4
+    if (rhythmType === 'dotted-half') return 3
+    if (rhythmType === 'double') return 2
+    if (rhythmType === 'quarter') return 1
+    return 1
+  }
+}
+
+const getMeasureUsedBeats = (measure, excludeBeatIdx) => {
+  if (!measure) return 0
+  const sig = getMeasureTimeSignature(measure)
+  const numBeats = sig.beats
+  let used = 0
+  
+  const states = Array.from({ length: numBeats }, (_, i) => ({
+    index: i,
+    beat: measure.beats[i] || { root: '', type: '' },
+    isMerged: false
+  }))
+  
+  if (currentPlan.value === 'PRO') {
+    for (let i = 0; i < numBeats; i++) {
+      if (states[i].isMerged) continue
+      const beat = states[i].beat
+      if (beat.root !== '' || (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto')) {
+        const dur = getBeatSlotDuration(measure, beat, i)
+        for (let j = 1; j < dur; j++) {
+          if (i + j < numBeats) {
+            states[i + j].isMerged = true
+          }
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < numBeats; i++) {
+    if (states[i].isMerged) continue
+    if (i === excludeBeatIdx) continue
+    const beat = states[i].beat
+    if (beat.root !== '' || (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto')) {
+      used += getBeatSlotDuration(measure, beat, i)
+    }
+  }
+  return used
+}
+
+const isFigureValid = (rhythmType, measure, beatIdx) => {
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig.unit === 8
+  const duration = getRhythmFigureDuration(rhythmType, isDenom8)
+  
+  // 1. Cannot exceed the end of the measure
+  if (beatIdx + duration > sig.beats) {
+    return false
+  }
+  
+  const numBeats = sig.beats
+  const states = Array.from({ length: numBeats }, (_, i) => ({
+    index: i,
+    beat: measure.beats[i] || { root: '', type: '' },
+    isMerged: false
+  }))
+  
+  // Simulate space occupancy of OTHER figures.
+  // The range [beatIdx, beatIdx + duration - 1] will be overwritten, so we skip any beat starting inside it.
+  let usedOthers = 0
+  
+  for (let i = 0; i < numBeats; i++) {
+    if (states[i].isMerged) continue
+    if (i >= beatIdx && i < beatIdx + duration) continue
+    
+    const beat = states[i].beat
+    if (beat.root !== '' || (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto')) {
+      const dur = getBeatSlotDuration(measure, beat, i)
+      for (let j = 1; j < dur; j++) {
+        if (i + j < numBeats) {
+          states[i + j].isMerged = true
+        }
+      }
+      usedOthers += dur
+    }
+  }
+  
+  // If target beat is merged by a preceding figure, it is a collision
+  if (states[beatIdx].isMerged) {
+    return false
+  }
+  
+  return duration <= (sig.beats - usedOthers)
+}
+
+const isPatternActive = (measure, beat, beatIdx, key) => {
+  const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig?.unit === 8
+  
+  if (rhythm === 'eighth') {
+    if (isDenom8) {
+      return beat.eighthPattern === key
+    } else {
+      return beat.eighthPattern === key || (!beat.eighthPattern && key === '2_notes')
+    }
+  }
+  return beat.sixteenthPattern === key || (!beat.sixteenthPattern && key === '4_semi')
+}
+
+const getMeasureRemainingBeats = (measure) => {
+  if (!measure) return 0
+  const sig = getMeasureTimeSignature(measure)
+  const capacity = sig.beats
+  
+  let used = 0
+  const numBeats = sig.beats
+  const states = Array.from({ length: numBeats }, (_, i) => ({
+    index: i,
+    beat: measure.beats[i] || { root: '', type: '' },
+    isMerged: false
+  }))
+  
+  for (let i = 0; i < numBeats; i++) {
+    if (states[i].isMerged) continue
+    const beat = states[i].beat
+    if (beat.root !== '' || (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto')) {
+      const dur = getBeatSlotDuration(measure, beat, i)
+      for (let j = 1; j < dur; j++) {
+        if (i + j < numBeats) {
+          states[i + j].isMerged = true
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < numBeats; i++) {
+    if (states[i].isMerged) continue
+    const beat = states[i].beat
+    if (beat.root !== '' || (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto')) {
+      used += getBeatSlotDuration(measure, beat, i)
+    }
+  }
+  
+  return Math.max(0, capacity - used)
+}
+
+const isSubdividedRhythm = (rhythmType, isDenom8, beat = null) => {
+  if (isDenom8) {
+    if (rhythmType === 'eighth') {
+      return beat && beat.eighthPattern ? true : false
+    }
+    return ['sixteenth', 'triplet', 'quintuplet'].includes(rhythmType)
+  } else {
+    return ['eighth', 'sixteenth', 'triplet', 'quintuplet', 'offbeat'].includes(rhythmType)
+  }
+}
+
+const areChordsEqual = (c1, c2) => {
+  if (!c1 || !c2) return false
+  if (c1.root !== c2.root) return false
+  if (c1.type !== c2.type) return false
+  if (c1.tension !== c2.tension) return false
+  if (c1.bass !== c2.bass) return false
+  
+  const t1 = c1.tensions || []
+  const t2 = c2.tensions || []
+  if (t1.length !== t2.length) return false
+  
+  const s1 = [...t1].sort()
+  const s2 = [...t2].sort()
+  return s1.every((v, i) => v === s2[i])
+}
+
+const getMergedBeats = (measure) => {
+  if (!measure) return []
+  const sig = getMeasureTimeSignature(measure)
+  const numBeats = sig.beats
+  const origMIdx = measure.originalMeasureIndex
+  
+  const states = Array.from({ length: numBeats }, (_, i) => ({
+    index: i,
+    beat: measure.beats[i] || { root: '', type: '' },
+    isMerged: false,
+    durationSlots: 1
+  }))
+  
+  if (currentPlan.value === 'PRO' && measure.showObligado) {
+    // 1. Initial merge based on explicit figures duration
+    for (let i = 0; i < numBeats; i++) {
+      if (states[i].isMerged) continue
+      const beat = states[i].beat
+      if (beat.root !== '' || (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto')) {
+        const dur = getBeatSlotDuration(measure, beat, i)
+        states[i].durationSlots = dur
+        for (let j = 1; j < dur; j++) {
+          if (i + j < numBeats) {
+            states[i + j].isMerged = true
+          }
+        }
+      }
+    }
+    
+    // 2. Fusion of adjacent identical tied beats (visual fusion)
+    for (let i = 0; i < numBeats; i++) {
+      if (states[i].isMerged) continue
+      
+      let currentIdx = i
+      let nextIdx = currentIdx + states[currentIdx].durationSlots
+      
+      while (nextIdx < numBeats) {
+        const currentBeat = states[currentIdx].beat
+        const nextBeat = states[nextIdx].beat
+        
+        const currentRhythm = getEffectiveRhythm(measure, currentBeat, currentIdx)
+        const nextRhythm = getEffectiveRhythm(measure, nextBeat, nextIdx)
+        const currentSubdivided = measure.showObligado && isSubdividedRhythm(currentRhythm, sig.unit === 8, currentBeat)
+        const nextSubdivided = measure.showObligado && isSubdividedRhythm(nextRhythm, sig.unit === 8, nextBeat)
+        
+        const nextSlotId = `${origMIdx}_${nextIdx}`
+        
+        if (
+          nextBeat &&
+          !states[nextIdx].isMerged &&
+          !currentSubdivided &&
+          !nextSubdivided &&
+          areChordsEqual(currentBeat, nextBeat) &&
+          tiedSlots.value.has(nextSlotId)
+        ) {
+          states[currentIdx].durationSlots += states[nextIdx].durationSlots
+          states[nextIdx].isMerged = true
+          nextIdx = currentIdx + states[currentIdx].durationSlots
+        } else {
+          break
+        }
+      }
+    }
+  }
+  // When showObligado is OFF: NO merging — all slots remain free and independently clickable
+  return states
+}
+
+const partitionsCache = {}
+const getPartitionsOf2And3 = (n) => {
+  if (n in partitionsCache) return partitionsCache[n]
+  if (n === 0) return [[]]
+  if (n < 0) return []
+  const results = []
+  // Try taking a 2
+  const p2 = getPartitionsOf2And3(n - 2)
+  p2.forEach(p => results.push([2, ...p]))
+  // Try taking a 3
+  const p3 = getPartitionsOf2And3(n - 3)
+  p3.forEach(p => results.push([3, ...p]))
+  partitionsCache[n] = results
+  return results
+}
+
+const canGroupToPattern = (durations, pattern) => {
+  let durIdx = 0
+  for (let i = 0; i < pattern.length; i++) {
+    const targetSum = pattern[i]
+    let currentSum = 0
+    while (currentSum < targetSum && durIdx < durations.length) {
+      currentSum += durations[durIdx]
+      durIdx++
+    }
+    if (currentSum !== targetSum) {
+      return false
+    }
+  }
+  return durIdx === durations.length
+}
+
+const analyzeMeasureSubdivision = (measure) => {
+  const sig = getMeasureTimeSignature(measure)
+  if (sig.unit !== 8) {
+    return { type: 'standard', message: '' }
+  }
+  
+  const N = sig.beats
+  const patterns = getPartitionsOf2And3(N)
+  if (patterns.length === 0) {
+    return { type: 'standard', message: '' }
+  }
+  
+  const blocks = getMergedBeats(measure).filter(s => !s.isMerged)
+  const durations = blocks.map(s => s.durationSlots)
+  
+  const matchingPatterns = patterns.filter(p => canGroupToPattern(durations, p))
+  
+  const hasSubdividedChords = durations.some(d => d > 1)
+  if (!hasSubdividedChords) {
+    return { type: 'ambiguous', matchingPatterns, message: 'Sin subdivisión clara' }
+  }
+  
+  if (matchingPatterns.length === 1) {
+    return {
+      type: 'match',
+      pattern: matchingPatterns[0],
+      message: `Subdivisión detectada: ${matchingPatterns[0].join('+')}`
+    }
+  } else if (matchingPatterns.length > 1) {
+    return {
+      type: 'ambiguous_match',
+      matchingPatterns,
+      message: 'Podría completarse como: ' + matchingPatterns.map(p => p.join('+')).join(' o ')
+    }
+  } else {
+    return {
+      type: 'inconsistent',
+      message: `⚠️ No corresponde a una subdivisión estándar (${N}/8)`
+    }
+  }
+}
+
+const getBeatGroupInfo = (measure, beatIdx) => {
+  const grouping = getMeasureGrouping(measure)
+  let accum = 0
+  for (let gIdx = 0; gIdx < grouping.length; gIdx++) {
+    const groupLen = grouping[gIdx]
+    if (beatIdx >= accum && beatIdx < accum + groupLen) {
+      return {
+        groupIndex: gIdx,
+        isFirst: beatIdx === accum,
+        isLast: beatIdx === accum + groupLen - 1
+      }
+    }
+    accum += groupLen
+  }
+  return { groupIndex: 0, isFirst: false, isLast: false }
+}
+
+const getAvailableRhythmFigures = (measure) => {
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig.unit === 8
+  
+  if (isDenom8) {
+    return [
+      { value: 'whole', label: 'Redonda (8 Corcheas)', icon: '\uD834\uDD5D', isPro: true },
+      { value: 'dotted-half', label: 'Blanca con Punto (6 Corcheas)', icon: '\uD834\uDD5E.', isPro: true },
+      { value: 'double', label: 'Blanca (4 Corcheas)', icon: '\uD834\uDD5E', isPro: true },
+      { value: 'dotted-quarter', label: 'Negra con Punto (3 Corcheas)', icon: '\uD834\uDD5F.', isPro: true },
+      { value: 'quarter', label: 'Negra (2 Corcheas)', icon: '\uD834\uDD5F', isPro: false },
+      { value: 'eighth', label: 'Corchea (1 Corchea)', icon: '\uD834\uDD60', isPro: false },
+      { value: 'sixteenth', label: 'Semicorcheas (4x)', icon: '\uD834\uDD61', isPro: true }
+    ]
+  } else {
+    return [
+      { value: 'whole', label: 'Redonda (4 Negras)', icon: '\uD834\uDD5D', isPro: true },
+      { value: 'dotted-half', label: 'Blanca con Punto (3 Negras)', icon: '\uD834\uDD5E.', isPro: true },
+      { value: 'double', label: 'Blanca (2 Negras)', icon: '\uD834\uDD5E', isPro: true },
+      { value: 'quarter', label: 'Negra (1 Negra)', icon: '\uD834\uDD5F', isPro: false },
+      { value: 'eighth', label: 'Corcheas (2x)', icon: '\u266B', isPro: false },
+      { value: 'offbeat', label: 'Contratiempo', icon: '\u21B7', isPro: false },
+      { value: 'sixteenth', label: 'Semicorcheas (4x)', icon: '\u266C', isPro: true },
+      { value: 'triplet', label: 'Tresillo (3x)', icon: '3\uFE0F\u20E3', isPro: true }
+    ]
+  }
+}
+
+const getRhythmDisplayIcon = (rhythm, measure) => {
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig.unit === 8
+  if (isDenom8) {
+    if (rhythm === 'whole') return '\uD834\uDD5D'
+    if (rhythm === 'dotted-half') return '\uD834\uDD5E.'
+    if (rhythm === 'double') return '\uD834\uDD5E'
+    if (rhythm === 'dotted-quarter') return '\uD834\uDD5F.'
+    if (rhythm === 'quarter') return '\uD834\uDD5F'
+    if (rhythm === 'eighth' || rhythm === 'auto') return '\uD834\uDD60'
+    if (rhythm === 'sixteenth') return '\uD834\uDD61'
+    if (rhythm === 'triplet') return '3\uFE0F\u20E3'
+  } else {
+    if (rhythm === 'whole') return '\uD834\uDD5D'
+    if (rhythm === 'dotted-half') return '\uD834\uDD5E.'
+    if (rhythm === 'double') return '\uD834\uDD5E'
+    if (rhythm === 'quarter' || rhythm === 'auto') return '\uD834\uDD5F'
+    if (rhythm === 'eighth') return '\uD834\uDD60'
+    if (rhythm === 'sixteenth') return '\uD834\uDD61'
+    if (rhythm === 'triplet') return '3\uFE0F\u20E3'
+  }
+  return ''
 }
 const startKeyChangeSetup = () => {
   if (currentPlan.value !== 'PRO') {
@@ -1024,13 +1803,186 @@ const removeKeyChangeFromMeasure = (measure) => {
 }
 
 // --- LOCAL METRIC / TIME SIGNATURE MODIFICATION HELPERS ---
+const getDefaultGrouping = (beats, unit) => {
+  if (unit === 8) {
+    if (beats === 6) return [3, 3]
+    if (beats === 9) return [3, 3, 3]
+    if (beats === 12) return [3, 3, 3, 3]
+    if (beats === 5) return [3, 2]
+    if (beats === 7) return [3, 2, 2]
+    if (beats === 11) return [3, 3, 3, 2]
+    if (beats === 13) return [3, 3, 3, 2, 2]
+    if (beats === 15) return [3, 3, 3, 3, 3]
+  }
+  if (unit === 4) {
+    if (beats === 5) return [3, 2]
+    if (beats === 7) return [3, 2, 2]
+  }
+  return Array.from({ length: beats }, () => 1)
+}
+
+const getMeasureTimeSignature = (measureOrIdx) => {
+  let idx = measureOrIdx
+  if (measureOrIdx && typeof measureOrIdx === 'object') {
+    idx = measureOrIdx.originalMeasureIndex !== undefined 
+      ? measureOrIdx.originalMeasureIndex 
+      : measures.value.findIndex(m => m.id === measureOrIdx.id)
+  }
+  
+  if (idx === null || idx === undefined || idx < 0) {
+    return { beats: timeSignature.value, unit: timeSignatureUnit.value }
+  }
+  
+  for (let i = idx; i >= 0; i--) {
+    const m = measures.value[i]
+    if (m && m.timeSignature) {
+      return {
+        beats: m.timeSignature.beats,
+        unit: m.timeSignature.unit
+      }
+    }
+  }
+  return {
+    beats: timeSignature.value,
+    unit: timeSignatureUnit.value
+  }
+}
+
+const getMeasureGrouping = (measureOrIdx) => {
+  let idx = measureOrIdx
+  let m = null
+  if (measureOrIdx && typeof measureOrIdx === 'object') {
+    m = measureOrIdx
+    idx = measureOrIdx.originalMeasureIndex !== undefined 
+      ? measureOrIdx.originalMeasureIndex 
+      : measures.value.findIndex(item => item.id === measureOrIdx.id)
+  } else if (measureOrIdx !== null && measureOrIdx !== undefined && measureOrIdx >= 0) {
+    idx = measureOrIdx
+    m = measures.value[idx]
+  }
+  
+  if (!m) {
+    return getDefaultGrouping(timeSignature.value, timeSignatureUnit.value)
+  }
+  
+  const sig = getMeasureTimeSignature(m)
+  if (sig.unit === 8) {
+    const analysis = analyzeMeasureSubdivision(m)
+    if (analysis.type === 'match') {
+      return analysis.pattern
+    }
+  }
+  
+  // Fallback to manual/inherited grouping
+  for (let i = idx; i >= 0; i--) {
+    const prevM = measures.value[i]
+    if (prevM && prevM.grouping) {
+      return prevM.grouping
+    }
+  }
+  return getDefaultGrouping(sig.beats, sig.unit)
+}
+
+const resizeMeasureBeats = (measure, targetBeats) => {
+  if (!measure || !measure.beats) return
+  const currentBeatsCount = measure.beats.length
+  if (currentBeatsCount < targetBeats) {
+    for (let i = currentBeatsCount; i < targetBeats; i++) {
+      measure.beats.push({ root: '', type: '' })
+    }
+  } else if (currentBeatsCount > targetBeats) {
+    measure.beats = measure.beats.slice(0, targetBeats)
+  }
+}
+
+const syncMeasuresBeats = () => {
+  if (!measures.value) return
+  measures.value.forEach((m, idx) => {
+    const sig = getMeasureTimeSignature(idx)
+    resizeMeasureBeats(m, sig.beats)
+  })
+}
+
+const parseGroupingString = (str, totalBeats) => {
+  if (!str) return null
+  const parts = str.split('+').map(p => parseInt(p.trim(), 10))
+  if (parts.some(isNaN) || parts.some(p => p <= 0)) return null
+  const sum = parts.reduce((a, b) => a + b, 0)
+  if (sum !== totalBeats) return null
+  return parts
+}
+
+const getGroupingPresets = (beats) => {
+  if (beats === 5) return [[3, 2], [2, 3]]
+  if (beats === 7) return [[3, 2, 2], [2, 3, 2], [2, 2, 3]]
+  if (beats === 11) return [[3, 3, 3, 2], [2, 3, 3, 3]]
+  if (beats === 13) return [[3, 3, 3, 2, 2], [2, 2, 3, 3, 3]]
+  if (beats === 15) return [[3, 3, 3, 3, 3]]
+  return []
+}
+
+const changeGlobalTimeSignature = (beats, unit) => {
+  if (currentPlan.value !== 'PRO' && ((beats !== 3 && beats !== 4) || unit !== 4)) {
+    upgradeReason.value = 'time_signature'
+    isUpgradeModalOpen.value = true
+    return
+  }
+  timeSignature.value = beats
+  timeSignatureUnit.value = unit
+  globalGrouping.value = getDefaultGrouping(beats, unit)
+  syncMeasuresBeats()
+}
+
+const applyCustomGlobalTimeSignature = () => {
+  const b = parseInt(customGlobalBeats.value, 10)
+  const u = parseInt(customGlobalUnit.value, 10)
+  if (isNaN(b) || b < 2 || b > 16) {
+    showToast("El numerador debe estar entre 2 y 16")
+    return
+  }
+  if (u !== 4 && u !== 8) {
+    showToast("El denominador debe ser 4 u 8")
+    return
+  }
+  
+  if (currentPlan.value !== 'PRO' && ((b !== 3 && b !== 4) || u !== 4)) {
+    upgradeReason.value = 'time_signature'
+    isUpgradeModalOpen.value = true
+    return
+  }
+  
+  timeSignature.value = b
+  timeSignatureUnit.value = u
+  
+  const parsed = parseGroupingString(tempGlobalGroupingStr.value, b)
+  if (parsed) {
+    globalGrouping.value = parsed
+  } else {
+    globalGrouping.value = getDefaultGrouping(b, u)
+  }
+  
+  syncMeasuresBeats()
+  isMetricInfoModalOpen.value = false
+}
+
+const handleGlobalGroupingInput = (event) => {
+  const val = event.target.value
+  tempGlobalGroupingStr.value = val
+  const parsed = parseGroupingString(val, timeSignature.value)
+  if (parsed) {
+    globalGrouping.value = parsed
+  }
+}
+
 const startLocalMetricSetup = () => {
   if (currentPlan.value !== 'PRO') {
     upgradeReason.value = 'metrica'
     isUpgradeModalOpen.value = true
     return
   }
+  if (selectedMeasureIndex.value === null) return
   const m = measures.value[selectedMeasureIndex.value]
+  if (!m) return
   if (m.timeSignature) {
     localMetricBeats.value = m.timeSignature.beats
     localMetricUnit.value = m.timeSignature.unit
@@ -1041,6 +1993,9 @@ const startLocalMetricSetup = () => {
     localMetricUnit.value = sig.unit
     localMetricGrouping.value = getMeasureGrouping(selectedMeasureIndex.value)
   }
+  const groupStr = localMetricGrouping.value ? localMetricGrouping.value.join('+') : ''
+  customLocalGroupingStr.value = groupStr
+  tempLocalGroupingStr.value = groupStr
   isLocalMetricSubMenuOpen.value = true
 }
 
@@ -1048,6 +2003,7 @@ const selectLocalMetricItem = (beats, unit) => {
   localMetricBeats.value = beats
   localMetricUnit.value = unit
   localMetricGrouping.value = getDefaultGrouping(beats, unit)
+  tempLocalGroupingStr.value = localMetricGrouping.value.join('+')
 }
 
 const getMetricGroupingPresets = (beats, unit) => {
@@ -1056,6 +2012,7 @@ const getMetricGroupingPresets = (beats, unit) => {
     if (beats === 7) return [[2, 2, 3], [3, 2, 2], [2, 3, 2]]
     if (beats === 11) return [[3, 3, 3, 2], [2, 3, 3, 3], [3, 2, 3, 3], [3, 3, 2, 3]]
     if (beats === 13) return [[3, 3, 3, 2, 2], [3, 3, 2, 3, 2], [2, 2, 3, 3, 3]]
+    if (beats === 15) return [[3, 3, 3, 3, 3]]
   }
   if (unit === 4) {
     if (beats === 5) return [[2, 3], [3, 2]]
@@ -1066,18 +2023,44 @@ const getMetricGroupingPresets = (beats, unit) => {
 
 const isAdvancedLocalMetric = computed(() => {
   const b = localMetricBeats.value
-  const u = localMetricUnit.value
-  return (u === 8 && (b === 5 || b === 7 || b === 11 || b === 13)) || (u === 4 && (b === 5 || b === 7))
+  return b >= 5
 })
+
+const onLocalMetricCustomChange = () => {
+  let b = parseInt(localMetricBeats.value, 10)
+  let u = parseInt(localMetricUnit.value, 10)
+  if (isNaN(b) || b < 2) b = 2
+  if (b > 16) b = 16
+  localMetricBeats.value = b
+  if (u !== 4 && u !== 8) u = 4
+  localMetricUnit.value = u
+  localMetricGrouping.value = getDefaultGrouping(b, u)
+  tempLocalGroupingStr.value = localMetricGrouping.value.join('+')
+}
+
+const handleLocalGroupingInput = (event) => {
+  const val = event.target.value
+  tempLocalGroupingStr.value = val
+  const parsed = parseGroupingString(val, localMetricBeats.value)
+  if (parsed) {
+    localMetricGrouping.value = parsed
+  }
+}
 
 const saveLocalTimeSignature = () => {
   if (selectedMeasureIndex.value !== null) {
     const m = measures.value[selectedMeasureIndex.value]
+    if (!m) return
     m.timeSignature = {
       beats: localMetricBeats.value,
       unit: localMetricUnit.value
     }
-    m.grouping = localMetricGrouping.value
+    const parsed = parseGroupingString(tempLocalGroupingStr.value, localMetricBeats.value)
+    if (parsed) {
+      m.grouping = parsed
+    } else {
+      m.grouping = getDefaultGrouping(localMetricBeats.value, localMetricUnit.value)
+    }
     
     syncMeasuresBeats()
     
@@ -1090,6 +2073,7 @@ const saveLocalTimeSignature = () => {
 const removeLocalTimeSignature = () => {
   if (selectedMeasureIndex.value !== null) {
     const m = measures.value[selectedMeasureIndex.value]
+    if (!m) return
     delete m.timeSignature
     delete m.grouping
     
@@ -1220,6 +2204,10 @@ const toggleDropdown = (name) => {
 // --- QUICK EDIT POPOVERS ---
 const activeRhythmSelector = ref(null)
 const RHYTHM_FIGURES = [
+  { value: 'whole', label: 'Redonda', icon: '\uD834\uDD5D', isPro: true },
+  { value: 'dotted-half', label: 'Blanca con Punto', icon: '\uD834\uDD5E.', isPro: true },
+  { value: 'double', label: 'Blanca', icon: '\uD834\uDD5E', isPro: true },
+  { value: 'dotted-quarter', label: 'Negra con Punto', icon: '\uD834\uDD5F.', isPro: true },
   { value: 'quarter', label: 'Negras (1x)', icon: '♩', isPro: false },
   { value: 'eighth', label: 'Corcheas (2x)', icon: '♫', isPro: false },
   { value: 'offbeat', label: 'Contratiempo', icon: '↷', isPro: false },
@@ -1296,6 +2284,24 @@ const SIXTEENTH_PATTERNS = {
   }
 }
 
+const EIGHTH_PATTERNS = {
+  '2_notes': {
+    label: '2 Semicorcheas',
+    slots: ['note', 'note'],
+    icon: '♫'
+  },
+  'silence_note': {
+    label: 'Silencio - Semicorchea',
+    slots: ['silence', 'note'],
+    icon: '𝄾 ♬'
+  },
+  'note_silence': {
+    label: 'Semicorchea - Silencio',
+    slots: ['note', 'silence'],
+    icon: '♬ 𝄾'
+  }
+}
+
 const clickBeat = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex) => {
   if (isSelectionMode.value) {
     toggleMeasureSelection(measureIndex)
@@ -1309,10 +2315,31 @@ const clickBeat = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIn
   openModal(measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex)
 }
 
+const isRhythmSelectorActive = (measureIndex, beatIndex) => {
+  return activeRhythmSelector.value &&
+         activeRhythmSelector.value.measureIndex === measureIndex &&
+         activeRhythmSelector.value.beatIndex === beatIndex
+}
+
+const isRhythmSelectorActiveForMeasure = (measureIndex) => {
+  return activeRhythmSelector.value &&
+         activeRhythmSelector.value.measureIndex === measureIndex
+}
+
+const isSystemActive = (system) => {
+  if (!system || !system.measures || !activeRhythmSelector.value) return false
+  return system.measures.some(m => m.originalMeasureIndex === activeRhythmSelector.value.measureIndex)
+}
+
+const openLocalMetricInfo = (measure) => {
+  if (!measure) return
+  selectedMeasureIndex.value = measure.originalMeasureIndex
+  isMeasureOptionsOpen.value = true
+  startLocalMetricSetup()
+}
+
 const openRhythmSelector = (measureIndex, beatIndex) => {
-  const isSame = activeRhythmSelector.value &&
-    activeRhythmSelector.value.measureIndex === measureIndex &&
-    activeRhythmSelector.value.beatIndex === beatIndex
+  const isSame = isRhythmSelectorActive(measureIndex, beatIndex)
     
   if (isSame) {
     activeRhythmSelector.value = null
@@ -1329,18 +2356,48 @@ const selectRhythmFigure = (rhythmType) => {
   if (activeRhythmSelector.value) {
     const { measureIndex, beatIndex } = activeRhythmSelector.value
     const m = measures.value[measureIndex]
-    const beat = m?.beats[beatIndex]
-    if (beat) {
-      const figObj = RHYTHM_FIGURES.find(f => f.value === rhythmType)
+    if (m) {
+      if (!isFigureValid(rhythmType, m, beatIndex)) {
+        const sig = getMeasureTimeSignature(m)
+        const isDenom8 = sig.unit === 8
+        const dur = getRhythmFigureDuration(rhythmType, isDenom8)
+        const capacity = sig.beats
+        const unitName = isDenom8 ? 'corcheas' : 'negras'
+        showToast(`No cabe en este compás: esta figura ocupa ${dur} ${unitName}, pero el compás tiene capacidad de ${capacity} o choca con otro acorde.`)
+        return
+      }
+
+      const figObj = getAvailableRhythmFigures(m).find(f => f.value === rhythmType)
       if (figObj && figObj.isPro && currentPlan.value === 'FREE') {
         activeRhythmSelector.value = null
         upgradeReason.value = 'ritmo_armonico'
         isUpgradeModalOpen.value = true
         return
       }
-      changeBeatHarmonicRhythm(beat, rhythmType)
-      m.groove = 'custom'
-      activeRhythmSelector.value = null
+      
+      const beat = m.beats[beatIndex]
+      if (beat) {
+        changeBeatHarmonicRhythm(m, beat, rhythmType)
+        m.groove = 'custom'
+        
+        // Clear any chords that are now covered by this new figure's duration
+        const sig = getMeasureTimeSignature(m)
+        const isDenom8 = sig.unit === 8
+        const dur = getRhythmFigureDuration(rhythmType, isDenom8)
+        for (let j = 1; j < dur; j++) {
+          if (beatIndex + j < m.beats.length) {
+            const coveredBeat = m.beats[beatIndex + j]
+            coveredBeat.root = ''
+            coveredBeat.type = ''
+            coveredBeat.tensions = []
+            coveredBeat.tension = null
+            coveredBeat.bass = null
+            coveredBeat.harmonicRhythm = null
+          }
+        }
+        
+        activeRhythmSelector.value = null
+      }
     }
   }
 }
@@ -1352,25 +2409,45 @@ const selectSixteenthPattern = (measure, beat, patternKey) => {
   beat.harmonicRhythm = 'sixteenth'
   beat.sixteenthPattern = patternKey
   
-  let firstNoteIdx = -1
-  for (let i = 0; i < 4; i++) {
-    if (pattern.slots[i] === 'note') {
-      firstNoteIdx = i
-      break
-    }
-  }
-  
   const newSubs = []
   for (let i = 0; i < 4; i++) {
     const slotType = pattern.slots[i]
-    const isPrimary = (i === firstNoteIdx)
+    const isNote = slotType === 'note'
     
     newSubs.push({
-      root: isPrimary ? beat.root : '',
-      type: isPrimary ? beat.type : '',
-      tensions: isPrimary ? [...(beat.tensions || [])] : [],
-      tension: isPrimary ? beat.tension : null,
-      bass: isPrimary ? beat.bass : null,
+      root: isNote ? beat.root : '',
+      type: isNote ? beat.type : '',
+      tensions: isNote ? [...(beat.tensions || [])] : [],
+      tension: isNote ? beat.tension : null,
+      bass: isNote ? beat.bass : null,
+      isSilence: slotType === 'silence',
+      isMerged: slotType === 'merged'
+    })
+  }
+  
+  beat.subdivisions = newSubs
+  measure.groove = 'custom'
+  activeRhythmSelector.value = null
+}
+
+const selectEighthPattern = (measure, beat, patternKey) => {
+  const pattern = EIGHTH_PATTERNS[patternKey]
+  if (!pattern) return
+  
+  beat.harmonicRhythm = 'eighth'
+  beat.eighthPattern = patternKey
+  
+  const newSubs = []
+  for (let i = 0; i < 2; i++) {
+    const slotType = pattern.slots[i]
+    const isNote = slotType === 'note'
+    
+    newSubs.push({
+      root: isNote ? beat.root : '',
+      type: isNote ? beat.type : '',
+      tensions: isNote ? [...(beat.tensions || [])] : [],
+      tension: isNote ? beat.tension : null,
+      bass: isNote ? beat.bass : null,
       isSilence: slotType === 'silence',
       isMerged: slotType === 'merged'
     })
@@ -1388,40 +2465,99 @@ const selectSixteenthPatternWrapper = (measure, beat, patternKey) => {
     isUpgradeModalOpen.value = true
     return
   }
-  const { measureIndex } = activeRhythmSelector.value
+  const { measureIndex, beatIndex } = activeRhythmSelector.value
   const m = measures.value[measureIndex]
-  selectSixteenthPattern(m, beat, patternKey)
+  const rhythm = getEffectiveRhythm(m, beat, beatIndex)
+  if (rhythm === 'eighth') {
+    selectEighthPattern(m, beat, patternKey)
+  } else {
+    selectSixteenthPattern(m, beat, patternKey)
+  }
 }
 
 const getVisibleSlotsForRender = (measure, beat, beatIdx) => {
   const slots = getBeatSlots(measure, beat, beatIdx)
   const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+  const origMIdx = measure.originalMeasureIndex
   
-  if (rhythm !== 'sixteenth') {
-    return slots.map((s, idx) => ({
-      ...s,
-      originalIndex: idx,
-      flexGrow: 1
-    }))
-  }
+  const states = slots.map((s, idx) => ({
+    ...s,
+    originalIndex: idx,
+    flexGrow: 1,
+    isMerged: s.isMerged || false
+  }))
   
-  const visible = []
-  for (let i = 0; i < slots.length; i++) {
-    if (slots[i].isMerged) continue
-    
-    let flexGrow = 1
-    let j = i + 1
-    while (j < slots.length && slots[j].isMerged) {
-      flexGrow++
-      j++
+  let visible = []
+  if (rhythm === 'sixteenth') {
+    const visibleSixteenth = []
+    for (let i = 0; i < states.length; i++) {
+      if (states[i].isMerged) continue
+      
+      let flexGrow = 1
+      let j = i + 1
+      while (j < states.length && states[j].isMerged) {
+        flexGrow++
+        j++
+      }
+      
+      states[i].flexGrow = flexGrow
+      visibleSixteenth.push(states[i])
     }
     
-    visible.push({
-      ...slots[i],
-      originalIndex: i,
-      flexGrow
-    })
+    // Fuse adjacent identical tied slots
+    const fused = []
+    for (let i = 0; i < visibleSixteenth.length; i++) {
+      let current = visibleSixteenth[i]
+      let j = i + 1
+      while (j < visibleSixteenth.length) {
+        const next = visibleSixteenth[j]
+        const nextSlotId = `${origMIdx}_${beatIdx}_${next.originalIndex}`
+        if (areChordsEqual(current, next) && tiedSlots.value.has(nextSlotId)) {
+          current.flexGrow += next.flexGrow
+          j++
+        } else {
+          break
+        }
+      }
+      fused.push(current)
+      i = j - 1
+    }
+    visible = fused
+  } else {
+    const visibleNonSixteenth = []
+    for (let i = 0; i < states.length; i++) {
+      let current = states[i]
+      let j = i + 1
+      while (j < states.length) {
+        const next = states[j]
+        const nextSlotId = `${origMIdx}_${beatIdx}_${next.originalIndex}`
+        if (areChordsEqual(current, next) && tiedSlots.value.has(nextSlotId)) {
+          current.flexGrow += next.flexGrow
+          j++
+        } else {
+          break
+        }
+      }
+      visibleNonSixteenth.push(current)
+      i = j - 1
+    }
+    visible = visibleNonSixteenth
   }
+  
+  // Collapse logic: if all visible slots are non-silence, have a chord, and are identical:
+  if (
+    visible.length > 1 &&
+    visible.every(s => !s.isSilence && s.root) &&
+    visible.every(s => areChordsEqual(s, visible[0]))
+  ) {
+    return [{
+      ...visible[0],
+      originalIndex: 0,
+      flexGrow: visible.reduce((sum, s) => sum + s.flexGrow, 0),
+      isCollapsedSubdivision: true
+    }]
+  }
+  
   return visible
 }
 
@@ -1431,25 +2567,17 @@ const selectSixteenthPatternInModal = (patternObj, patternKey) => {
     const m = measures.value[measureIndex]
     const beat = m.beats[beatIndex]
     if (beat) {
-      let firstNoteIdx = -1
-      for (let i = 0; i < 4; i++) {
-        if (patternObj.slots[i] === 'note') {
-          firstNoteIdx = i
-          break
-        }
-      }
-      
       const newSubs = []
       for (let i = 0; i < 4; i++) {
         const slotType = patternObj.slots[i]
-        const isPrimary = (i === firstNoteIdx)
+        const isNote = slotType === 'note'
         
         newSubs.push({
-          root: isPrimary ? beat.root : '',
-          type: isPrimary ? beat.type : '',
-          tensions: isPrimary ? [...(beat.tensions || [])] : [],
-          tension: isPrimary ? beat.tension : null,
-          bass: isPrimary ? beat.bass : null,
+          root: isNote ? beat.root : '',
+          type: isNote ? beat.type : '',
+          tensions: isNote ? [...(beat.tensions || [])] : [],
+          tension: isNote ? beat.tension : null,
+          bass: isNote ? beat.bass : null,
           isSilence: slotType === 'silence',
           isMerged: slotType === 'merged'
         })
@@ -1462,10 +2590,39 @@ const selectSixteenthPatternInModal = (patternObj, patternKey) => {
     }
   }
 }
+
+const selectEighthPatternInModal = (patternObj, patternKey) => {
+  if (selectedBeat.value) {
+    const { measureIndex, beatIndex } = selectedBeat.value
+    const m = measures.value[measureIndex]
+    const beat = m.beats[beatIndex]
+    if (beat) {
+      const newSubs = []
+      for (let i = 0; i < 2; i++) {
+        const slotType = patternObj.slots[i]
+        const isNote = slotType === 'note'
+        
+        newSubs.push({
+          root: isNote ? beat.root : '',
+          type: isNote ? beat.type : '',
+          tensions: isNote ? [...(beat.tensions || [])] : [],
+          tension: isNote ? beat.tension : null,
+          bass: isNote ? beat.bass : null,
+          isSilence: slotType === 'silence',
+          isMerged: slotType === 'merged'
+        })
+      }
+      
+      beat.subdivisions = newSubs
+      beat.eighthPattern = patternKey
+      beat.harmonicRhythm = 'eighth'
+      m.groove = 'custom'
+    }
+  }
+}
 const closeDropdowns = (e) => {
   if (!e.target.closest('.dropdown-container') && !e.target.closest('.quick-popover-container') && !e.target.closest('.rhythm-popover-container')) {
     activeDropdown.value = null
-    activeQuickChordPopover.value = null
     activeRhythmSelector.value = null
   }
 }
@@ -1492,6 +2649,7 @@ const openModal = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIn
   isMeasureOptionsOpen.value = false
   isRepeatMenuOpen.value = false
   isSystemSuggestionsModalOpen.value = false
+  applyToAllSubslots.value = true
   selectedBeat.value = { measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex }
   const m = measures.value[measureIndex]
   const b = m ? m.beats[beatIndex] : null
@@ -1526,9 +2684,19 @@ const selectChord = (chordObj) => {
       }
     }
     
+    const oldChord = activeEditingBeat.value ? {
+      root: activeEditingBeat.value.root,
+      type: activeEditingBeat.value.type,
+      tension: activeEditingBeat.value.tension,
+      bass: activeEditingBeat.value.bass,
+      tensions: [...(activeEditingBeat.value.tensions || [])],
+      isSilence: activeEditingBeat.value.isSilence
+    } : null
+    
     if (subdivisionIndex !== undefined) {
       const rhythm = getEffectiveRhythm(m, beat, beatIndex)
-      const subCount = getSubdivisionCount(rhythm)
+      const sig = getMeasureTimeSignature(m)
+      const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
       if (!beat.subdivisions || beat.subdivisions.length !== subCount) {
         beat.subdivisions = getBeatSlots(m, beat, beatIndex).map(s => ({
           root: s.root,
@@ -1568,6 +2736,21 @@ const selectChord = (chordObj) => {
     }
     activeTensionExplanation.value = null
     
+    if (oldChord) {
+      const newChord = {
+        root: chordObj.root,
+        type: chordObj.type,
+        tension: null,
+        bass: null,
+        tensions: [],
+        isSilence: !chordObj.root
+      }
+      if (subdivisionIndex !== undefined) {
+        propagateSubdivisionMutation(measureIndex, beatIndex, subdivisionIndex, oldChord, newChord)
+      }
+      propagateChordMutation(measureIndex, beatIndex, subdivisionIndex, oldChord, newChord)
+    }
+    
     // Cierra el modal inmediatamente al seleccionar o borrar un acorde
     isModalOpen.value = false
     if (chordObj.root) {
@@ -1582,9 +2765,12 @@ const showRhythmPrompt = (measure, beat, slotIdx, chordObj) => {
   rhythmPromptSlotIndex.value = slotIdx
   rhythmPromptTargetChord.value = chordObj
   
-  // Find matching sixteenth patterns where the slot is 'note'
+  const beatIdx = measure.beats.indexOf(beat)
+  const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+  const patternSource = rhythm === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS
+  
   const matching = []
-  for (const [key, pat] of Object.entries(SIXTEENTH_PATTERNS)) {
+  for (const [key, pat] of Object.entries(patternSource)) {
     if (pat.slots[slotIdx] === 'note') {
       matching.push({
         key,
@@ -1605,15 +2791,16 @@ const confirmRhythmPrompt = (patternKey) => {
   
   if (!beat || !measure || slotIdx === null || !chordObj) return
   
-  const pattern = SIXTEENTH_PATTERNS[patternKey]
+  const beatIdx = measure.beats.indexOf(beat)
+  const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+  const patternSource = rhythm === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS
+  const pattern = patternSource[patternKey]
   if (!pattern) return
   
-  // We want to change the rhythm to 'sixteenth' and pattern to patternKey
-  // And apply the chord at slotIdx, while preserving other slots if possible
-  const oldSubs = beat.subdivisions ? [...beat.subdivisions] : []
+  const subCount = rhythm === 'eighth' ? 2 : 4
   
   let firstNoteIdx = -1
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < subCount; i++) {
     if (pattern.slots[i] === 'note') {
       firstNoteIdx = i
       break
@@ -1621,57 +2808,19 @@ const confirmRhythmPrompt = (patternKey) => {
   }
   
   const newSubs = []
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < subCount; i++) {
     const slotType = pattern.slots[i]
+    const isNote = slotType === 'note'
     
-    if (i === slotIdx) {
-      newSubs.push({
-        root: chordObj.root,
-        type: chordObj.type,
-        tensions: [],
-        tension: null,
-        bass: null,
-        isSilence: false,
-        isMerged: false
-      })
-    } else {
-      const oldSub = oldSubs[i]
-      const hasOldChord = oldSub && oldSub.root
-      
-      if (slotType === 'note') {
-        if (hasOldChord && !oldSub.isSilence) {
-          newSubs.push({
-            root: oldSub.root,
-            type: oldSub.type,
-            tensions: [...(oldSub.tensions || [])],
-            tension: oldSub.tension,
-            bass: oldSub.bass,
-            isSilence: false,
-            isMerged: false
-          })
-        } else {
-          newSubs.push({
-            root: '',
-            type: '',
-            tensions: [],
-            tension: null,
-            bass: null,
-            isSilence: false,
-            isMerged: false
-          })
-        }
-      } else {
-        newSubs.push({
-          root: '',
-          type: '',
-          tensions: [],
-          tension: null,
-          bass: null,
-          isSilence: slotType === 'silence',
-          isMerged: slotType === 'merged'
-        })
-      }
-    }
+    newSubs.push({
+      root: isNote ? chordObj.root : '',
+      type: isNote ? chordObj.type : '',
+      tensions: isNote ? (chordObj.tensions ? [...chordObj.tensions] : []) : [],
+      tension: isNote ? chordObj.tension : null,
+      bass: isNote ? chordObj.bass : null,
+      isSilence: slotType === 'silence',
+      isMerged: slotType === 'merged'
+    })
   }
   
   const primaryNote = newSubs[firstNoteIdx]
@@ -1684,8 +2833,12 @@ const confirmRhythmPrompt = (patternKey) => {
   }
   
   beat.subdivisions = newSubs
-  beat.sixteenthPattern = patternKey
-  beat.harmonicRhythm = 'sixteenth'
+  if (rhythm === 'eighth') {
+    beat.eighthPattern = patternKey
+  } else {
+    beat.sixteenthPattern = patternKey
+  }
+  beat.harmonicRhythm = rhythm
   measure.groove = 'custom'
   
   // Close both modals
@@ -1724,7 +2877,46 @@ const getEighthSingleFlagSVG = (x) => {
 }
 
 const getRhythmIconSVG = (key) => {
+  // Patrones de 2 notas (Eighths subdivided into Sixteenths)
+  if (key === '2_notes') {
+    return `<circle cx="30" cy="17" r="2.2" fill="currentColor"/>
+            <circle cx="70" cy="17" r="2.2" fill="currentColor"/>
+            <line x1="30" y1="17" x2="30" y2="5" stroke="currentColor" stroke-width="1.3"/>
+            <line x1="70" y1="17" x2="70" y2="5" stroke="currentColor" stroke-width="1.3"/>
+            <line x1="30" y1="5" x2="70" y2="5" stroke="currentColor" stroke-width="2"/>
+            <line x1="30" y1="8.5" x2="70" y2="8.5" stroke="currentColor" stroke-width="2"/>`;
+  }
+  if (key === 'silence_note') {
+    return getSixteenthRestSVG(20) +
+           `<circle cx="70" cy="17" r="2.2" fill="currentColor"/>
+            <line x1="70" y1="17" x2="70" y2="5" stroke="currentColor" stroke-width="1.3"/>` +
+            getSixteenthDoubleFlagSVG(70);
+  }
+  if (key === 'note_silence') {
+    return `<circle cx="30" cy="17" r="2.2" fill="currentColor"/>
+            <line x1="30" y1="17" x2="30" y2="5" stroke="currentColor" stroke-width="1.3"/>` +
+            getSixteenthDoubleFlagSVG(30) +
+            getSixteenthRestSVG(60);
+  }
+
   // Figuras Básicas
+  if (key === 'whole') {
+    return `<ellipse cx="50" cy="12" rx="6" ry="4.5" stroke="currentColor" stroke-width="2" fill="none"/>`;
+  }
+  if (key === 'dotted-half') {
+    return `<ellipse cx="42" cy="17" rx="5.5" ry="4" stroke="currentColor" stroke-width="2" fill="none" transform="rotate(-15 42 17)"/>
+            <line x1="47.5" y1="17" x2="47.5" y2="4" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="55" cy="17" r="1.5" fill="currentColor"/>`;
+  }
+  if (key === 'double') {
+    return `<ellipse cx="46" cy="17" rx="5.5" ry="4" stroke="currentColor" stroke-width="2" fill="none" transform="rotate(-15 46 17)"/>
+            <line x1="51.5" y1="17" x2="51.5" y2="4" stroke="currentColor" stroke-width="1.5"/>`;
+  }
+  if (key === 'dotted-quarter') {
+    return `<ellipse cx="44" cy="17" rx="5" ry="3.5" fill="currentColor" transform="rotate(-15 44 17)"/>
+            <line x1="49" y1="17" x2="49" y2="4" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="56" cy="17" r="1.5" fill="currentColor"/>`;
+  }
   if (key === 'quarter') {
     return `<circle cx="50" cy="17" r="2.5" fill="currentColor"/>
             <line x1="50" y1="17" x2="50" y2="5" stroke="currentColor" stroke-width="1.5"/>`;
@@ -1972,7 +3164,10 @@ const openMeasureOptions = (mIdx) => {
   const m = measures.value[mIdx]
   tempSectionLabel.value = m.sectionLabel || 'Ninguna'
   tempMeasureGroove.value = m.groove || 'global'
+  tempShowSubdivisions.value = m.showSubdivisions !== false
+  tempShowObligado.value = m.showObligado === true
   isKeyChangeSubMenuOpen.value = false
+  isLocalMetricSubMenuOpen.value = false
   keyChangeStep.value = 1
   
   if (m.keyChange) {
@@ -1988,13 +3183,18 @@ const openMeasureOptions = (mIdx) => {
   
   isMeasureOptionsOpen.value = true
 }
-const changeBeatHarmonicRhythm = (beat, rhythmType) => {
-  const prevRhythm = beat.harmonicRhythm || 'quarter';
+const changeBeatHarmonicRhythm = (measure, beat, rhythmType) => {
+  const sig = getMeasureTimeSignature(measure);
+  const isDenom8 = sig?.unit === 8;
+  const defaultRhythm = isDenom8 ? 'eighth' : 'quarter';
+  const prevRhythm = beat.harmonicRhythm || defaultRhythm;
   if (prevRhythm === rhythmType) return;
   
   beat.harmonicRhythm = rhythmType;
   
-  if (rhythmType === 'quarter') {
+  const isBaseUnit = isDenom8 ? (rhythmType === 'eighth') : (rhythmType === 'quarter');
+  
+  if (isBaseUnit) {
     if (beat.subdivisions && beat.subdivisions.length > 0) {
       // Sync beat with first subdivision if it has root
       const firstSub = beat.subdivisions[0];
@@ -2007,9 +3207,16 @@ const changeBeatHarmonicRhythm = (beat, rhythmType) => {
       }
     }
     delete beat.subdivisions;
+    delete beat.eighthPattern;
+    delete beat.sixteenthPattern;
   } else {
     let subCount = 2;
-    if (rhythmType === 'eighth') subCount = 2;
+    if (rhythmType === 'eighth') {
+      subCount = 2;
+      if (!isDenom8) {
+        beat.eighthPattern = '2_notes';
+      }
+    }
     else if (rhythmType === 'sixteenth') {
       subCount = 4;
       beat.sixteenthPattern = '4_semi';
@@ -2091,7 +3298,7 @@ const selectBeatHarmonicRhythm = (rhythmType) => {
     const m = measures.value[measureIndex];
     const beat = m?.beats[beatIndex];
     if (beat) {
-      changeBeatHarmonicRhythm(beat, rhythmType);
+      changeBeatHarmonicRhythm(m, beat, rhythmType);
       if (rhythmType !== 'auto') {
         m.groove = 'custom';
       } else {
@@ -2109,7 +3316,7 @@ const flattenParentBeat = () => {
     const m = measures.value[measureIndex];
     const beat = m?.beats[beatIndex];
     if (beat) {
-      changeBeatHarmonicRhythm(beat, 'quarter');
+      changeBeatHarmonicRhythm(m, beat, 'quarter');
       m.groove = 'custom';
       selectedBeat.value = { ...selectedBeat.value, subdivisionIndex: undefined };
       isModalOpen.value = false;
@@ -2245,7 +3452,10 @@ const translateGrooveName = (g) => {
   if (g === 'Push final') return 'Push Final'
   return g
 }
-const getSubdivisionCount = (rhythm) => {
+const getSubdivisionCount = (rhythm, isDenom8 = false, beat = null) => {
+  if (isDenom8 && rhythm === 'eighth') {
+    return beat && beat.eighthPattern ? 2 : 1
+  }
   if (rhythm === 'eighth' || rhythm === 'offbeat') return 2
   if (rhythm === 'sixteenth') return 4
   if (rhythm === 'triplet') return 3
@@ -2258,16 +3468,25 @@ function getEffectiveRhythm(measure, beat, beatIdx) {
     return beat.harmonicRhythm
   }
   
+  // Determine if this is a /8 time signature (base unit is eighth/corchea)
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig?.unit === 8
+  
   const mGroove = measure?.groove || 'global'
-  if (mGroove === 'neutral') {
-    return 'quarter'
-  }
-  if (mGroove === 'custom') {
-    return 'quarter'
+  if (mGroove === 'neutral' || mGroove === 'custom') {
+    // In /8 measures the base unit (1 beat) is an eighth note, not a quarter
+    return isDenom8 ? 'eighth' : 'quarter'
   }
   
   const pattern = GROOVE_PATTERNS[globalGroove.value] || GROOVE_PATTERNS.Ninguno
-  return pattern[beatIdx] || 'quarter'
+  const grooveRhythm = pattern[beatIdx] || 'quarter'
+  
+  // In /8 measures: groove 'quarter' (negra) maps to 'eighth' (corchea) as the base beat unit
+  if (isDenom8 && grooveRhythm === 'quarter') {
+    return 'eighth'
+  }
+  
+  return grooveRhythm
 }
 
 const getBeatFlexGrow = (measure, beat, beatIdx) => {
@@ -2282,10 +3501,11 @@ const getBeatFlexGrow = (measure, beat, beatIdx) => {
 const getLinearSlots = () => {
   const list = []
   measures.value.forEach((measure, mIdx) => {
-    const visibleBeats = measure.beats.slice(0, timeSignature.value)
+    const sig = getMeasureTimeSignature(mIdx)
+    const visibleBeats = measure.beats.slice(0, sig.beats)
     visibleBeats.forEach((beat, bIdx) => {
       const rhythm = getEffectiveRhythm(measure, beat, bIdx)
-      const subCount = getSubdivisionCount(rhythm)
+      const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
       if (subCount === 1) {
         list.push({
           type: 'beat',
@@ -2321,7 +3541,8 @@ const getMeasureSlotCoordinates = (measure) => {
   const coords = []
   if (!measure) return coords
   const origMIdx = measure.originalMeasureIndex
-  const beats = measure.beats.slice(0, timeSignature.value)
+  const sig = getMeasureTimeSignature(measure)
+  const beats = measure.beats.slice(0, sig.beats)
   
   // Calculate beat weights
   const beatGrows = beats.map((b, bIdx) => {
@@ -2369,22 +3590,137 @@ const getMeasureSlotCoordinates = (measure) => {
   return coords
 }
 
+const getLinearBlocks = () => {
+  const list = []
+  measures.value.forEach((measure, mIdx) => {
+    const sig = getMeasureTimeSignature(mIdx)
+    const visibleBeats = measure.beats.slice(0, sig.beats)
+    const beatStates = getMergedBeats(measure)
+    
+    beatStates.forEach((state, bIdx) => {
+      if (state.isMerged) return
+      
+      const rhythm = getEffectiveRhythm(measure, state.beat, bIdx)
+      const isSubdivided = measure.showObligado && isSubdividedRhythm(rhythm, sig.unit === 8, state.beat)
+      
+      if (!isSubdivided) {
+        list.push({
+          type: 'beat',
+          measureIndex: mIdx,
+          beatIndex: bIdx,
+          subdivisionIndex: null,
+          chord: state.beat,
+          rhythm,
+          id: `${mIdx}_${bIdx}`,
+          isSilence: !state.beat.root,
+          durationSlots: state.durationSlots
+        })
+      } else {
+        const slots = getVisibleSlotsForRender(measure, state.beat, bIdx)
+        slots.forEach((sub, sIdx) => {
+          list.push({
+            type: 'subdivision',
+            measureIndex: mIdx,
+            beatIndex: bIdx,
+            subdivisionIndex: sub.originalIndex,
+            chord: sub,
+            rhythm,
+            id: `${mIdx}_${bIdx}_${sub.originalIndex}`,
+            isSilence: sub.isSilence,
+            durationSlots: sub.flexGrow
+          })
+        })
+      }
+    })
+  })
+  return list
+}
+
+const getMeasureBlockCoordinates = (measure) => {
+  const coords = []
+  if (!measure) return coords
+  const origMIdx = measure.originalMeasureIndex
+  const sig = getMeasureTimeSignature(measure)
+  const numBeats = sig.beats
+  
+  const beatGrows = measure.beats.slice(0, numBeats).map((b, bIdx) => {
+    const rhythm = getEffectiveRhythm(measure, b, bIdx)
+    if (rhythm === 'sixteenth') return 3
+    if (rhythm === 'triplet') return 2
+    if (rhythm === 'quintuplet') return 3.5
+    if (rhythm === 'eighth' || rhythm === 'offbeat') return 1.5
+    return 1
+  })
+  const totalGrow = beatGrows.reduce((sum, g) => sum + g, 0)
+  
+  const beatStates = getMergedBeats(measure)
+  
+  const beatX = []
+  let accumX = 0
+  for (let i = 0; i < numBeats; i++) {
+    beatX.push(accumX)
+    const beatWidth = (beatGrows[i] / totalGrow) * 1000
+    accumX += beatWidth
+  }
+  
+  beatStates.forEach((state, bIdx) => {
+    if (state.isMerged) return
+    
+    let blockWidth = 0
+    for (let j = 0; j < state.durationSlots; j++) {
+      if (bIdx + j < numBeats) {
+        blockWidth += (beatGrows[bIdx + j] / totalGrow) * 1000
+      }
+    }
+    
+    const startX = beatX[bIdx]
+    const rhythm = getEffectiveRhythm(measure, state.beat, bIdx)
+    const isSubdivided = measure.showObligado && isSubdividedRhythm(rhythm, sig.unit === 8, state.beat)
+    
+    if (!isSubdivided) {
+      coords.push({
+        id: `${origMIdx}_${bIdx}`,
+        x: startX + blockWidth / 2,
+        measureIndex: origMIdx,
+        beatIndex: bIdx,
+        subdivisionIndex: null
+      })
+    } else {
+      const slots = getVisibleSlotsForRender(measure, state.beat, bIdx)
+      let slotOffset = 0
+      slots.forEach((sub) => {
+        const slotWidth = (sub.flexGrow / 4) * blockWidth
+        coords.push({
+          id: `${origMIdx}_${bIdx}_${sub.originalIndex}`,
+          x: startX + slotOffset + slotWidth / 2,
+          measureIndex: origMIdx,
+          beatIndex: bIdx,
+          subdivisionIndex: sub.originalIndex
+        })
+        slotOffset += slotWidth
+      })
+    }
+  })
+  
+  return coords
+}
+
 const getMeasureTiesPaths = (measure) => {
   const paths = []
   if (!measure) return paths
   const origMIdx = measure.originalMeasureIndex
   
-  const coords = getMeasureSlotCoordinates(measure)
-  const linearSlots = getLinearSlots()
+  const coords = getMeasureBlockCoordinates(measure)
+  const linearBlocks = getLinearBlocks()
   
   coords.forEach((coord) => {
-    const currentLinearIdx = linearSlots.findIndex(s => s.id === coord.id)
+    const currentLinearIdx = linearBlocks.findIndex(b => b.id === coord.id)
     if (currentLinearIdx === -1) return
     
-    const nextSlot = linearSlots[currentLinearIdx + 1]
-    if (nextSlot && tiedSlots.value.has(nextSlot.id)) {
-      if (nextSlot.measureIndex === origMIdx) {
-        const nextCoord = coords.find(c => c.id === nextSlot.id)
+    const nextBlock = linearBlocks[currentLinearIdx + 1]
+    if (nextBlock && tiedSlots.value.has(nextBlock.id)) {
+      if (nextBlock.measureIndex === origMIdx) {
+        const nextCoord = coords.find(c => c.id === nextBlock.id)
         if (nextCoord) {
           paths.push({
             d: `M ${coord.x} 35 Q ${(coord.x + nextCoord.x) / 2} 15 ${nextCoord.x} 35`,
@@ -2400,8 +3736,8 @@ const getMeasureTiesPaths = (measure) => {
     }
     
     if (tiedSlots.value.has(coord.id)) {
-      const prevSlot = linearSlots[currentLinearIdx - 1]
-      if (prevSlot && prevSlot.measureIndex !== origMIdx) {
+      const prevBlock = linearBlocks[currentLinearIdx - 1]
+      if (prevBlock && prevBlock.measureIndex !== origMIdx) {
         paths.push({
           d: `M -40 28 Q ${(coord.x - 40) / 2} 18 ${coord.x} 35`,
           type: 'incoming'
@@ -2413,22 +3749,20 @@ const getMeasureTiesPaths = (measure) => {
 }
 
 const validateTies = () => {
-  const linearSlots = getLinearSlots()
+  const linearBlocks = getLinearBlocks()
   const newTies = new Set()
   
-  linearSlots.forEach((slot, idx) => {
-    if (idx > 0 && tiedSlots.value.has(slot.id)) {
-      const prevSlot = linearSlots[idx - 1]
+  linearBlocks.forEach((block, idx) => {
+    if (idx > 0 && tiedSlots.value.has(block.id)) {
+      const prevBlock = linearBlocks[idx - 1]
       if (
-        prevSlot &&
-        prevSlot.chord.root &&
-        slot.chord.root &&
-        prevSlot.chord.root === slot.chord.root &&
-        prevSlot.chord.type === slot.chord.type &&
-        !prevSlot.isSilence &&
-        !slot.isSilence
+        prevBlock &&
+        prevBlock.chord.root &&
+        block.chord.root &&
+        !prevBlock.isSilence &&
+        !block.isSilence
       ) {
-        newTies.add(slot.id)
+        newTies.add(block.id)
       }
     }
   })
@@ -2444,7 +3778,8 @@ watch(measures, () => {
   }
 }, { deep: true })
 
-watch(timeSignature, () => {
+watch([timeSignature, timeSignatureUnit], () => {
+  syncMeasuresBeats()
   const beforeCount = tiedSlots.value.size
   validateTies()
   const afterCount = tiedSlots.value.size
@@ -2453,83 +3788,85 @@ watch(timeSignature, () => {
   }
 })
 
+watch([timeSignature, globalGrouping], () => {
+  const currentGroup = globalGrouping.value || getDefaultGrouping(timeSignature.value, timeSignatureUnit.value)
+  tempGlobalGroupingStr.value = currentGroup.join('+')
+}, { immediate: true })
+
 const canTieActiveSlot = () => {
   if (!selectedBeat.value || !activeEditingBeat.value || !activeEditingBeat.value.root) return false
-  const linearSlots = getLinearSlots()
+  const linearBlocks = getLinearBlocks()
   const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
   const slotId = subdivisionIndex !== undefined
     ? `${measureIndex}_${beatIndex}_${subdivisionIndex}`
     : `${measureIndex}_${beatIndex}`
     
-  const idx = linearSlots.findIndex(s => s.id === slotId)
-  if (idx === -1 || idx === linearSlots.length - 1) return false
+  const idx = linearBlocks.findIndex(b => b.id === slotId)
+  if (idx === -1 || idx === linearBlocks.length - 1) return false
   
-  const nextSlot = linearSlots[idx + 1]
-  if (!nextSlot) return false
   return true
 }
 
 const isNextSlotTied = () => {
   if (!selectedBeat.value) return false
-  const linearSlots = getLinearSlots()
+  const linearBlocks = getLinearBlocks()
   const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
   const slotId = subdivisionIndex !== undefined
     ? `${measureIndex}_${beatIndex}_${subdivisionIndex}`
     : `${measureIndex}_${beatIndex}`
     
-  const idx = linearSlots.findIndex(s => s.id === slotId)
-  if (idx === -1 || idx === linearSlots.length - 1) return false
+  const idx = linearBlocks.findIndex(b => b.id === slotId)
+  if (idx === -1 || idx === linearBlocks.length - 1) return false
   
-  const nextSlot = linearSlots[idx + 1]
-  return tiedSlots.value.has(nextSlot.id)
+  const nextBlock = linearBlocks[idx + 1]
+  return nextBlock && tiedSlots.value.has(nextBlock.id)
 }
 
 const toggleTieActiveSlot = () => {
   if (!canTieActiveSlot()) return
-  const linearSlots = getLinearSlots()
+  const linearBlocks = getLinearBlocks()
   const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
   const slotId = subdivisionIndex !== undefined
     ? `${measureIndex}_${beatIndex}_${subdivisionIndex}`
     : `${measureIndex}_${beatIndex}`
     
-  const idx = linearSlots.findIndex(s => s.id === slotId)
-  const nextSlot = linearSlots[idx + 1]
-  if (!nextSlot) return
+  const idx = linearBlocks.findIndex(b => b.id === slotId)
+  const currentBlock = linearBlocks[idx]
+  const nextBlock = linearBlocks[idx + 1]
+  if (!nextBlock) return
   
-  if (tiedSlots.value.has(nextSlot.id)) {
-    tiedSlots.value.delete(nextSlot.id)
+  if (tiedSlots.value.has(nextBlock.id)) {
+    tiedSlots.value.delete(nextBlock.id)
     showToast("Ligado eliminado")
   } else {
-    // Copy chord to next slot so they are identical and tie is valid
-    const activeSlot = linearSlots[idx]
-    nextSlot.chord.root = activeSlot.chord.root
-    nextSlot.chord.type = activeSlot.chord.type
-    nextSlot.chord.tensions = activeSlot.chord.tensions ? [...activeSlot.chord.tensions] : []
-    nextSlot.chord.tension = activeSlot.chord.tension
-    nextSlot.chord.bass = activeSlot.chord.bass
-    nextSlot.chord.isSilence = false // ensure it's not a silence
-    
-    // Also copy to parent beat if next slot is beat-level primary slot
-    const nextRhythm = getEffectiveRhythm(measures.value[nextSlot.measureIndex], measures.value[nextSlot.measureIndex].beats[nextSlot.beatIndex], nextSlot.beatIndex)
-    const nextIsOffbeat = nextRhythm === 'offbeat'
-    if (nextSlot.subdivisionIndex === null) {
-      // It's a quarter note beat, so updating its chord directly updates beat root/type
-    } else if ((nextSlot.subdivisionIndex === 0 && !nextIsOffbeat) || (nextSlot.subdivisionIndex === 1 && nextIsOffbeat)) {
-      const parentBeat = measures.value[nextSlot.measureIndex].beats[nextSlot.beatIndex]
-      parentBeat.root = activeSlot.chord.root
-      parentBeat.type = activeSlot.chord.type
-      parentBeat.tensions = activeSlot.chord.tensions ? [...activeSlot.chord.tensions] : []
-      parentBeat.tension = activeSlot.chord.tension
-      parentBeat.bass = activeSlot.chord.bass
+    // Copy chord details if next block is a rest/silence (UX helper)
+    if (!nextBlock.chord.root || nextBlock.chord.isSilence) {
+      nextBlock.chord.root = currentBlock.chord.root
+      nextBlock.chord.type = currentBlock.chord.type
+      nextBlock.chord.tensions = currentBlock.chord.tensions ? [...currentBlock.chord.tensions] : []
+      nextBlock.chord.tension = currentBlock.chord.tension
+      nextBlock.chord.bass = currentBlock.chord.bass
+      nextBlock.chord.isSilence = false
+      
+      // Update next block's parent beat properties if it represents a beat chord
+      if (nextBlock.type === 'beat') {
+        const parentBeat = measures.value[nextBlock.measureIndex].beats[nextBlock.beatIndex]
+        parentBeat.root = currentBlock.chord.root
+        parentBeat.type = currentBlock.chord.type
+        parentBeat.tensions = currentBlock.chord.tensions ? [...currentBlock.chord.tensions] : []
+        parentBeat.tension = currentBlock.chord.tension
+        parentBeat.bass = currentBlock.chord.bass
+      }
     }
     
-    tiedSlots.value.add(nextSlot.id)
+    tiedSlots.value.add(nextBlock.id)
     showToast("Ligado creado con éxito")
   }
 }
 const getBeatSlots = (measure, beat, beatIdx) => {
   const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
-  const subCount = getSubdivisionCount(rhythm)
+  const sig = getMeasureTimeSignature(measure)
+  const subCount = getSubdivisionCount(rhythm, sig?.unit === 8, beat)
   
   if (subCount === 1) return []
   
@@ -2591,12 +3928,16 @@ const getActiveMeasureRhythms = (measure) => {
   return rhythms
 }
 const getSubdivisionIcon = (rhythm) => {
+  if (rhythm === 'whole') return '\uD834\uDD5D'
+  if (rhythm === 'dotted-half') return '\uD834\uDD5E.'
+  if (rhythm === 'double') return '\uD834\uDD5E'
+  if (rhythm === 'dotted-quarter') return '\uD834\uDD5F.'
+  if (rhythm === 'quarter') return '♩'
   if (rhythm === 'eighth') return '♪'
   if (rhythm === 'offbeat') return '↷'
   if (rhythm === 'sixteenth') return '♬'
   if (rhythm === 'triplet') return '3'
   if (rhythm === 'quintuplet') return '5'
-  if (rhythm === 'quarter') return '♩'
   return ''
 }
 const getSubdivisionFontSizeClass = (subCount) => {
@@ -2625,10 +3966,31 @@ const translateRhythmName = (rhythm) => {
   if (rhythm === 'auto') return 'Automático'
   return 'Normal'
 }
+// Toggle subdivisions for ALL measures at once (global sidebar toggle)
+const toggleAllSubdivisions = (on) => {
+  globalShowSubdivisions.value = on
+}
+
+const toggleGlobalShowObligado = (on) => {
+  if (currentPlan.value !== 'PRO') {
+    upgradeReason.value = 'ritmo_armonico'
+    isUpgradeModalOpen.value = true
+    return
+  }
+  globalShowObligado.value = on
+  measures.value.forEach(m => {
+    m.showObligado = on
+  })
+  syncMeasuresBeats()
+  showToast(on ? 'Modo rítmico activado: Los acordes respetarán duración exacta de figuras' : 'Modo rítmico desactivado')
+}
+
 const saveMeasureOptions = () => {
   if (selectedMeasureIndex.value !== null) {
     const m = measures.value[selectedMeasureIndex.value]
     m.sectionLabel = tempSectionLabel.value === 'Ninguna' ? null : tempSectionLabel.value
+    m.showSubdivisions = tempShowSubdivisions.value
+    m.showObligado = tempShowObligado.value
     
     // Save groove configuration
     const prevGroove = m.groove || 'global'
@@ -2701,11 +4063,15 @@ const convertRepeatToCasilla = () => {
   
   // Auto add measures for Casilla 2 if needed
   while (measures.value.length < rep.casilla2End) {
-    const emptyBeats = Array.from({ length: timeSignature.value }, () => ({ root: '', type: '' }))
+    const nextIdx = measures.value.length
+    const sig = getMeasureTimeSignature(nextIdx)
+    const emptyBeats = Array.from({ length: sig.beats }, () => ({ root: '', type: '' }))
     measures.value.push({
       id: generateUniqueId(),
       beats: emptyBeats,
-      sectionLabel: null
+      sectionLabel: null,
+      showObligado: globalShowObligado.value,
+      showSubdivisions: globalShowSubdivisions.value
     })
   }
   
@@ -2721,16 +4087,34 @@ const addMeasure = () => {
     isUpgradeModalOpen.value = true
     return
   }
-  const emptyBeats = Array.from({ length: timeSignature.value }, () => ({ root: '', type: '' }))
+  const nextIdx = measures.value.length
+  const sig = getMeasureTimeSignature(nextIdx)
+  const emptyBeats = Array.from({ length: sig.beats }, () => ({ root: '', type: '' }))
   measures.value.push({
     id: generateUniqueId(),
     beats: emptyBeats,
-    sectionLabel: null
+    sectionLabel: null,
+    showObligado: globalShowObligado.value,
+    showSubdivisions: globalShowSubdivisions.value
   })
+  syncMeasuresBeats()
 }
 const formatDisplayChord = (beat) => {
-  if (!beat.root) return '-'
-  return formatChord(beat)
+  if (!beat || !beat.root) return '-'
+  let formatted = formatChord(beat)
+  if (beat.type === 'maj') formatted = beat.root
+  if (beat.type === 'min') formatted = beat.root + 'm'
+  if (beat.type === 'dim') formatted = beat.root + 'dim'
+  return formatted
+}
+const splitChordDisplay = (beat) => {
+  const full = formatDisplayChord(beat)
+  if (full === '-') return { main: '-', bass: '' }
+  const parts = full.split('/')
+  return {
+    main: parts[0],
+    bass: parts[1] ? `/${parts[1]}` : ''
+  }
 }
 const exportPdf = () => {
   if (currentPlan.value === 'PRO' && viewMode.value === 'expanded') {
@@ -2855,6 +4239,48 @@ const exportPdf = () => {
                           <span v-if="configTimeSignature === item.beats && configTimeSignatureUnit === item.unit" class="text-xs font-black text-[#34C759]">✓</span>
                         </button>
                       </div>
+                    </div>
+                    <!-- Custom metric entry (PRO only) -->
+                    <div class="border-t border-gray-100 mt-1 pt-1">
+                      <div class="text-[9.5px] text-gray-400 font-black uppercase tracking-wider px-2 pt-1 flex items-center gap-1.5">
+                        Personalizada
+                        <span class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.5 rounded font-black">PRO</span>
+                      </div>
+                      <!-- PRO: editable inputs -->
+                      <div v-if="currentPlan === 'PRO'" class="flex items-center gap-1.5 px-2 py-1.5">
+                        <input
+                          type="number"
+                          min="1" max="32"
+                          :value="configTimeSignature"
+                          @input="configTimeSignature = Math.max(1, parseInt($event.target.value) || 4)"
+                          class="w-10 text-center text-sm font-black border border-gray-300 rounded-lg py-1 focus:border-[#34C759] focus:outline-none"
+                          placeholder="Nº"
+                        />
+                        <span class="text-gray-400 font-black text-lg leading-none">/</span>
+                        <select
+                          :value="configTimeSignatureUnit"
+                          @change="configTimeSignatureUnit = parseInt($event.target.value); activeDropdown = null"
+                          class="text-sm font-bold border border-gray-300 rounded-lg py-1 px-1.5 focus:border-[#34C759] focus:outline-none bg-white"
+                        >
+                          <option value="2">2</option>
+                          <option value="4">4</option>
+                          <option value="8">8</option>
+                          <option value="16">16</option>
+                        </select>
+                        <button
+                          @click="activeDropdown = null"
+                          class="text-[10px] bg-[#34C759] text-white px-2 py-1 rounded-lg font-black hover:bg-[#248A3D] transition-colors"
+                        >✓ OK</button>
+                      </div>
+                      <!-- FREE: locked state -->
+                      <button
+                        v-else
+                        @click="activeDropdown = null; upgradeReason = 'metrica'; isUpgradeModalOpen = true"
+                        class="w-full flex items-center gap-2 px-2 py-2 text-left opacity-60 hover:opacity-80 transition-opacity"
+                      >
+                        <span class="text-xs text-gray-500 font-bold">🔒 Escribe cualquier métrica</span>
+                        <span class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.5 rounded font-black whitespace-nowrap">Desbloquear PRO</span>
+                      </button>
                     </div>
                   </div>
                 </transition>
@@ -3145,6 +4571,41 @@ const exportPdf = () => {
                   </span>
                 </button>
               </div>
+              
+              <!-- Global Subdivisions Toggle (visible per-score in sidebar) -->
+              <div class="w-full mt-2">
+                <label class="flex items-center justify-between gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors" title="Mostrar/ocultar subdivisiones en todos los compases">
+                  <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-tight">‖ Sub</span>
+                  <div class="relative">
+                    <input 
+                      type="checkbox" 
+                      :checked="globalShowSubdivisions"
+                      @change="toggleAllSubdivisions($event.target.checked)"
+                      class="sr-only peer"
+                    >
+                    <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#34C759]"></div>
+                  </div>
+                </label>
+              </div>
+
+              <!-- Global showObligado (Modo Rítmico / Ritmo Armónico) Toggle -->
+              <div class="w-full mt-2">
+                <label class="flex items-center justify-between gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors" title="Modo Rítmico: Los acordes respetarán la duración exacta de las figuras">
+                  <div class="flex flex-col text-left">
+                    <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-none">♩ Ritmo</span>
+                    <span class="text-[7.5px] text-gray-400 font-bold leading-none mt-0.5">Armónico</span>
+                  </div>
+                  <div class="relative">
+                    <input 
+                      type="checkbox" 
+                      :checked="globalShowObligado"
+                      @change="toggleGlobalShowObligado($event.target.checked)"
+                      class="sr-only peer"
+                    >
+                    <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#34C759]"></div>
+                  </div>
+                </label>
+              </div>
             </div>
             
             <!-- MEASURES SYSTEMS GRID -->
@@ -3176,7 +4637,7 @@ const exportPdf = () => {
                 v-for="(system, sIdx) in systems" 
                 :key="system.id"
                 class="system-row gap-x-3 gap-y-10 w-full relative"
-                :style="{ gridTemplateColumns: `repeat(${getSystemColumnCount(system, sIdx)}, minmax(0, 1fr))` }"
+                :class="{ 'z-30': isSystemActive(system), 'z-10': !isSystemActive(system) }"
               >
                 <template v-for="(measure, mIdx) in system.measures" :key="measure.id">
                   
@@ -3200,6 +4661,27 @@ const exportPdf = () => {
                       </span>
                     </button>
                   </div>
+
+                  <!-- Recuadro de nueva métrica local (Between measures, only in PRO, skip first displayed measure) -->
+                  <div 
+                    v-if="currentPlan === 'PRO' && measure.timeSignature && measure.displayedMeasureIndex > 0 && (measure.timeSignature.beats !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).beats || measure.timeSignature.unit !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).unit)"
+                    class="flex flex-col items-center justify-center pt-2 flex-shrink-0 select-none text-center min-w-[64px] md:min-w-[72px] max-w-[90px] h-28 self-center animate-scale-up"
+                  >
+                    <button 
+                      @click.stop="openLocalMetricInfo(measure)"
+                      class="flex flex-col items-center p-1.5 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-violet-500 active:scale-[0.97] transition-all w-full text-center shadow-sm animate-pulse-subtle"
+                    >
+                      <span class="text-[7.5px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Métrica</span>
+                      <div class="flex flex-col items-center leading-none">
+                        <div class="text-xl md:text-2xl font-serif font-black text-gray-850 flex items-center justify-center">
+                          <span>{{ measure.timeSignature.beats }}</span>
+                        </div>
+                        <div class="w-4 h-0.5 bg-gray-400 my-0.5 transition-colors"></div>
+                        <div class="text-xl md:text-2xl font-serif font-black text-gray-850">{{ measure.timeSignature.unit }}</div>
+                      </div>
+                    </button>
+                  </div>
+
                   <!-- Measure Card -->
                   <div 
                     class="relative bg-white border-2 border-gray-300 rounded-lg flex overflow-visible h-28 shadow-sm transition-all hover:border-[#34C759] group"
@@ -3209,10 +4691,9 @@ const exportPdf = () => {
                       'border-[#a78bfa] hover:border-[#8b5cf6]': measure.isExpandedCopy,
                       'border-[#34C759] bg-[#34C759]/5': isSelectionMode && isMeasureSelected(measure.originalMeasureIndex) && currentPlan === 'FREE',
                       'border-violet-500 bg-violet-50/50 shadow-md shadow-violet-100': isSelectionMode && isMeasureSelected(measure.originalMeasureIndex) && currentPlan === 'PRO',
-                      'md:col-span-3 lg:col-span-3': isMeasureSixteenth(measure),
-                      'md:col-span-2 lg:col-span-2': isMeasureDense(measure) && !isMeasureSixteenth(measure),
-                      'z-40': activeRhythmSelector && activeRhythmSelector.measureIndex === measure.originalMeasureIndex
+                      'z-40': isRhythmSelectorActiveForMeasure(measure.originalMeasureIndex)
                     }"
+                    :style="getMeasureFlexStyle(measure)"
                   >
                     <!-- Selection Mode Overlay -->
                     <div 
@@ -3287,14 +4768,43 @@ const exportPdf = () => {
                     >⚙️</button>
                     
                     <!-- MEASURE INDEX & PROJECTION BADGE -->
-                    <div class="absolute bottom-1 left-2 text-[10px] font-bold text-gray-300 pointer-events-none flex items-center gap-1.5 z-10">
+                    <div class="absolute bottom-1 left-2 text-[10px] font-bold text-gray-300 pointer-events-none flex items-center gap-1.5 z-10 select-none">
                       <span>#{{ measure.displayedMeasureIndex + 1 }}</span>
                       <span v-if="measure.isExpandedCopy" class="text-violet-600 font-extrabold bg-violet-50 px-1 rounded-sm border border-violet-100 text-[9px] scale-90 origin-left">
                         Original {{ measure.originalMeasureIndex + 1 }} (Vta. {{ measure.displayPass }})
                       </span>
+                      
+                      <!-- Auto Subdivision Badge -->
+                      <template v-if="measure.showSubdivisions !== false && getMeasureTimeSignature(measure).unit === 8">
+                        <!-- Match -->
+                        <span 
+                          v-if="analyzeMeasureSubdivision(measure).type === 'match'"
+                          class="bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 text-[8.5px] font-black rounded-md flex items-center gap-0.5 animate-scale-up"
+                          title="Subdivisión detectada automáticamente"
+                        >
+                          ✔ Sub: {{ analyzeMeasureSubdivision(measure).pattern.join('+') }}
+                        </span>
+                        <!-- Ambiguous Match -->
+                        <span 
+                          v-else-if="analyzeMeasureSubdivision(measure).type === 'ambiguous_match'"
+                          class="bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 text-[8.5px] font-black rounded-md flex items-center gap-0.5 animate-scale-up cursor-help"
+                          :title="'Podría completarse como: ' + analyzeMeasureSubdivision(measure).matchingPatterns.map(p => p.join('+')).join(' o ')"
+                        >
+                          💡 Podría ser: {{ analyzeMeasureSubdivision(measure).matchingPatterns[0].join('+') }}
+                        </span>
+                        <!-- Inconsistent -->
+                        <span 
+                          v-else-if="analyzeMeasureSubdivision(measure).type === 'inconsistent'"
+                          class="bg-red-50 text-red-700 border border-red-200 px-1.5 py-0.5 text-[8.5px] font-black rounded-md flex items-center gap-0.5 animate-scale-up"
+                          :title="analyzeMeasureSubdivision(measure).message"
+                        >
+                          ⚠️ Ritmo irregular
+                        </span>
+                      </template>
+
                       <!-- Measure groove override indicator -->
                       <div 
-                        v-if="measure.groove && measure.groove !== 'global'" 
+                        v-if="measure.groove && measure.groove !== 'global'"  
                         class="bg-violet-100 text-violet-750 border border-violet-200 px-1.5 py-0.5 text-[8px] font-black rounded uppercase tracking-wide pointer-events-auto"
                         title="Anulación de groove en este compás"
                       >
@@ -3306,7 +4816,7 @@ const exportPdf = () => {
                     <div class="flex-1 flex z-0 relative ml-4 mr-4">
                       <!-- Center horizontal line -->
                       <div class="absolute top-1/2 left-0 right-0 h-px bg-gray-200 -translate-y-1/2 pointer-events-none z-0"></div>
-                      
+
                       <!-- SVG Overlay for Ties (Ligados) -->
                       <svg 
                         v-if="currentPlan === 'PRO'"
@@ -3325,168 +4835,125 @@ const exportPdf = () => {
                           class="tie-arc transition-all duration-300"
                         />
                       </svg>
-
-                      <div 
-                        v-for="(beat, bIdx) in measure.beats.slice(0, timeSignature)" 
-                        :key="bIdx"
-                        class="flex h-full z-10 relative m-0.5"
-                        :style="{ flex: getBeatFlexGrow(measure, beat, bIdx) }"
-                      >
-                        <!-- Normal Beat -->
-                        <div
-                          v-if="getEffectiveRhythm(measure, beat, bIdx) === 'quarter'"
-                          @click.stop="clickBeat(measure.originalMeasureIndex, bIdx, measure.displayedMeasureIndex)"
-                          class="w-full h-full flex flex-col items-center justify-center active:bg-[#34C759]/10 hover:bg-[#34C759]/5 relative transition-colors rounded-lg group/beat cursor-pointer"
-                        >
-                          <span :class="[getMeasureFontSizeClass(measure), 'text-gray-800 leading-none mb-1 group-hover/beat:scale-105 group-hover/beat:text-[#34C759] transition-transform']">
-                            {{ beat.root ? formatDisplayChord(beat) : '' }}
-                          </span>
-                          <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-px h-6 bg-gray-300 transform rotate-12 group-hover/beat:opacity-0" v-if="!beat.root"></div>
-                          
-                          <!-- Beat override icon -->
-                          <span 
-                            v-if="hasBeatRhythmOverride(measure, beat, bIdx)" 
-                            class="text-[9px] font-black text-violet-600 absolute top-1 right-2 select-none"
-                            title="Anulación de ritmo en este acorde"
-                          >
-                            {{ getSubdivisionIcon(beat.harmonicRhythm) }}
-                          </span>
-
-                          <!-- Tiny Rhythm edit button -->
-                          <button 
-                            @click.stop="openRhythmSelector(measure.originalMeasureIndex, bIdx)"
-                            class="absolute top-1 right-1 text-[9px] text-[#34C759]/50 hover:text-[#34C759] hover:scale-110 active:scale-95 transition-all opacity-0 group-hover/beat:opacity-100 z-20 w-4 h-4 flex items-center justify-center bg-gray-50 hover:bg-gray-100 rounded border border-gray-200/80 shadow-sm"
-                            title="Cambiar figura rítmica"
-                          >
-                            ✏️
-                          </button>
-
-                          <!-- Rhythm Selector Popover for Normal Beat -->
-                          <transition name="dropdown">
-                            <div 
-                              v-if="activeRhythmSelector && activeRhythmSelector.measureIndex === measure.originalMeasureIndex && activeRhythmSelector.beatIndex === bIdx"
-                              class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-[320px] max-h-[420px] overflow-y-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-3 z-50 flex flex-col gap-2 rhythm-popover-container text-white text-left font-sans cursor-default scrollbar-thin scrollbar-thumb-slate-700"
-                              @click.stop
-                            >
-                              <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none">Figuras Básicas</div>
-                              <div class="grid grid-cols-2 gap-1.5">
-                                <button 
-                                  v-for="fig in RHYTHM_FIGURES.filter(f => f.value !== 'sixteenth')" 
-                                  :key="fig.value"
-                                  @click.stop="selectRhythmFigure(fig.value)"
-                                  class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
-                                  :class="getEffectiveRhythm(measure, beat, bIdx) === fig.value ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' : 'text-slate-200 bg-slate-850/50 border border-transparent'"
-                                >
-                                  <div class="flex items-center gap-1.5">
-                                    <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value)"></svg>
-                                    <span v-if="fig.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black shrink-0">PRO</span>
-                                  </div>
-                                  <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
-                                </button>
-                              </div>
-                              
-                              <div class="border-t border-slate-800/80 my-1"></div>
-                              
-                              <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
-                                <span>♬</span> <span>Familia de Semicorcheas</span>
-                                <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black uppercase tracking-wide">PRO</span>
-                              </div>
-                              <div class="flex flex-col gap-1">
-                                <button 
-                                  v-for="(pat, key) in SIXTEENTH_PATTERNS" 
-                                  :key="key"
-                                  @click.stop="selectSixteenthPatternWrapper(measure, beat, key)"
-                                  class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
-                                  :class="getEffectiveRhythm(measure, beat, bIdx) === 'sixteenth' && (beat.sixteenthPattern === key || (!beat.sixteenthPattern && key === '4_semi'))
-                                    ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
-                                    : 'text-slate-200 bg-slate-850/30 border border-transparent'"
-                                >
-                                  <div class="flex-1 min-w-0 flex flex-col justify-center">
-                                    <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
-                                    <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ pat.label }}</span>
-                                  </div>
-                                  <span v-if="getEffectiveRhythm(measure, beat, bIdx) === 'sixteenth' && (beat.sixteenthPattern === key || (!beat.sixteenthPattern && key === '4_semi'))" class="text-[#34C759] text-xs font-black shrink-0 ml-2">✓</span>
-                                </button>
-                              </div>
-                            </div>
-                          </transition>
-                        </div>
-                        <!-- Subdivided Beat -->
+                      
+                      <template v-for="state in getMergedBeats(measure)" :key="state.index">
                         <div 
-                          v-else
-                          class="w-full h-full flex flex-col border border-gray-200 rounded-lg overflow-visible bg-white relative shadow-sm"
+                          v-if="!state.isMerged"
+                          class="flex h-full z-10 relative m-0.5 beat-container"
+                          :style="{ 
+                            flex: currentPlan === 'PRO' ? `${state.durationSlots} ${state.durationSlots} 0%` : getBeatFlexGrow(measure, state.beat, state.index),
+                            minWidth: `${getBeatMinWidth(measure, state.beat, state)}px`
+                          }"
+                          :class="{
+                            'bg-violet-600/[0.03] border-y border-violet-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).groupIndex % 2 === 0,
+                            'bg-indigo-600/[0.03] border-y border-indigo-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).groupIndex % 2 !== 0,
+                            'rounded-l-lg border-l border-violet-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst,
+                            'rounded-r-lg border-r border-violet-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isLast,
+                            'ml-2.5': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0,
+                            'ml-2': currentPlan === 'PRO' && measure.showSubdivisions === false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0
+                          }"
                         >
-                          <!-- SVG Rhythmic Beam Display with Click to Edit Rhythm -->
+                          <!-- Group separator line -->
                           <div 
-                            @click.stop="openRhythmSelector(measure.originalMeasureIndex, bIdx)"
-                            class="h-6 w-full bg-gray-50/70 hover:bg-[#34C759]/10 border-b border-gray-100 flex items-center justify-center select-none relative group/rhythm transition-colors outline-none cursor-pointer shrink-0"
-                            title="Cambiar figura rítmica del pulso"
+                            v-if="currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0"
+                            class="absolute left-0 top-1.5 bottom-1.5 w-[2px] bg-violet-400/80 -ml-[6px] rounded-full pointer-events-none"
+                          ></div>
+
+                          <div 
+                            v-if="state.durationSlots > 1" 
+                            class="absolute inset-0 flex pointer-events-none z-0 transition-opacity duration-200"
+                            :class="measure.showSubdivisions !== false ? 'opacity-20' : 'opacity-0 group-hover:opacity-10'"
                           >
-                            <svg class="h-4 w-full text-[#34C759]" viewBox="0 0 100 24" preserveAspectRatio="none">
-                              <!-- eighth -->
-                              <template v-if="getEffectiveRhythm(measure, beat, bIdx) === 'eighth'">
-                                <circle cx="25" cy="17" r="2.5" fill="currentColor"/>
-                                <circle cx="75" cy="17" r="2.5" fill="currentColor"/>
-                                <line x1="25" y1="17" x2="25" y2="5" stroke="currentColor" stroke-width="1.5"/>
-                                <line x1="75" y1="17" x2="75" y2="5" stroke="currentColor" stroke-width="1.5"/>
-                                <line x1="25" y1="5" x2="75" y2="5" stroke="currentColor" stroke-width="2.5"/>
-                              </template>
-                              <!-- offbeat -->
-                              <template v-else-if="getEffectiveRhythm(measure, beat, bIdx) === 'offbeat'">
-                                <g v-html="getEighthRestSVG(20)"></g>
-                                <circle cx="75" cy="17" r="2.5" fill="currentColor"/>
-                                <line x1="75" y1="17" x2="75" y2="5" stroke="currentColor" stroke-width="1.5"/>
-                                <path d="M 75 5 Q 82 9 80 15" stroke="currentColor" stroke-width="1.5" fill="none"/>
-                              </template>
-                              <!-- sixteenth -->
-                              <template v-else-if="getEffectiveRhythm(measure, beat, bIdx) === 'sixteenth'">
-                                <g v-html="getRhythmIconSVG(beat.sixteenthPattern || '4_semi')"></g>
-                              </template>
-                              <!-- triplet -->
-                              <template v-else-if="getEffectiveRhythm(measure, beat, bIdx) === 'triplet'">
-                                <circle cx="16.6" cy="17" r="2.2" fill="currentColor"/>
-                                <circle cx="50" cy="17" r="2.2" fill="currentColor"/>
-                                <circle cx="83.3" cy="17" r="2.2" fill="currentColor"/>
-                                <line x1="16.6" y1="17" x2="16.6" y2="6" stroke="currentColor" stroke-width="1.3"/>
-                                <line x1="50" y1="17" x2="50" y2="6" stroke="currentColor" stroke-width="1.3"/>
-                                <line x1="83.3" y1="17" x2="83.3" y2="6" stroke="currentColor" stroke-width="1.3"/>
-                                <line x1="16.6" y1="6" x2="83.3" y2="6" stroke="currentColor" stroke-width="2"/>
-                                <text x="50" y="5" font-size="6" font-weight="950" text-anchor="middle" fill="currentColor" class="font-sans">3</text>
-                              </template>
-                              <!-- quintuplet -->
-                              <template v-else-if="getEffectiveRhythm(measure, beat, bIdx) === 'quintuplet'">
-                                <circle cx="10" cy="17" r="1.8" fill="currentColor"/>
-                                <circle cx="30" cy="17" r="1.8" fill="currentColor"/>
-                                <circle cx="50" cy="17" r="1.8" fill="currentColor"/>
-                                <circle cx="70" cy="17" r="1.8" fill="currentColor"/>
-                                <circle cx="90" cy="17" r="1.8" fill="currentColor"/>
-                                <line x1="10" y1="17" x2="10" y2="7" stroke="currentColor" stroke-width="1"/>
-                                <line x1="30" y1="17" x2="30" y2="7" stroke="currentColor" stroke-width="1"/>
-                                <line x1="50" y1="17" x2="50" y2="7" stroke="currentColor" stroke-width="1"/>
-                                <line x1="70" y1="17" x2="70" y2="7" stroke="currentColor" stroke-width="1"/>
-                                <line x1="90" y1="17" x2="90" y2="7" stroke="currentColor" stroke-width="1"/>
-                                <line x1="10" y1="7" x2="90" y2="7" stroke="currentColor" stroke-width="1.8"/>
-                                <line x1="10" y1="10" x2="90" y2="10" stroke="currentColor" stroke-width="1.8"/>
-                                <text x="50" y="6" font-size="6" font-weight="950" text-anchor="middle" fill="currentColor" class="font-sans">5</text>
-                              </template>
-                            </svg>
-                            <span class="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-[#34C759]/75 group-hover/rhythm:text-[#34C759] group-hover/rhythm:scale-110 transition-all font-bold">✏️</span>
+                            <div v-for="n in state.durationSlots - 1" :key="n" class="flex-1 border-r border-gray-400/50"></div>
+                            <div class="flex-1"></div>
+                          </div>
+
+                          <!-- Normal Beat -->
+                          <div
+                            v-if="!measure.showObligado || !isSubdividedRhythm(getEffectiveRhythm(measure, state.beat, state.index), getMeasureTimeSignature(measure).unit === 8, state.beat)"
+                            @click.stop="clickBeat(measure.originalMeasureIndex, state.index, measure.displayedMeasureIndex)"
+                            class="w-full h-full flex flex-col items-center justify-center active:bg-[#34C759]/10 hover:bg-[#34C759]/5 relative transition-colors rounded-lg group/beat cursor-pointer"
+                          >
+                            <!-- Chord name wrapped in white badge for clean margins and readability -->
+                            <div 
+                              v-if="state.beat.root"
+                              class="bg-white/95 border border-gray-200/80 rounded-xl px-3 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 group-hover/beat:scale-105 transition-transform animate-scale-up"
+                            >
+                              <div class="flex flex-col items-center justify-center">
+                                <span :class="[getMeasureFontSizeClass(measure), 'text-gray-800 font-black leading-none']">
+                                  {{ splitChordDisplay(state.beat).main }}
+                                </span>
+                                <span v-if="splitChordDisplay(state.beat).bass" class="text-xs text-gray-500 font-bold leading-none mt-0.5">
+                                  {{ splitChordDisplay(state.beat).bass }}
+                                </span>
+                              </div>
+                              <!-- Obligado symbol display -->
+                              <span 
+                                v-if="measure.showObligado" 
+                                class="text-xs text-violet-600 font-mono leading-none mt-0.5"
+                                title="Obligado Rítmico"
+                              >
+                                {{ getRhythmDisplayIcon(state.beat.harmonicRhythm || 'auto', measure) }}
+                              </span>
+                            </div>
+                            <!-- Rest Badge / Slash line -->
+                            <template v-if="!state.beat.root">
+                              <div 
+                                v-if="measure.showObligado && state.beat.harmonicRhythm"
+                                class="bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 opacity-60 hover:scale-105 transition-transform"
+                              >
+                                <span class="text-gray-400 font-bold leading-none text-[11px]">𝄾</span>
+                                <span class="text-[8px] text-gray-400 font-mono leading-none mt-0.5" title="Silencio de ritmo armónico">
+                                  {{ getRhythmDisplayIcon(state.beat.harmonicRhythm, measure) }}
+                                </span>
+                              </div>
+                              <div 
+                                v-else
+                                class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-px h-6 bg-gray-300 transform rotate-12 group-hover/beat:opacity-0"
+                              ></div>
+                            </template>
                             
-                            <!-- Rhythm Selector Popover for Subdivided Beat -->
+                            <!-- Beat override icon -->
+                            <span 
+                              v-if="hasBeatRhythmOverride(measure, state.beat, state.index)" 
+                              class="text-[9px] font-black text-violet-600 absolute top-1 right-2 select-none pointer-events-none transition-opacity duration-200 group-hover/beat:opacity-0"
+                              title="Anulación de ritmo en este acorde"
+                            >
+                              {{ getSubdivisionIcon(state.beat.harmonicRhythm) }}
+                            </span>
+
+                            <!-- Tiny Rhythm edit button (only visible when Ritmo Armónico is ON) -->
+                            <button 
+                              v-if="measure.showObligado"
+                              @click.stop="openRhythmSelector(measure.originalMeasureIndex, state.index)"
+                              class="absolute top-1 right-1 text-[9px] text-[#34C759]/50 hover:text-[#34C759] hover:scale-110 active:scale-95 transition-all opacity-0 group-hover/beat:opacity-100 z-20 w-4 h-4 flex items-center justify-center bg-gray-550 hover:bg-gray-100 rounded border border-gray-200/80 shadow-sm"
+                              title="Cambiar figura rítmica"
+                            >
+                              ✏️
+                            </button>
+
+                            <!-- Rhythm Selector Popover for Normal Beat -->
                             <transition name="dropdown">
                               <div 
-                                v-if="activeRhythmSelector && activeRhythmSelector.measureIndex === measure.originalMeasureIndex && activeRhythmSelector.beatIndex === bIdx"
+                                v-if="activeRhythmSelector && activeRhythmSelector.measureIndex === measure.originalMeasureIndex && activeRhythmSelector.beatIndex === state.index"
                                 class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-[320px] max-h-[420px] overflow-y-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-3 z-50 flex flex-col gap-2 rhythm-popover-container text-white text-left font-sans cursor-default scrollbar-thin scrollbar-thumb-slate-700"
                                 @click.stop
                               >
                                 <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none">Figuras Básicas</div>
                                 <div class="grid grid-cols-2 gap-1.5">
                                   <button 
-                                    v-for="fig in RHYTHM_FIGURES.filter(f => f.value !== 'sixteenth')" 
+                                    v-for="fig in getAvailableRhythmFigures(measure).filter(f => f.value !== 'sixteenth')" 
                                     :key="fig.value"
                                     @click.stop="selectRhythmFigure(fig.value)"
                                     class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
-                                    :class="getEffectiveRhythm(measure, beat, bIdx) === fig.value ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' : 'text-slate-200 bg-slate-850/50 border border-transparent'"
+                                    :class="[
+                                      getEffectiveRhythm(measure, state.beat, state.index) === fig.value 
+                                        ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
+                                        : 'text-slate-200 bg-slate-850/50 border border-transparent',
+                                      !isFigureValid(fig.value, measure, state.index)
+                                        ? 'opacity-40 cursor-not-allowed'
+                                        : ''
+                                    ]"
                                   >
                                     <div class="flex items-center gap-1.5">
                                       <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value)"></svg>
@@ -3499,16 +4966,16 @@ const exportPdf = () => {
                                 <div class="border-t border-slate-800/80 my-1"></div>
                                 
                                 <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
-                                  <span>♬</span> <span>Familia de Semicorcheas</span>
+                                  <span>♬</span> <span>{{ getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Semicorcheas' }}</span>
                                   <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black uppercase tracking-wide">PRO</span>
                                 </div>
                                 <div class="flex flex-col gap-1">
                                   <button 
-                                    v-for="(pat, key) in SIXTEENTH_PATTERNS" 
+                                    v-for="(pat, key) in (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS)" 
                                     :key="key"
-                                    @click.stop="selectSixteenthPatternWrapper(measure, beat, key)"
+                                    @click.stop="selectSixteenthPatternWrapper(measure, state.beat, key)"
                                     class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
-                                    :class="getEffectiveRhythm(measure, beat, bIdx) === 'sixteenth' && (beat.sixteenthPattern === key || (!beat.sixteenthPattern && key === '4_semi'))
+                                    :class="isPatternActive(measure, state.beat, state.index, key)
                                       ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
                                       : 'text-slate-200 bg-slate-850/30 border border-transparent'"
                                   >
@@ -3516,61 +4983,197 @@ const exportPdf = () => {
                                       <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
                                       <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ pat.label }}</span>
                                     </div>
-                                    <span v-if="getEffectiveRhythm(measure, beat, bIdx) === 'sixteenth' && (beat.sixteenthPattern === key || (!beat.sixteenthPattern && key === '4_semi'))" class="text-[#34C759] text-xs font-black shrink-0 ml-2">✓</span>
+                                    <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#34C759] text-xs font-black shrink-0 ml-2">✓</span>
                                   </button>
                                 </div>
                               </div>
                             </transition>
                           </div>
-                          <!-- Subdivided Slots -->
-                          <div class="flex-1 flex divide-x divide-gray-200">
-                            <button
-                              v-for="sub in getVisibleSlotsForRender(measure, beat, bIdx)"
-                              :key="sub.originalIndex"
-                              :disabled="getEffectiveRhythm(measure, beat, bIdx) === 'offbeat' && sub.originalIndex === 0"
-                              @click.stop="clickBeat(measure.originalMeasureIndex, bIdx, measure.displayedMeasureIndex, sub.originalIndex)"
-                              class="h-full flex flex-col items-center justify-center relative transition-colors"
-                              :style="{ flexGrow: sub.flexGrow }"
-                              :class="[
-                                getEffectiveRhythm(measure, beat, bIdx) === 'offbeat' && sub.originalIndex === 0 
-                                  ? 'bg-gray-100 cursor-not-allowed text-gray-450' 
-                                  : 'active:bg-[#34C759]/10 hover:bg-[#34C759]/5 text-gray-800'
-                              ]"
+                          <!-- Subdivided Beat -->
+                          <div 
+                            v-else
+                            class="w-full h-full flex flex-col border border-gray-200 rounded-lg overflow-visible bg-white relative shadow-sm group/sub-beat"
+                          >
+                            <!-- SVG Rhythmic Beam Display with Click to Edit Rhythm -->
+                            <div 
+                              @click.stop="openRhythmSelector(measure.originalMeasureIndex, state.index)"
+                              class="h-6 w-full bg-gray-50/70 hover:bg-[#34C759]/10 border-b border-gray-100 flex items-center justify-center select-none relative group/rhythm transition-colors outline-none cursor-pointer shrink-0"
+                              title="Cambiar figura rítmica del pulso"
                             >
-                              <!-- Mini override rhythm indicator over chord -->
-                              <span 
-                                v-if="hasBeatRhythmOverride(measure, beat, bIdx) && !sub.isSilence"
-                                class="text-[9px] font-black text-violet-600 leading-none scale-75 select-none absolute top-1"
-                                title="Anulación de ritmo en este acorde"
+                              <svg 
+                                class="h-4 text-[#34C759] transition-all duration-200" 
+                                :class="measure.showSubdivisions !== false ? 'w-full' : (getVisibleSlotsForRender(measure, state.beat, state.index).length === 1 ? 'w-16 mx-auto' : 'w-full')"
+                                :style="{ opacity: (measure.showSubdivisions === false && state.index > 0) ? 0.65 : 1 }"
+                                viewBox="0 0 100 24" 
+                                preserveAspectRatio="none"
                               >
-                                {{ getSubdivisionIcon(beat.harmonicRhythm) }}
-                              </span>
-                              <!-- Silence indicator for offbeat (contratiempo) or empty subdivisions -->
-                              <div 
-                                v-if="getEffectiveRhythm(measure, beat, bIdx) === 'offbeat' && sub.originalIndex === 0" 
-                                class="flex flex-col items-center justify-center pt-1"
-                              >
-                                <span class="text-[9px] font-bold text-gray-400 select-none">𝄾</span>
-                                <span class="text-[7px] font-black text-gray-300 uppercase tracking-tight scale-90 mt-0.5">Silencio</span>
-                              </div>
-                              <span 
-                                v-else
+                                <!-- eighth -->
+                                <template v-if="getEffectiveRhythm(measure, state.beat, state.index) === 'eighth'">
+                                  <template v-if="getMeasureTimeSignature(measure).unit === 8 && state.beat.eighthPattern">
+                                    <g v-html="getRhythmIconSVG(state.beat.eighthPattern)"></g>
+                                  </template>
+                                  <template v-else>
+                                    <circle cx="25" cy="17" r="2.5" fill="currentColor"/>
+                                    <circle cx="75" cy="17" r="2.5" fill="currentColor"/>
+                                    <line x1="25" y1="17" x2="25" y2="5" stroke="currentColor" stroke-width="1.5"/>
+                                    <line x1="75" y1="17" x2="75" y2="5" stroke="currentColor" stroke-width="1.5"/>
+                                    <line x1="25" y1="5" x2="75" y2="5" stroke="currentColor" stroke-width="2.5"/>
+                                  </template>
+                                </template>
+                                <!-- offbeat -->
+                                <template v-else-if="getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat'">
+                                  <g v-html="getEighthRestSVG(20)"></g>
+                                  <circle cx="75" cy="17" r="2.5" fill="currentColor"/>
+                                  <line x1="75" y1="17" x2="75" y2="5" stroke="currentColor" stroke-width="1.5"/>
+                                  <path d="M 75 5 Q 82 9 80 15" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                                </template>
+                                <!-- sixteenth -->
+                                <template v-else-if="getEffectiveRhythm(measure, state.beat, state.index) === 'sixteenth'">
+                                  <g v-html="getRhythmIconSVG(state.beat.sixteenthPattern || '4_semi')"></g>
+                                </template>
+                                <!-- triplet -->
+                                <template v-else-if="getEffectiveRhythm(measure, state.beat, state.index) === 'triplet'">
+                                  <circle cx="16.6" cy="17" r="2.2" fill="currentColor"/>
+                                  <circle cx="50" cy="17" r="2.2" fill="currentColor"/>
+                                  <circle cx="83.3" cy="17" r="2.2" fill="currentColor"/>
+                                  <line x1="16.6" y1="17" x2="16.6" y2="6" stroke="currentColor" stroke-width="1.3"/>
+                                  <line x1="50" y1="17" x2="50" y2="6" stroke="currentColor" stroke-width="1.3"/>
+                                  <line x1="83.3" y1="17" x2="83.3" y2="6" stroke="currentColor" stroke-width="1.3"/>
+                                  <line x1="16.6" y1="6" x2="83.3" y2="6" stroke="currentColor" stroke-width="2"/>
+                                  <text x="50" y="5" font-size="6" font-weight="950" text-anchor="middle" fill="currentColor" class="font-sans">3</text>
+                                </template>
+                                <!-- quintuplet -->
+                                <template v-else-if="getEffectiveRhythm(measure, state.beat, state.index) === 'quintuplet'">
+                                  <circle cx="10" cy="17" r="1.8" fill="currentColor"/>
+                                  <circle cx="30" cy="17" r="1.8" fill="currentColor"/>
+                                  <circle cx="50" cy="17" r="1.8" fill="currentColor"/>
+                                  <circle cx="70" cy="17" r="1.8" fill="currentColor"/>
+                                  <circle cx="90" cy="17" r="1.8" fill="currentColor"/>
+                                  <line x1="10" y1="17" x2="10" y2="7" stroke="currentColor" stroke-width="1"/>
+                                  <line x1="30" y1="17" x2="30" y2="7" stroke="currentColor" stroke-width="1"/>
+                                  <line x1="50" y1="17" x2="50" y2="7" stroke="currentColor" stroke-width="1"/>
+                                  <line x1="70" y1="17" x2="70" y2="7" stroke="currentColor" stroke-width="1"/>
+                                  <line x1="90" y1="17" x2="90" y2="7" stroke="currentColor" stroke-width="1"/>
+                                  <line x1="10" y1="7" x2="90" y2="7" stroke="currentColor" stroke-width="1.8"/>
+                                  <line x1="10" y1="10" x2="90" y2="10" stroke="currentColor" stroke-width="1.8"/>
+                                  <text x="50" y="6" font-size="6" font-weight="950" text-anchor="middle" fill="currentColor" class="font-sans">5</text>
+                                </template>
+                              </svg>
+                              <span class="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-[#34C759]/75 group-hover/rhythm:text-[#34C759] group-hover/rhythm:scale-110 transition-all font-bold">✏️</span>
+                              
+                              <!-- Rhythm Selector Popover for Subdivided Beat -->
+                              <transition name="dropdown">
+                                <div 
+                                  v-if="activeRhythmSelector && activeRhythmSelector.measureIndex === measure.originalMeasureIndex && activeRhythmSelector.beatIndex === state.index"
+                                  class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-[320px] max-h-[420px] overflow-y-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-3 z-50 flex flex-col gap-2 rhythm-popover-container text-white text-left font-sans cursor-default scrollbar-thin scrollbar-thumb-slate-700"
+                                  @click.stop
+                                >
+                                  <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none">Figuras Básicas</div>
+                                  <div class="grid grid-cols-2 gap-1.5">
+                                    <button 
+                                      v-for="fig in getAvailableRhythmFigures(measure).filter(f => f.value !== 'sixteenth')" 
+                                      :key="fig.value"
+                                      @click.stop="selectRhythmFigure(fig.value)"
+                                      class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
+                                      :class="[
+                                        getEffectiveRhythm(measure, state.beat, state.index) === fig.value 
+                                          ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
+                                          : 'text-slate-200 bg-slate-850/50 border border-transparent',
+                                        !isFigureValid(fig.value, measure, state.index)
+                                          ? 'opacity-40 cursor-not-allowed'
+                                          : ''
+                                      ]"
+                                    >
+                                      <div class="flex items-center gap-1.5">
+                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value)"></svg>
+                                        <span v-if="fig.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black shrink-0">PRO</span>
+                                      </div>
+                                      <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
+                                    </button>
+                                  </div>
+                                  
+                                  <div class="border-t border-slate-800/80 my-1"></div>
+                                  
+                                  <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
+                                    <span>♬</span> <span>{{ getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Semicorcheas' }}</span>
+                                    <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.2 rounded font-black uppercase tracking-wide">PRO</span>
+                                  </div>
+                                  <div class="flex flex-col gap-1">
+                                    <button 
+                                      v-for="(pat, key) in (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS)" 
+                                      :key="key"
+                                      @click.stop="selectSixteenthPatternWrapper(measure, state.beat, key)"
+                                      class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
+                                      :class="isPatternActive(measure, state.beat, state.index, key)
+                                        ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
+                                        : 'text-slate-200 bg-slate-850/30 border border-transparent'"
+                                    >
+                                      <div class="flex-1 min-w-0 flex flex-col justify-center">
+                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
+                                        <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ pat.label }}</span>
+                                      </div>
+                                      <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#34C759] text-xs font-black shrink-0 ml-2">✓</span>
+                                    </button>
+                                  </div>
+                                </div>
+                              </transition>
+                            </div>
+                            <!-- Subdivided Slots -->
+                            <div :class="['flex-1 flex', measure.showSubdivisions !== false ? 'divide-x divide-gray-200' : 'divide-x divide-transparent group-hover/sub-beat:divide-gray-200/40 transition-colors duration-200']">
+                              <button
+                                v-for="sub in getVisibleSlotsForRender(measure, state.beat, state.index)"
+                                :key="sub.originalIndex"
+                                :disabled="getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0"
+                                @click.stop="clickBeat(measure.originalMeasureIndex, state.index, measure.displayedMeasureIndex, sub.originalIndex)"
+                                class="h-full flex flex-col items-center justify-center relative transition-colors"
+                                :style="{ flexGrow: sub.flexGrow }"
                                 :class="[
-                                  getSubdivisionFontSizeClass(getEffectiveRhythm(measure, beat, bIdx) === 'sixteenth' ? (4 / sub.flexGrow) : getBeatSlots(measure, beat, bIdx).length),
-                                  'leading-none font-bold text-center mt-2 flex items-center justify-center gap-0.5'
+                                  getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0 
+                                    ? (measure.showSubdivisions !== false ? 'bg-gray-105 cursor-not-allowed text-gray-450' : 'bg-transparent cursor-not-allowed text-gray-400') 
+                                    : 'active:bg-[#34C759]/10 hover:bg-[#34C759]/5 text-gray-800'
                                 ]"
                               >
-                                <span>{{ sub.root ? formatDisplayChord(sub) : '𝄾' }}</span>
+                                <!-- Mini override rhythm indicator over chord -->
                                 <span 
-                                  v-if="sub.isSilence && sub.root" 
-                                  class="text-amber-500 text-[11px] animate-pulse cursor-help shrink-0" 
-                                  title="Advertencia: Acorde colocado en un silencio rítmico"
-                                >⚠️</span>
-                              </span>
-                            </button>
+                                  v-if="hasBeatRhythmOverride(measure, state.beat, state.index) && !sub.isSilence"
+                                  class="text-[9px] font-black text-violet-600 leading-none scale-75 select-none absolute top-1 pointer-events-none"
+                                  title="Anulación de ritmo en este acorde"
+                                >
+                                  {{ getSubdivisionIcon(state.beat.harmonicRhythm) }}
+                                </span>
+                                <!-- Silence indicator for offbeat (contratiempo) or empty subdivisions -->
+                                <div 
+                                  v-if="getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0" 
+                                  class="flex flex-col items-center justify-center pt-1"
+                                >
+                                  <span class="text-[9px] font-bold text-gray-400 select-none">𝄾</span>
+                                  <span class="text-[7px] font-black text-gray-300 uppercase tracking-tight scale-90 mt-0.5">Silencio</span>
+                                </div>
+                                <span 
+                                  v-else
+                                  :class="[
+                                    getSubdivisionFontSizeClass(getEffectiveRhythm(measure, state.beat, state.index) === 'sixteenth' ? (4 / sub.flexGrow) : getBeatSlots(measure, state.beat, state.index).length),
+                                    'leading-none font-bold text-center mt-2 flex items-center justify-center gap-0.5'
+                                  ]"
+                                >
+                                  <span v-if="!sub.root">𝄾</span>
+                                  <span v-else class="flex flex-col items-center justify-center leading-none">
+                                    <span>{{ splitChordDisplay(sub).main }}</span>
+                                    <span v-if="splitChordDisplay(sub).bass" class="text-[9px] text-gray-500 font-semibold mt-0.5">
+                                      {{ splitChordDisplay(sub).bass }}
+                                    </span>
+                                  </span>
+                                  <span 
+                                    v-if="sub.isSilence && sub.root" 
+                                    class="text-amber-500 text-[11px] animate-pulse cursor-help shrink-0" 
+                                    title="Advertencia: Acorde colocado en un silencio rítmico"
+                                  >⚠️</span>
+                                </span>
+                              </button>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      </template>
                     </div>
                     <!-- Bulb icon for suggestions (💡 Ampolleta de ideas) -->
                     <button 
@@ -3591,6 +5194,27 @@ const exportPdf = () => {
                     >
                       ↵
                     </button>
+                    <!-- strict mode completion badge -->
+                    <div 
+                      v-if="measure.showObligado && currentPlan === 'PRO'" 
+                      class="absolute bottom-1 right-2 z-20 flex items-center gap-1 select-none"
+                    >
+                      <span 
+                        v-if="getMeasureRemainingBeats(measure) === 0" 
+                        class="text-[9px] bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-md font-bold flex items-center gap-0.5"
+                        title="Compás completo"
+                      >
+                        ✔ Completo
+                      </span>
+                      <span 
+                        v-else
+                        class="text-[9px] bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1 cursor-pointer hover:bg-amber-100 transition-colors animate-pulse pointer-events-auto"
+                        @click.stop="autoCompleteMeasure(measure)"
+                        title="Haga clic para completar automáticamente con silencios"
+                      >
+                        ⚠️ Falta {{ getMeasureRemainingBeats(measure) }} {{ getMeasureTimeSignature(measure).unit === 8 ? 'corchea' : 'negra' }}{{ getMeasureRemainingBeats(measure) !== 1 ? 's' : '' }}
+                      </span>
+                    </div>
                   </div>
                 </template>
                 
@@ -3599,6 +5223,7 @@ const exportPdf = () => {
                   v-if="viewMode === 'compact' && sIdx === systems.length - 1 && (currentPlan === 'PRO' || measures.length < 20)"
                   @click="addMeasure"
                   class="h-28 border-2 border-dashed border-gray-300 bg-white/50 rounded-lg text-gray-400 flex items-center justify-center hover:bg-[#34C759]/5 hover:border-[#34C759] hover:text-[#34C759] transition-all group"
+                  :style="getAddButtonFlexStyle()"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
                 </button>
@@ -3607,6 +5232,7 @@ const exportPdf = () => {
                   v-if="viewMode === 'compact' && sIdx === systems.length - 1 && currentPlan === 'FREE' && measures.length >= 20"
                   @click="upgradeReason = 'limit'; isUpgradeModalOpen = true"
                   class="h-28 border-2 border-dashed border-violet-300 bg-violet-50/20 rounded-lg text-violet-500 flex flex-col gap-1 items-center justify-center hover:bg-violet-50/50 hover:border-violet-400 hover:text-violet-600 transition-all group px-4 text-center cursor-pointer"
+                  :style="getAddButtonFlexStyle()"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 group-hover:scale-110 transition-transform mb-0.5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                   <span class="text-xs font-black">20 compases max en FREE</span>
@@ -3836,7 +5462,7 @@ const exportPdf = () => {
         <div v-if="isMeasureOptionsOpen" @click.stop class="relative bg-[#F2F2F7] w-full rounded-t-[16px] shadow-2xl animate-slide-up-ios pb-safe z-10 flex flex-col max-h-[90vh]">
           
           <!-- MAIN MENU -->
-          <template v-if="!isKeyChangeSubMenuOpen">
+          <template v-if="!isKeyChangeSubMenuOpen && !isLocalMetricSubMenuOpen">
             <div class="bg-white px-4 py-4 flex items-center justify-between border-b border-gray-200 rounded-t-[16px] shrink-0">
               <button @click="isMeasureOptionsOpen = false" class="text-gray-500 text-[17px] font-medium">Cancelar</button>
               <h3 class="text-[17px] font-bold text-gray-900 pointer-events-none">Compás {{ selectedMeasureIndex + 1 }}</h3>
@@ -3908,6 +5534,61 @@ const exportPdf = () => {
                       <div class="w-2.5 h-2.5 rounded-full bg-white"></div>
                     </div>
                   </button>
+                </div>
+              </div>
+
+              <!-- Visualización y Educación (Subdivisiones y Obligado) -->
+              <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-4">
+                <span class="block text-xs font-bold text-gray-400 uppercase tracking-wider">🎓 Visualización / Ámbito Educativo</span>
+                
+                <div class="space-y-4 divide-y divide-gray-150">
+                  <!-- Subdivisiones Toggle -->
+                  <div class="flex items-center justify-between pt-1">
+                    <div>
+                      <span class="block text-[15px] font-bold text-gray-800">Subdivisiones de Compás</span>
+                      <span class="block text-[11px] text-gray-400 mt-0.5">Muestra las líneas de subdivisión (slashes) y agrupa acordes según su duración.</span>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer select-none">
+                      <input 
+                        type="checkbox" 
+                        v-model="tempShowSubdivisions" 
+                        class="sr-only peer"
+                      >
+                      <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#34C759]"></div>
+                    </label>
+                  </div>
+                  
+                  <!-- Obligado Rítmico Toggle -->
+                  <div class="flex items-center justify-between pt-3">
+                    <div>
+                      <span class="block text-[15px] font-bold text-gray-800">Obligado Rítmico (Modo Avanzado)</span>
+                      <span class="block text-[11px] text-gray-400 mt-0.5">Muestra figuras musicales asociadas a los acordes para cortes rítmicos.</span>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer select-none">
+                      <input 
+                        type="checkbox" 
+                        v-model="tempShowObligado" 
+                        class="sr-only peer"
+                      >
+                      <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#34C759]"></div>
+                    </label>
+                  </div>
+
+                  <!-- Status under Obligado Rítmico when ON -->
+                  <div v-if="tempShowObligado && currentPlan === 'PRO'" class="pt-3 border-t border-gray-150 flex flex-col gap-2">
+                    <div class="flex items-center justify-between text-xs">
+                      <span class="font-bold text-gray-500">Estado del Compás:</span>
+                      <span v-if="getMeasureRemainingBeats(measures[selectedMeasureIndex]) === 0" class="font-black text-green-600">✔ Compás completo</span>
+                      <span v-else class="font-black text-amber-600">⚠️ Faltan {{ getMeasureRemainingBeats(measures[selectedMeasureIndex]) }} {{ getMeasureTimeSignature(selectedMeasureIndex).unit === 8 ? 'corcheas' : 'negras' }}</span>
+                    </div>
+                    <button 
+                      v-if="getMeasureRemainingBeats(measures[selectedMeasureIndex]) > 0"
+                      @click="autoCompleteMeasure(measures[selectedMeasureIndex])"
+                      class="w-full py-2 bg-violet-600 text-white rounded-xl text-xs font-bold hover:bg-violet-750 active:scale-98 transition-all flex items-center justify-center gap-1 shadow-sm"
+                    >
+                      ✨ Completar compás con silencios
+                    </button>
+                  </div>
                 </div>
               </div>
               
@@ -3983,7 +5664,7 @@ const exportPdf = () => {
                 
                 <div class="space-y-2">
                   <button 
-                    v-for="(beat, idx) in (measures[selectedMeasureIndex] ? measures[selectedMeasureIndex].beats.slice(0, timeSignature) : [])"
+                    v-for="(beat, idx) in (measures[selectedMeasureIndex] ? measures[selectedMeasureIndex].beats.slice(0, getMeasureTimeSignature(selectedMeasureIndex).beats) : [])"
                     :key="idx"
                     @click="tempKeyChangeBeatIndex = idx; keyChangeStep = 2"
                     class="w-full flex items-center justify-between p-4 rounded-xl border text-left active:scale-98 transition-all hover:bg-gray-550 bg-white border-gray-200"
@@ -4097,16 +5778,46 @@ const exportPdf = () => {
                 </div>
               </div>
 
+              <!-- Métrica Personalizada (PRO) -->
+              <div class="pt-4 border-t border-gray-200 space-y-3">
+                <h5 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Métrica Personalizada (PRO)</h5>
+                <div class="flex items-center gap-3">
+                  <div class="flex-1">
+                    <label class="block text-[10px] text-gray-400 font-bold uppercase mb-1">Numerador</label>
+                    <input 
+                      type="number" 
+                      v-model.number="localMetricBeats" 
+                      @change="onLocalMetricCustomChange" 
+                      min="2" 
+                      max="16" 
+                      class="w-full px-3 py-2 border border-gray-200 rounded-xl text-center text-sm font-bold text-gray-800 focus:outline-none focus:border-violet-500 bg-white"
+                    />
+                  </div>
+                  <span class="text-xl font-black text-gray-400 self-end mb-1">/</span>
+                  <div class="flex-1">
+                    <label class="block text-[10px] text-gray-400 font-bold uppercase mb-1">Denominador</label>
+                    <select 
+                      v-model.number="localMetricUnit" 
+                      @change="onLocalMetricCustomChange" 
+                      class="w-full px-3 py-2 border border-gray-200 rounded-xl text-center text-sm font-bold text-gray-800 focus:outline-none focus:border-violet-500 bg-white"
+                    >
+                      <option :value="4">4 (Negra)</option>
+                      <option :value="8">8 (Corchea)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               <!-- Advanced metric groupings selection -->
               <div v-if="isAdvancedLocalMetric" class="space-y-3 pt-4 border-t border-gray-200">
                 <h5 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Agrupamiento de Pulsos (Subdivisión)</h5>
-                <p class="text-[11px] text-gray-500">Elige cómo se agruparán visualmente los {{ localMetricBeats }} pulsos en este compás:</p>
+                <p class="text-[11px] text-gray-555">Elige cómo se agruparán visualmente los {{ localMetricBeats }} pulsos en este compás:</p>
                 
-                <div class="grid grid-cols-2 gap-2">
+                <div class="grid grid-cols-2 gap-2" v-if="getMetricGroupingPresets(localMetricBeats, localMetricUnit).length > 0">
                   <button
                     v-for="preset in getMetricGroupingPresets(localMetricBeats, localMetricUnit)"
                     :key="preset.join('+')"
-                    @click="localMetricGrouping = preset"
+                    @click="localMetricGrouping = preset; tempLocalGroupingStr = preset.join('+')"
                     class="py-2.5 px-3 rounded-xl border text-center font-bold text-xs transition-all active:scale-95"
                     :class="localMetricGrouping && localMetricGrouping.join('+') === preset.join('+')
                       ? 'bg-violet-600 border-violet-600 text-white shadow-md shadow-violet-200'
@@ -4114,6 +5825,26 @@ const exportPdf = () => {
                   >
                     {{ preset.join(' + ') }}
                   </button>
+                </div>
+
+                <!-- Custom grouping input -->
+                <div class="mt-3">
+                  <label class="block text-[10px] text-gray-400 font-bold uppercase mb-1">Subdivisión Personalizada (ej: 5+3+3)</label>
+                  <input 
+                    type="text" 
+                    :value="tempLocalGroupingStr"
+                    @input="handleLocalGroupingInput"
+                    placeholder="Ej: 2+3 o 3+2+2" 
+                    class="w-full px-3 py-2 border rounded-xl text-sm font-bold text-gray-800 focus:outline-none"
+                    :class="parseGroupingString(tempLocalGroupingStr, localMetricBeats) 
+                      ? 'border-gray-200 focus:border-violet-500 bg-white' 
+                      : 'border-red-300 focus:border-red-500 bg-red-50/30'"
+                  />
+                  <p class="text-[10px] mt-1 font-medium" :class="parseGroupingString(tempLocalGroupingStr, localMetricBeats) ? 'text-gray-400' : 'text-red-500'">
+                    {{ parseGroupingString(tempLocalGroupingStr, localMetricBeats) 
+                      ? 'La suma de las subdivisiones debe ser igual a ' + localMetricBeats 
+                      : 'Inválido: la suma debe ser ' + localMetricBeats + ' (ej: 5+3+3)' }}
+                  </p>
                 </div>
               </div>
 
@@ -4162,9 +5893,24 @@ const exportPdf = () => {
                 {{ formatDisplayChord(activeEditingBeat) }}
               </span>
               
-              <span class="text-xs text-gray-400 font-bold">
+              <span class="text-xs text-gray-400 font-bold" :class="{ 'mb-3': selectedBeat && selectedBeat.subdivisionIndex !== undefined && isSubdivisionCollapsed(measures[selectedBeat.measureIndex], measures[selectedBeat.measureIndex].beats[selectedBeat.beatIndex], selectedBeat.beatIndex) }">
                 {{ activeEditingBeat.root }} {{ activeEditingBeat.type === 'maj' ? 'Mayor' : (activeEditingBeat.type === 'min' ? 'Menor' : activeEditingBeat.type) }}
               </span>
+              
+              <div 
+                v-if="selectedBeat && selectedBeat.subdivisionIndex !== undefined && isSubdivisionCollapsed(measures[selectedBeat.measureIndex], measures[selectedBeat.measureIndex].beats[selectedBeat.beatIndex], selectedBeat.beatIndex)" 
+                class="mt-2 pt-3 border-t border-gray-100 flex items-center gap-2.5 w-full justify-center"
+              >
+                <input 
+                  type="checkbox" 
+                  id="applyAllSub" 
+                  v-model="applyToAllSubslots" 
+                  class="rounded border-gray-300 text-violet-600 focus:ring-violet-500 w-4.5 h-4.5 cursor-pointer" 
+                />
+                <label for="applyAllSub" class="text-[11px] font-bold text-gray-600 cursor-pointer select-none leading-tight">
+                  Aplicar cambio a todo el pulso (fusión activa)
+                </label>
+              </div>
             </div>
             
             <!-- EDUCATIONAL WARNING FOR CHORDS ON SILENCE SLOTS -->
@@ -4442,6 +6188,7 @@ const exportPdf = () => {
                 <!-- Advanced subdivisions row -->
                 <div class="flex gap-2">
                   <button 
+                    v-if="getMeasureTimeSignature(selectedBeat.measureIndex).unit !== 8"
                     @click="selectBeatHarmonicRhythm('triplet')"
                     class="flex-1 p-2 text-center rounded-xl font-bold border transition-all text-xs flex items-center justify-center gap-1.5"
                     :class="activeEditingBeat.harmonicRhythm === 'triplet'
@@ -4484,6 +6231,31 @@ const exportPdf = () => {
                         </span>
                       </div>
                       <span v-if="activeEditingBeat.sixteenthPattern === key || (!activeEditingBeat.sixteenthPattern && key === '4_semi')" class="text-white text-xs font-black shrink-0 ml-2">✓</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Eighth pattern sub-selector -->
+                <div v-if="activeEditingBeat.harmonicRhythm === 'eighth'" class="mt-3 p-3 bg-violet-50/50 rounded-xl border border-violet-100 space-y-2 text-left">
+                  <span class="block text-[11px] font-black text-violet-750 uppercase tracking-wider">Patrón de la Familia de Semicorcheas (2 Notas)</span>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button 
+                      v-for="(pat, key) in EIGHTH_PATTERNS" 
+                      :key="key"
+                      @click="selectEighthPatternInModal(pat, key)"
+                      class="px-3 py-2 rounded-xl border transition-all text-left flex items-center justify-between"
+                      :class="activeEditingBeat.eighthPattern === key || (!activeEditingBeat.eighthPattern && key === '2_notes' && getMeasureTimeSignature(measures[selectedBeat.measureIndex]).unit !== 8)
+                        ? 'bg-violet-600 border-violet-600 text-white' 
+                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-550 border-gray-200'"
+                    >
+                      <div class="flex-1 min-w-0 flex flex-col justify-center">
+                        <svg class="h-4 w-12 text-current shrink-0 select-none mb-0.5" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
+                        <span class="text-[9px] font-bold truncate block mt-0.5 select-none"
+                              :class="activeEditingBeat.eighthPattern === key || (!activeEditingBeat.eighthPattern && key === '2_notes' && getMeasureTimeSignature(measures[selectedBeat.measureIndex]).unit !== 8) ? 'text-white/70' : 'text-gray-400'">
+                          {{ pat.label }}
+                        </span>
+                      </div>
+                      <span v-if="activeEditingBeat.eighthPattern === key || (!activeEditingBeat.eighthPattern && key === '2_notes' && getMeasureTimeSignature(measures[selectedBeat.measureIndex]).unit !== 8)" class="text-white text-xs font-black shrink-0 ml-2">✓</span>
                     </button>
                   </div>
                 </div>
@@ -5114,6 +6886,9 @@ html, body { overscroll-behavior-y: none; }
   stroke: #248A3D;
   opacity: 1;
 }
+.beat-container {
+  transition: flex 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
 /* Animations */
 @keyframes scaleUp {
   from { transform: scale(0.95); opacity: 0; }
@@ -5136,20 +6911,22 @@ html, body { overscroll-behavior-y: none; }
 .animate-slide-down {
   animation: slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
-/* Responsive Grid layout for system rows */
+/* Responsive layout for system rows using flex wrap and overflow visible */
 .system-row {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
+  overflow: visible;
+  align-items: center;
+  width: 100%;
 }
 @media (max-width: 639px) {
   .system-row {
-    grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
-    gap: 1.5rem 0.75rem !important;
+    gap: 0.75rem !important;
   }
 }
 @media (min-width: 640px) and (max-width: 1023px) {
   .system-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-    gap: 2rem 0.75rem !important;
+    gap: 0.75rem !important;
   }
 }
 </style>

@@ -16,7 +16,10 @@ export function generatePDF(project) {
     'Push final': ['sixteenth', 'sixteenth', 'sixteenth', 'sixteenth']
   }
 
-  const getSubdivisionCount = (rhythm) => {
+  const getSubdivisionCount = (rhythm, isDenom8 = false, beat = null) => {
+    if (isDenom8 && rhythm === 'eighth') {
+      return beat && beat.eighthPattern ? 2 : 1
+    }
     if (rhythm === 'eighth' || rhythm === 'offbeat') return 2
     if (rhythm === 'sixteenth') return 4
     if (rhythm === 'triplet') return 3
@@ -41,9 +44,102 @@ export function generatePDF(project) {
     return pattern[beatIdx] || 'quarter'
   }
 
+  const getRhythmDisplayIconPDF = (rhythm, isDenom8) => {
+    if (isDenom8) {
+      if (rhythm === 'whole') return 'Redonda'
+      if (rhythm === 'dotted-half') return 'Blanca c/punto'
+      if (rhythm === 'double') return 'Blanca'
+      if (rhythm === 'dotted-quarter') return 'Negra c/punto'
+      if (rhythm === 'quarter') return 'Negra'
+      if (rhythm === 'eighth' || rhythm === 'auto') return 'Corchea'
+      if (rhythm === 'sixteenth') return 'Semicorchea'
+    } else {
+      if (rhythm === 'whole') return 'Redonda'
+      if (rhythm === 'dotted-half') return 'Blanca c/punto'
+      if (rhythm === 'double') return 'Blanca'
+      if (rhythm === 'quarter' || rhythm === 'auto') return 'Negra'
+      if (rhythm === 'eighth') return 'Corchea'
+      if (rhythm === 'sixteenth') return 'Semicorchea'
+    }
+    return ''
+  }
+
+  const getBeatSlotDurationPDF = (measure, beat, isDenom8) => {
+    const rhythm = beat.harmonicRhythm || 'auto'
+    if (isDenom8) {
+      if (rhythm === 'whole') return 8
+      if (rhythm === 'dotted-half') return 6
+      if (rhythm === 'double') return 4
+      if (rhythm === 'dotted-quarter') return 3
+      if (rhythm === 'quarter') return 2
+      if (rhythm === 'eighth') return 1
+      return 1
+    } else {
+      if (rhythm === 'whole') return 4
+      if (rhythm === 'dotted-half') return 3
+      if (rhythm === 'double') return 2
+      if (rhythm === 'quarter') return 1
+      return 1
+    }
+  }
+
+  const getBeatMergeState = (measure, sig) => {
+    const numBeats = sig.beats
+    const isDenom8 = sig.unit === 8
+    const subdivisionsOn = measure.showSubdivisions !== false
+    
+    const states = Array.from({ length: numBeats }, () => ({ isMerged: false, flexGrow: 1 }))
+    
+    if (subdivisionsOn) {
+      if (measure.showObligado) {
+        // Strict Mode: merge based on explicit figures duration
+        for (let i = 0; i < numBeats; i++) {
+          if (states[i].isMerged) continue
+          const beat = measure.beats[i] || { root: '', type: '' }
+          if (beat.root || beat.harmonicRhythm) {
+            const dur = getBeatSlotDurationPDF(measure, beat, isDenom8)
+            states[i].flexGrow = dur
+            for (let j = 1; j < dur; j++) {
+              if (i + j < numBeats) {
+                states[i + j].isMerged = true
+                states[i + j].flexGrow = 0
+              }
+            }
+          }
+        }
+      } else {
+        // Normal Mode: auto-extend chords until next chord or end of measure
+        for (let i = 0; i < numBeats; i++) {
+          if (states[i].isMerged) continue
+          const beat = measure.beats[i] || { root: '', type: '' }
+          if (beat.root) {
+            let dur = 1
+            let j = i + 1
+            while (j < numBeats) {
+              const nextBeat = measure.beats[j] || { root: '', type: '' }
+              if (nextBeat.root) break
+              dur++
+              j++
+            }
+            states[i].flexGrow = dur
+            for (let k = 1; k < dur; k++) {
+              if (i + k < numBeats) {
+                states[i + k].isMerged = true
+                states[i + k].flexGrow = 0
+              }
+            }
+          }
+        }
+      }
+    }
+    return states
+  }
+
   const getBeatSlots = (measure, beat, beatIdx) => {
     const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
-    const subCount = getSubdivisionCount(rhythm)
+    const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+    const isDenom8 = sig.unit === 8
+    const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
     if (subCount === 1) return []
     
     if (beat.subdivisions && beat.subdivisions.length === subCount) {
@@ -66,6 +162,15 @@ export function generatePDF(project) {
       }
     }
     return slots
+  }
+
+  const splitChordDisplayPDF = (chordStr) => {
+    if (!chordStr || chordStr === '-') return { main: '-', bass: '' }
+    const parts = chordStr.split('/')
+    return {
+      main: parts[0],
+      bass: parts[1] ? `/${parts[1]}` : ''
+    }
   }
 
   // project: { title, key, scaleType, timeSignature, measures, repeats, keySignatureStr }
@@ -185,16 +290,7 @@ export function generatePDF(project) {
     }
 
     // Pre-calculate measure widths and start positions for this row
-    const rowTotalDuration = rowMeasures.reduce((sum, m) => {
-      const sig = m.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
-      return sum + (sig.beats * (4 / sig.unit))
-    }, 0)
-
-    const measureWidths = rowMeasures.map(m => {
-      const sig = m.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
-      const duration = sig.beats * (4 / sig.unit)
-      return (duration / rowTotalDuration) * usableWidth
-    })
+    const measureWidths = rowMeasures.map(() => usableWidth / rowMeasures.length)
 
     const measureStarts = []
     let currentAccumulatedX = startX
@@ -251,18 +347,18 @@ export function generatePDF(project) {
       if (mGroove === 'neutral') {
         rhythmLabel = "neutral"
       } else {
+        const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+        const isDenom8 = sig.unit === 8
         const overrides = []
         const translateRhythmNameLocal = (rhythm) => {
-          if (rhythm === 'eighth') return "Corcheas (x2)"
-          if (rhythm === 'sixteenth') return "Semicorcheas (x4)"
-          if (rhythm === 'offbeat') return "Contratiempo"
-          if (rhythm === 'triplet') return "Tresillo (x3)"
-          if (rhythm === 'quintuplet') return "Quintillo (x5)"
+          if (rhythm === 'eighth') return isDenom8 ? "Semicorcheas (x2)" : "Corcheas (x2)"
+          if (rhythm === 'sixteenth') return isDenom8 ? "Fusas (x4)" : "Semicorcheas (x4)"
+          if (rhythm === 'offbeat') return isDenom8 ? "Contratiempo de Semicorchea" : "Contratiempo"
+          if (rhythm === 'triplet') return isDenom8 ? "Tresillo de Semicorcheas (x3)" : "Tresillo (x3)"
+          if (rhythm === 'quintuplet') return isDenom8 ? "Quintillo de Semicorcheas (x5)" : "Quintillo (x5)"
           return ""
         }
         
-        // Use active time signature beats for iteration
-        const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
         const measureBeats = measure.beats.slice(0, sig.beats)
         measureBeats.forEach((b, bIdx) => {
           if (b.harmonicRhythm && b.harmonicRhythm !== 'auto') {
@@ -292,7 +388,19 @@ export function generatePDF(project) {
       // Local Time Signature Change Indicator (PRO only, when measure.timeSignature exists)
       let timeSigOffset = 0
       const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
-      if (measure.timeSignature) {
+      
+      let shouldShowLocalTimeSig = false
+      if (measure.timeSignature && globalMeasureIndex > 0) {
+        const prevMeasure = project.measures[globalMeasureIndex - 1]
+        const prevSig = prevMeasure 
+          ? (prevMeasure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 })
+          : { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+        if (measure.timeSignature.beats !== prevSig.beats || measure.timeSignature.unit !== prevSig.unit) {
+          shouldShowLocalTimeSig = true
+        }
+      }
+
+      if (shouldShowLocalTimeSig) {
         doc.setFont("times", "bold")
         doc.setFontSize(13)
         doc.text(measure.timeSignature.beats.toString(), mStartX + 2.5, lineY - 0.5)
@@ -302,14 +410,26 @@ export function generatePDF(project) {
 
       // 2. Acordes y Slashes
       const effectiveMeasureWidth = currentMeasureWidth - timeSigOffset
-      const beatWidth = effectiveMeasureWidth / sig.beats
+      const mergeStates = getBeatMergeState(measure, sig)
+      const beatGrows = measure.beats.slice(0, sig.beats).map((b, bIdx) => {
+        const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+        if (state.isMerged) return 0
+        return state.flexGrow
+      })
+      const totalGrow = beatGrows.reduce((sum, g) => sum + g, 0)
+      
+      let currentXOffset = 0
       measure.beats.slice(0, sig.beats).forEach((beat, bIdx) => {
+        const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+        if (state.isMerged) return
+        
+        const currentBeatWidth = (state.flexGrow / totalGrow) * effectiveMeasureWidth
+        const startXForBeats = mStartX + timeSigOffset + currentXOffset
+        
         const rhythm = getEffectiveRhythm(measure, beat, bIdx)
-        const subCount = getSubdivisionCount(rhythm)
+        const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
         const hasSubdivisions = subCount > 1
         
-        const startXForBeats = mStartX + timeSigOffset
-
         if (hasSubdivisions) {
           const slots = getBeatSlots(measure, beat, bIdx)
           
@@ -332,9 +452,9 @@ export function generatePDF(project) {
             }
           }
 
-          const subWidth = beatWidth / subCount
+          const subWidth = currentBeatWidth / subCount
           visibleSlots.forEach((sub) => {
-            const subX = startXForBeats + (bIdx * beatWidth) + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
+            const subX = startXForBeats + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
             
             if (rhythm === 'offbeat' && sub.originalIndex === 0) {
               doc.setFont("helvetica", "normal")
@@ -350,31 +470,84 @@ export function generatePDF(project) {
               doc.setTextColor(0, 0, 0)
             } else if (sub.root) {
               const chordStr = formatChord(sub)
-              doc.setFont("helvetica", "bold")
+              const split = splitChordDisplayPDF(chordStr)
               const effSubCount = subCount / sub.flexGrow
-              doc.setFontSize(effSubCount >= 4 ? 7 : (effSubCount >= 3 ? 9 : 10))
-              doc.text(chordStr, subX, currentY + 12, { align: "center" })
+              const fontSize = effSubCount >= 4 ? 7 : (effSubCount >= 3 ? 9 : 10)
+              doc.setFont("helvetica", "bold")
+              doc.setFontSize(fontSize)
+              if (split.bass) {
+                doc.text(split.main, subX, currentY + 10.5, { align: "center" })
+                doc.setFont("helvetica", "medium")
+                doc.setFontSize(Math.max(6, fontSize - 2))
+                doc.text(split.bass, subX, currentY + 14, { align: "center" })
+              } else {
+                doc.text(split.main, subX, currentY + 12, { align: "center" })
+              }
             }
             
-            // Draw subdivisions line indicators at the center of the visible slot
-            const subSlashX = startXForBeats + (bIdx * beatWidth) + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
-            doc.setLineWidth(0.15)
-            doc.line(subSlashX - 1, lineY + 2, subSlashX + 1, lineY - 2)
+            if (measure.showSubdivisions !== false) {
+              // Draw subdivisions line indicators at the center of the visible slot
+              const subSlashX = startXForBeats + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
+              doc.setLineWidth(0.15)
+              doc.line(subSlashX - 1, lineY + 2, subSlashX + 1, lineY - 2)
+            }
           })
         } else {
           if (beat.root) {
             const chordStr = formatChord(beat)
+            const split = splitChordDisplayPDF(chordStr)
 
             doc.setFont("helvetica", "bold")
             doc.setFontSize(12)
-            doc.text(chordStr, startXForBeats + (bIdx * beatWidth) + (beatWidth / 2), currentY + 12, { align: "center" })
+            if (split.bass) {
+              doc.text(split.main, startXForBeats + (currentBeatWidth / 2), currentY + 11, { align: "center" })
+              doc.setFont("helvetica", "medium")
+              doc.setFontSize(9)
+              doc.text(split.bass, startXForBeats + (currentBeatWidth / 2), currentY + 15, { align: "center" })
+            } else {
+              doc.text(split.main, startXForBeats + (currentBeatWidth / 2), currentY + 12, { align: "center" })
+            }
+
+            if (measure.showObligado) {
+              const figName = getRhythmDisplayIconPDF(beat.harmonicRhythm || 'quarter', sig.unit === 8)
+              if (figName) {
+                doc.setFont("helvetica", "italic")
+                doc.setFontSize(7)
+                doc.setTextColor(120, 120, 120)
+                const figY = split.bass ? currentY + 18.5 : currentY + 16.5
+                doc.text(figName, startXForBeats + (currentBeatWidth / 2), figY, { align: "center" })
+                doc.setTextColor(0, 0, 0)
+              }
+            }
+
+            // Slashes rítmicos for chord
+            const slashX = startXForBeats + (currentBeatWidth / 2)
+            doc.setLineWidth(0.3)
+            doc.line(slashX - 2, lineY + 3, slashX + 2, lineY - 3)
+          } else {
+            if (measure.showObligado && beat.harmonicRhythm) {
+              // It's a rest/silence!
+              doc.setFont("helvetica", "normal")
+              doc.setFontSize(10)
+              doc.setTextColor(150, 150, 150)
+              doc.text("𝄾", startXForBeats + (currentBeatWidth / 2), currentY + 12, { align: "center" })
+              
+              const figName = getRhythmDisplayIconPDF(beat.harmonicRhythm, sig.unit === 8)
+              if (figName) {
+                doc.setFont("helvetica", "italic")
+                doc.setFontSize(6.5)
+                doc.text(figName, startXForBeats + (currentBeatWidth / 2), currentY + 16, { align: "center" })
+              }
+              doc.setTextColor(0, 0, 0)
+            } else {
+              // Slashes rítmicos for empty beat
+              const slashX = startXForBeats + (currentBeatWidth / 2)
+              doc.setLineWidth(0.3)
+              doc.line(slashX - 2, lineY + 3, slashX + 2, lineY - 3)
+            }
           }
-          
-          // Slashes rítmicos
-          const slashX = startXForBeats + (bIdx * beatWidth) + (beatWidth / 2)
-          doc.setLineWidth(0.3)
-          doc.line(slashX - 2, lineY + 3, slashX + 2, lineY - 3)
         }
+        currentXOffset += currentBeatWidth
       })
 
       // 3. Barras de compás y repeticiones
