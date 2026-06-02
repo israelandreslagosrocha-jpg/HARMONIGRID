@@ -1317,7 +1317,7 @@ const availableWidth = computed(() => {
   } else if (w >= 768) {
     return w - 160
   } else {
-    return w - 120
+    return w - 24
   }
 })
 
@@ -1770,14 +1770,16 @@ const getSystemColumnCount = (system, sIdx) => {
 const getBeatMinWidth = (measure, beat, state) => {
   const rhythm = getEffectiveRhythm(measure, beat, state.index)
   const isSynced = currentPlan.value === 'PRO' && measure.lyrics?.mode === 'synced'
-  let baseMin = state.durationSlots * (isSynced ? 35 : 50)
+  const isMobile = windowWidth.value < 768
+  
+  let baseMin = state.durationSlots * (isSynced ? (isMobile ? 28 : 35) : (isMobile ? 40 : 50))
   
   if (rhythm === 'sixteenth') {
-    baseMin = Math.max(baseMin, isSynced ? 80 : 112)
+    baseMin = Math.max(baseMin, isSynced ? (isMobile ? 64 : 80) : (isMobile ? 96 : 112))
   } else if (rhythm === 'triplet') {
-    baseMin = Math.max(baseMin, isSynced ? 60 : 84)
+    baseMin = Math.max(baseMin, isSynced ? (isMobile ? 48 : 60) : (isMobile ? 72 : 84))
   } else if (rhythm === 'quintuplet') {
-    baseMin = Math.max(baseMin, isSynced ? 90 : 120)
+    baseMin = Math.max(baseMin, isSynced ? (isMobile ? 75 : 90) : (isMobile ? 100 : 120))
   }
   
   const sig = getMeasureTimeSignature(measure)
@@ -1798,14 +1800,14 @@ const getBeatMinWidth = (measure, beat, state) => {
         let padding = 10
         
         if (subCount >= 4) {
-          charWidth = 7.5
-          padding = 8
+          charWidth = isMobile ? 6.2 : 7.5
+          padding = isMobile ? 6.5 : 8
         } else if (subCount >= 3) {
-          charWidth = 9
-          padding = 10
+          charWidth = isMobile ? 7.5 : 9
+          padding = isMobile ? 8 : 10
         } else {
-          charWidth = 10.5
-          padding = 12
+          charWidth = isMobile ? 8.8 : 10.5
+          padding = isMobile ? 10 : 12
         }
         
         const displayParts = splitChordDisplay(s)
@@ -1837,6 +1839,11 @@ const getBeatMinWidth = (measure, beat, state) => {
     } else if (fontClass.includes('lg:text-[16px]')) {
       charWidth = 10
       padding = 24
+    }
+    
+    if (isMobile) {
+      charWidth = charWidth * 0.85
+      padding = padding * 0.8
     }
     
     const displayParts = splitChordDisplay(beat)
@@ -6186,14 +6193,14 @@ const exportPdf = () => {
               <span class="block text-[17px] font-semibold text-gray-800 mb-5">Tonalidad Central</span>
               
               <div class="space-y-4">
-                <div class="flex flex-wrap gap-2">
-                  <button v-for="k in keysNatural" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
+                <div class="flex flex-wrap justify-center sm:justify-start gap-1.5 sm:gap-2">
+                  <button v-for="k in keysNatural" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-9 h-9 sm:w-11 sm:h-11 rounded-full font-bold text-sm sm:text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
                 </div>
-                <div class="flex flex-wrap gap-2">
-                  <button v-for="k in keysSharp" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
+                <div class="flex flex-wrap justify-center sm:justify-start gap-1.5 sm:gap-2">
+                  <button v-for="k in keysSharp" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-9 h-9 sm:w-11 sm:h-11 rounded-full font-bold text-sm sm:text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
                 </div>
-                <div class="flex flex-wrap gap-2">
-                  <button v-for="k in keysFlat" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
+                <div class="flex flex-wrap justify-center sm:justify-start gap-1.5 sm:gap-2">
+                  <button v-for="k in keysFlat" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-9 h-9 sm:w-11 sm:h-11 rounded-full font-bold text-sm sm:text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
                 </div>
               </div>
               <!-- CUSTOM DROPDOWN: Escala -->
@@ -6232,46 +6239,47 @@ const exportPdf = () => {
       <div v-else class="flex-1 flex flex-col h-full bg-[#F5FCE6] relative">
         
         <!-- HEADER -->
-        <header class="flex items-center justify-between px-4 h-16 bg-[#8EE000] border-b border-[#8EE000]/25 z-20 sticky top-0 shadow-sm">
-          <div class="flex items-center gap-3">
-            <img :src="logoUrl" alt="HarmoniGrid Logo" class="w-8 h-8 rounded-lg object-cover border border-black/15 shadow-sm cursor-pointer hover:scale-105 transition-transform" @click="isSetupMode = true" />
-            <button @click="isSetupMode = true" class="text-black font-black text-[16px] flex items-center hover:opacity-75 transition-opacity">
-              <svg class="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg> Atrás
+        <header class="flex items-center justify-between px-2 sm:px-4 h-16 bg-[#8EE000] border-b border-[#8EE000]/25 z-20 sticky top-0 shadow-sm">
+          <div class="flex items-center gap-1.5 sm:gap-3">
+            <img :src="logoUrl" alt="HarmoniGrid Logo" class="w-8 h-8 rounded-lg object-cover border border-black/15 shadow-sm cursor-pointer hover:scale-105 transition-transform hidden sm:block" @click="isSetupMode = true" />
+            <button @click="isSetupMode = true" class="text-black font-black text-[14px] sm:text-[16px] flex items-center hover:opacity-75 transition-opacity">
+              <svg class="w-4 h-4 sm:w-5 sm:h-5 mr-0.5 sm:mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+              <span class="hidden sm:inline">Atrás</span>
             </button>
           </div>
           
-          <div class="flex-1 text-center font-bold text-[18px] text-black truncate px-2">
+          <div class="flex-1 text-center font-bold text-[14px] sm:text-[18px] text-black truncate px-1 max-w-[100px] sm:max-w-none">
             <input v-model="title" class="bg-transparent text-center focus:outline-none w-full placeholder-gray-800 font-black text-black" />
           </div>
           
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-1.5 sm:gap-3">
             <!-- Plan Toggle Switch in Editor Header -->
             <div class="flex items-center bg-black/10 p-0.5 rounded-full border border-black/15 shadow-inner">
               <button 
                 @click="setPlan('FREE')" 
                 :class="currentPlan === 'FREE' ? 'bg-black text-[#8EE000] shadow-sm font-black' : 'text-gray-800 font-bold hover:text-black'"
-                class="px-2.5 py-1 text-[11px] rounded-full transition-all duration-300"
+                class="px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-[9px] sm:text-[11px] rounded-full transition-all duration-300"
               >
                 FREE
               </button>
               <button 
                 @click="setPlan('PRO')" 
                 :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-sm font-black' : 'text-gray-800 font-bold hover:text-black'"
-                class="px-2.5 py-1 text-[11px] rounded-full transition-all duration-300 flex items-center gap-0.5"
+                class="px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-[9px] sm:text-[11px] rounded-full transition-all duration-300 flex items-center gap-0.5"
               >
                 👑 PRO
               </button>
             </div>
             
-            <button @click="exportPdf" class="text-white bg-black hover:bg-gray-900 px-3 py-1.5 rounded-full font-black text-[14px] w-24 text-center shadow-md shadow-black/10 transition-all">
+            <button @click="exportPdf" class="text-white bg-black hover:bg-gray-900 px-2 py-1 sm:px-3 sm:py-1.5 rounded-full font-black text-[12px] sm:text-[14px] w-20 sm:w-24 text-center shadow-md shadow-black/10 transition-all">
               Exportar
             </button>
           </div>
         </header>
         <!-- TOOLBAR (Key & Repeats) -->
-        <div class="px-4 py-3 bg-white border-b border-gray-200 flex flex-wrap justify-between items-center z-10 gap-2">
+        <div class="px-4 py-3 bg-white border-b border-gray-200 flex flex-wrap justify-between items-center z-40 gap-3">
           
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <!-- Custom Main Key Dropdown -->
             <div class="relative dropdown-container">
               <button @click="toggleDropdown('mainKey')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1 hover:border-[#8EE000] transition-colors">
@@ -6366,7 +6374,7 @@ const exportPdf = () => {
           </div>
           <div class="flex items-center gap-3">
             <!-- Segmented Control for Compact/Expanded mode (PRO only, Promo in FREE) -->
-            <div v-if="currentPlan === 'PRO'" class="flex p-0.5 bg-gray-100 rounded-lg border border-gray-200 shadow-inner">
+            <div v-if="currentPlan === 'PRO'" class="hidden md:flex p-0.5 bg-gray-100 rounded-lg border border-gray-200 shadow-inner">
               <button 
                 @click="viewMode = 'compact'" 
                 :class="viewMode === 'compact' ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-500 hover:text-gray-700 font-medium'" 
@@ -6383,7 +6391,7 @@ const exportPdf = () => {
               </button>
             </div>
             
-            <div v-else class="flex p-0.5 bg-gray-100/50 rounded-lg border border-gray-200 opacity-70 cursor-pointer" @click="upgradeReason = 'feature'; isUpgradeModalOpen = true">
+            <div v-else class="hidden md:flex p-0.5 bg-gray-100/50 rounded-lg border border-gray-200 opacity-70 cursor-pointer" @click="upgradeReason = 'feature'; isUpgradeModalOpen = true">
               <button class="px-3 py-1.5 text-[12px] text-gray-400 font-bold" disabled>Mostrar repeticiones</button>
               <button class="px-3 py-1.5 text-[12px] text-gray-400 font-bold flex items-center gap-1" disabled>
                 Expandir compases <span class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1 rounded font-black">PRO</span>
@@ -6402,10 +6410,99 @@ const exportPdf = () => {
               </svg>
               {{ isSelectionMode ? 'Seleccionando...' : 'Seleccionar compases' }}
             </button>
+            
+            <!-- Mobile extra tools dropdown trigger -->
+            <div class="relative md:hidden dropdown-container">
+              <button 
+                @click="toggleDropdown('extraTools')" 
+                class="text-[14px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1.5 hover:border-[#8EE000] transition-colors"
+              >
+                <span>🛠️ Herramientas</span>
+                <svg class="w-3.5 h-3.5 text-gray-400 transition-transform" :class="{'rotate-180': activeDropdown === 'extraTools'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+              </button>
+              <transition name="dropdown">
+                <div v-if="activeDropdown === 'extraTools'" class="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-gray-150 p-3.5 z-50 flex flex-col gap-3.5 text-left font-sans">
+                  
+                  <!-- Segmented Control for Compact/Expanded mode inside dropdown (PRO only, Promo in FREE) -->
+                  <div class="flex flex-col gap-1.5">
+                    <span class="text-[10px] text-gray-400 font-black uppercase tracking-wider">Visualización</span>
+                    <div v-if="currentPlan === 'PRO'" class="flex p-0.5 bg-gray-100 rounded-lg border border-gray-200 shadow-inner">
+                      <button 
+                        @click="viewMode = 'compact'; activeDropdown = null" 
+                        :class="viewMode === 'compact' ? 'bg-white shadow-sm text-gray-800 font-bold' : 'text-gray-500 hover:text-gray-700 font-medium'" 
+                        class="flex-1 text-center py-1.5 text-[11px] rounded-md transition-all"
+                      >
+                        Con Repetir
+                      </button>
+                      <button 
+                        @click="viewMode = 'expanded'; activeDropdown = null" 
+                        :class="viewMode === 'expanded' ? 'bg-gradient-to-r from-violet-500 to-indigo-500 text-white shadow-sm font-bold' : 'text-gray-500 hover:text-gray-700 font-medium'" 
+                        class="flex-1 text-center py-1.5 text-[11px] rounded-md transition-all"
+                      >
+                        Expandido
+                      </button>
+                    </div>
+                    <div v-else class="flex p-0.5 bg-gray-100/50 rounded-lg border border-gray-200 opacity-70 cursor-pointer" @click="activeDropdown = null; upgradeReason = 'feature'; isUpgradeModalOpen = true">
+                      <button class="flex-1 text-center py-1.5 text-[11px] text-gray-400 font-bold" disabled>Mostrar repeticiones</button>
+                      <button class="flex-1 text-center py-1.5 text-[11px] text-gray-400 font-bold flex items-center justify-center gap-0.5" disabled>
+                        Expandir <span class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[7px] px-1 rounded font-black">PRO</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="border-t border-gray-100 my-0.5"></div>
+                  
+                  <span class="text-[10px] text-gray-400 font-black uppercase tracking-wider -mb-1">Acciones Estructura</span>
+
+                  <!-- Ver lista de repeticiones inside dropdown -->
+                  <button 
+                    @click="activeDropdown = null; isRepeatMenuOpen = true" 
+                    class="text-left text-[13px] font-bold flex items-center justify-between px-3 py-2 rounded-lg transition-all border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-700 w-full"
+                  >
+                    <span class="flex items-center gap-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                      </svg>
+                      Ver lista de repeticiones
+                    </span>
+                    <span v-if="repeats.length" class="bg-gray-200 text-gray-800 text-[10px] rounded-full w-5 h-5 flex items-center justify-center font-black border border-gray-300">{{ repeats.length }}</span>
+                  </button>
+
+                  <!-- Ordenar compases inside dropdown -->
+                  <button 
+                    @click="activeDropdown = null; currentPlan === 'PRO' ? (isOrderingModeActive = !isOrderingModeActive) : (upgradeReason = 'custom_layout', isUpgradeModalOpen = true)" 
+                    class="text-left text-[13px] font-bold flex items-center justify-between px-3 py-2 rounded-lg transition-all border w-full text-gray-750"
+                    :class="isOrderingModeActive 
+                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' 
+                      : 'border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-700'"
+                  >
+                    <span class="flex items-center gap-2">
+                      <span>⚙️</span>
+                      <span>Ordenar compases</span>
+                    </span>
+                    <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[7px] px-1.5 py-0.5 rounded font-black">PRO</span>
+                  </button>
+
+                  <!-- Transportar inside dropdown -->
+                  <button 
+                    @click="activeDropdown = null; handleTransposeButtonClick()" 
+                    class="text-left text-[13px] font-bold flex items-center justify-between px-3 py-2 rounded-lg transition-all border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-700 w-full"
+                  >
+                    <span class="flex items-center gap-2">
+                      <span>🔄</span>
+                      <span>Transportar</span>
+                    </span>
+                    <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[7px] px-1.5 py-0.5 rounded font-black">PRO</span>
+                  </button>
+
+                </div>
+              </transition>
+            </div>
+            
             <!-- Ver lista de repeticiones -->
             <button 
               @click="isRepeatMenuOpen = true" 
-              class="text-[14px] font-bold flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
+              class="hidden md:flex text-[14px] font-bold items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
             >
               <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
@@ -6416,7 +6513,7 @@ const exportPdf = () => {
             <!-- Ordenar compases -->
             <button 
               @click="currentPlan === 'PRO' ? (isOrderingModeActive = !isOrderingModeActive) : (upgradeReason = 'custom_layout', isUpgradeModalOpen = true)" 
-              class="text-[14px] font-bold flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
+              class="hidden md:flex text-[14px] font-bold items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
               :class="isOrderingModeActive 
                 ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' 
                 : 'bg-white hover:bg-gray-50 text-gray-700'"
@@ -6427,7 +6524,7 @@ const exportPdf = () => {
             <!-- Transportar -->
             <button 
               @click="handleTransposeButtonClick" 
-              class="text-[14px] font-bold flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
+              class="hidden md:flex text-[14px] font-bold items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
             >
               <span>🔄 Transportar</span>
               <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black">PRO</span>
@@ -6447,14 +6544,14 @@ const exportPdf = () => {
         </div>
         <!-- GRID AREA -->
         <main class="flex-1 overflow-y-auto px-2 py-6 md:px-4 md:py-8 relative" @click="closeDropdowns">
-          <div class="w-full max-w-[1450px] mx-auto flex gap-2 md:gap-4 px-1 md:px-2">
+          <div class="w-full max-w-[1450px] mx-auto flex flex-col md:flex-row gap-4 md:gap-4 px-1 md:px-2">
             
             <!-- GLOBAL INDICATORS -->
-            <div class="flex flex-col items-center pt-2 flex-shrink-0 select-none text-center min-w-[96px] md:min-w-[120px] gap-3">
+            <div class="flex flex-row md:flex-col items-center pt-2 flex-shrink-0 select-none text-center w-full md:w-auto overflow-x-auto md:overflow-x-visible gap-3 pb-3 md:pb-0 scrollbar-none scroll-smooth">
               <!-- Interactive Key Signature Info Badge (Now above Time Signature) -->
               <button 
                 @click="isKeyInfoOpen = true; isVerMasExpanded = false" 
-                class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-full text-center shadow-sm animate-scale-up"
+                class="flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-32 md:w-full h-20 md:h-auto flex-shrink-0 text-center shadow-sm animate-scale-up"
                 :class="{'hover:border-violet-500': currentPlan === 'PRO'}"
               >
                 <span class="text-[10px] md:text-[11px] font-black text-gray-700 leading-tight uppercase tracking-wider block w-full truncate">
@@ -6468,30 +6565,31 @@ const exportPdf = () => {
                 </span>
               </button>
               <!-- Interactive Global Time Signature Button (Opens Educational / Metric Selection Modal) -->
-              <div class="relative w-full flex justify-center mt-2 select-none z-35">
+              <div class="relative w-28 md:w-full flex justify-center mt-0 md:mt-2 select-none z-35 flex-shrink-0">
                 <button
                   @click.stop="isMetricInfoModalOpen = true"
-                  class="group flex flex-col items-center p-2.5 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-full text-center shadow-sm"
+                  class="group flex flex-col items-center justify-center p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-full h-20 md:h-auto text-center shadow-sm"
                   :class="{'hover:border-violet-500': currentPlan === 'PRO'}"
                 >
-                  <span class="text-[8.5px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">Métrica</span>
-                  <div class="flex flex-col items-center leading-none">
-                    <div class="text-3xl md:text-4xl font-serif font-black text-gray-850 flex items-center gap-0.5 justify-center">
+                  <span class="text-[8px] md:text-[8.5px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5 md:mb-1">Métrica</span>
+                  <div class="flex items-center md:flex-col leading-none gap-1 md:gap-0">
+                    <div class="text-2xl md:text-4xl font-serif font-black text-gray-850 flex items-center justify-center">
                       <span>{{ timeSignature }}</span>
                     </div>
                     <!-- line separator -->
-                    <div class="w-6 h-0.5 bg-gray-400 my-0.5 group-hover:bg-[#8EE000] transition-colors" :class="{'group-hover:bg-violet-500': currentPlan === 'PRO'}"></div>
-                    <div class="text-3xl md:text-4xl font-serif font-black text-gray-850">{{ timeSignatureUnit }}</div>
+                    <div class="hidden md:block w-6 h-0.5 bg-gray-400 my-0.5 group-hover:bg-[#8EE000] transition-colors" :class="{'group-hover:bg-violet-500': currentPlan === 'PRO'}"></div>
+                    <span class="md:hidden text-gray-400 font-serif text-lg">/</span>
+                    <div class="text-2xl md:text-4xl font-serif font-black text-gray-850">{{ timeSignatureUnit }}</div>
                   </div>
-                  <span class="text-[8px] text-gray-400 font-bold mt-1 group-hover:text-gray-600 flex items-center gap-0.5">
+                  <span class="text-[7.5px] md:text-[8px] text-gray-400 font-bold mt-0.5 md:mt-1 group-hover:text-gray-600 flex items-center gap-0.5">
                     Ver info ℹ️
                   </span>
                 </button>
               </div>
               
               <!-- Global Subdivisions Toggle (visible per-score in sidebar) -->
-              <div class="w-full mt-2">
-                <label class="flex items-center justify-between gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors" title="Mostrar/ocultar subdivisiones en todos los compases">
+              <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+                <label class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1.5 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Mostrar/ocultar subdivisiones en todos los compases">
                   <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-tight">‖ Sub</span>
                   <div class="relative">
                     <input 
@@ -6506,9 +6604,9 @@ const exportPdf = () => {
               </div>
 
               <!-- Global showObligado (Modo Rítmico / Ritmo Armónico) Toggle -->
-              <div class="w-full mt-2">
-                <label class="flex items-center justify-between gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors" title="Modo Rítmico: Los acordes respetarán la duración exacta de las figuras">
-                  <div class="flex flex-col text-left">
+              <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+                <label class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Modo Rítmico: Los acordes respetarán la duración exacta de las figuras">
+                  <div class="flex flex-col text-center md:text-left">
                     <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-none">♩ Ritmo</span>
                     <span class="text-[7.5px] text-gray-400 font-bold leading-none mt-0.5">Armónico</span>
                   </div>
@@ -6525,9 +6623,9 @@ const exportPdf = () => {
               </div>
 
               <!-- Global showLyrics Toggle -->
-              <div class="w-full mt-2">
-                <label class="flex items-center justify-between gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors" title="Mostrar/ocultar letras y anotaciones en los compases">
-                  <div class="flex flex-col text-left">
+              <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+                <label class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Mostrar/ocultar letras y anotaciones en los compases">
+                  <div class="flex flex-col text-center md:text-left">
                     <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-none">✎ Letras</span>
                     <span class="text-[7.5px] text-gray-400 font-bold leading-none mt-0.5">Anotaciones</span>
                   </div>
@@ -6543,10 +6641,10 @@ const exportPdf = () => {
               </div>
               
               <!-- Suggestions Toggle Button -->
-              <div class="w-full mt-2 animate-scale-up">
+              <div class="w-28 md:w-full mt-0 md:mt-2 flex-shrink-0 animate-scale-up">
                 <button
                   @click="isSuggestionsPanelOpen = !isSuggestionsPanelOpen"
-                  class="flex items-center justify-between gap-2 px-2 py-2 rounded-xl border w-full hover:bg-gray-100 transition-colors"
+                  class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1.5 md:gap-2 px-2 py-2 rounded-xl border w-full h-20 md:h-auto hover:bg-gray-100 transition-colors"
                   :class="isSuggestionsPanelOpen 
                     ? 'bg-amber-50 border-amber-300 text-amber-900 shadow-sm shadow-amber-100/50' 
                     : 'bg-gray-50/80 border-gray-200 text-gray-500'"
@@ -6561,7 +6659,7 @@ const exportPdf = () => {
             </div>
             
             <!-- MEASURES SYSTEMS GRID -->
-            <div class="flex-1 space-y-8">
+            <div class="flex-1 space-y-8 min-w-0 overflow-x-auto md:overflow-x-visible">
               <!-- Asistente de Sugerencias Panel -->
               <transition name="fade">
                 <div v-if="isSuggestionsPanelOpen" class="bg-gradient-to-tr from-amber-50/80 to-amber-100/35 backdrop-blur-md border border-amber-250/70 rounded-3xl p-5 shadow-lg shadow-amber-100/10 animate-scale-up space-y-4">
