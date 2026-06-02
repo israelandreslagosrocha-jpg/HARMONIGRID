@@ -1,11 +1,13 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import logoUrl from './assets/logo.jpg'
 import { getDiatonicChords, SCALES, getScaleNotes } from './core/scales.js'
 import { formatChord } from './core/chords.js'
 import { generatePDF } from './core/pdfExport.js'
 import { getKeySignatureString, getKeySignature, getParentKeyRoot, SCALE_PARENTS } from './core/keySignatures.js'
 import { getSuggestionsForSystem, applySuggestion, getChordDegree, analyzeModulationRelationship } from './core/suggestions.js'
 import { NOTE_TO_INDEX, transposeNote } from './core/notes.js'
+import { getTransposedChord } from './core/transpose.js'
 const generateUniqueId = () => {
   return `${Date.now()}-${Math.floor(Math.random() * 1000000)}`
 }
@@ -14,6 +16,26 @@ const currentPlan = ref('FREE')
 const viewMode = ref('compact')
 const isUpgradeModalOpen = ref(false)
 const upgradeReason = ref('')
+// --- TRANSPOSE STATE ---
+const isTransposeModalOpen = ref(false)
+const transposeTargetKey = ref('C')
+const transposeTargetScale = ref('major')
+const transposeMode = ref('tonal') // 'tonal', 'modal', 'functional'
+const transposeScope = ref('all') // 'all', 'section'
+// --- LYRICS STATE ---
+const showLyricsGlobal = ref(false)
+const hoveredMeasureIndex = ref(null)
+const activeEditingLyricsIndex = ref(null)
+const pendingSelection = ref(null)
+const hoveredChordId = ref(null)
+const hoveredAnchor = ref(null)
+const activeConnectors = ref([])
+// --- RESPONSIVE STATE FOR AUTO-ORDERING ---
+const windowWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1200)
+const handleResize = () => {
+  windowWidth.value = window.innerWidth
+  updateConnectors()
+}
 // --- WIZARD / SETUP STATE ---
 const isSetupMode = ref(true)
 const configTitle = ref('Mi Canción')
@@ -81,6 +103,52 @@ const globalShowSubdivisions = computed({
   }
 })
 const tempMeasureGroove = ref('global')
+// --- UNDO HISTORY STATE & OPERATIONS ---
+const undoStack = ref([])
+
+const saveHistory = () => {
+  const stateCopy = {
+    measures: JSON.parse(JSON.stringify(measures.value)),
+    timeSignature: timeSignature.value,
+    timeSignatureUnit: timeSignatureUnit.value,
+    globalGrouping: globalGrouping.value ? [...globalGrouping.value] : null,
+    globalGroove: globalGroove.value,
+    keyRoot: key.value,
+    scaleType: scaleType.value,
+    tiedSlots: Array.from(tiedSlots.value),
+    repeats: JSON.parse(JSON.stringify(repeats.value))
+  }
+  
+  if (undoStack.value.length >= 50) {
+    undoStack.value.shift()
+  }
+  undoStack.value.push(stateCopy)
+}
+
+const undo = () => {
+  if (undoStack.value.length === 0) return
+  
+  const prevState = undoStack.value.pop()
+  
+  measures.value = prevState.measures
+  timeSignature.value = prevState.timeSignature
+  timeSignatureUnit.value = prevState.timeSignatureUnit
+  globalGrouping.value = prevState.globalGrouping
+  globalGroove.value = prevState.globalGroove
+  key.value = prevState.keyRoot
+  scaleType.value = prevState.scaleType
+  tiedSlots.value = new Set(prevState.tiedSlots)
+  repeats.value = prevState.repeats || []
+  
+  showToast("Deshacer completado ↩️")
+}
+
+const selectKey = (k) => {
+  saveHistory()
+  key.value = k
+  activeDropdown.value = null
+}
+
 // --- KEY SIGNATURE EDUCATIONAL MODAL STATE ---
 const isKeyInfoOpen = ref(false)
 const isVerMasExpanded = ref(false)
@@ -130,6 +198,10 @@ const startProject = () => {
   scaleType.value = configScale.value
   globalGroove.value = 'Ninguno'
   
+  // Reset all layout toggles to OFF when entering the editor
+  globalShowObligado.value = false
+  showLyricsGlobal.value = false
+  
   const limit = currentPlan.value === 'PRO' ? 999 : 20
   const count = Math.min(Math.max(configMeasuresCount.value, 1), limit)
   const emptyMeasures = []
@@ -140,11 +212,16 @@ const startProject = () => {
       beats: emptyBeats,
       sectionLabel: null,
       showObligado: globalShowObligado.value,
-      showSubdivisions: true
+      showSubdivisions: false,
+      lyrics: {
+        rawText: '',
+        mode: 'free'
+      }
     })
   }
   measures.value = emptyMeasures
   repeats.value = []
+  undoStack.value = [] // Reset undo history for the new project
   isSetupMode.value = false
   syncMeasuresBeats()
 }
@@ -166,6 +243,37 @@ const translateNoteToSpanish = (note) => {
   const formattedAcc = acc.replace(/##/g, '𝄪').replace(/bb/g, '𝄫').replace(/#/g, '♯').replace(/b/g, '♭')
   return spanishBase + formattedAcc
 }
+const isCharacteristicNote = (scale, index) => {
+  if (scale === 'dorian') return index === 5
+  if (scale === 'phrygian') return index === 1
+  if (scale === 'lydian') return index === 3
+  if (scale === 'mixolydian') return index === 6
+  if (scale === 'locrian') return index === 1 || index === 4
+  if (scale === 'harmonic_minor') return index === 6
+  if (scale === 'locrian_sharp6') return index === 1 || index === 4 || index === 5
+  if (scale === 'ionian_sharp5') return index === 4
+  if (scale === 'dorian_sharp4') return index === 3 || index === 5
+  if (scale === 'phrygian_dominant') return index === 1 || index === 2
+  if (scale === 'lydian_sharp2') return index === 1 || index === 3
+  if (scale === 'ultralocrian') return index === 1 || index === 3 || index === 4 || index === 5
+  if (scale === 'melodic_minor') return index === 5 || index === 6
+  if (scale === 'dorian_flat2') return index === 1 || index === 5
+  if (scale === 'lydian_augmented') return index === 3 || index === 4
+  if (scale === 'lydian_dominant') return index === 3 || index === 6
+  if (scale === 'mixolydian_flat6') return index === 5 || index === 6
+  if (scale === 'locrian_sharp2') return index === 1 || index === 4
+  if (scale === 'altered') return index === 1 || index === 2 || index === 4 || index === 5
+  if (scale === 'diminished_wh') return true
+  if (scale === 'diminished_hw') return index === 1 || index === 2 || index === 4 || index === 6
+  if (scale === 'whole_tone') return index === 3 || index === 4
+  if (scale === 'pentatonic_major') return true
+  if (scale === 'pentatonic_minor') return index === 1 || index === 4
+  if (scale === 'blues') return index === 3 || index === 1 || index === 5
+  if (scale === 'bebop_dominant') return index === 6 || index === 7
+  if (scale === 'hungarian_major') return index === 1 || index === 3
+  if (scale === 'hungarian_gypsy_minor') return index === 3 || index === 6
+  return false
+}
 const translateCategory = (cat) => {
   const dict = {
     major_minor: 'Mayor / Menor',
@@ -173,6 +281,8 @@ const translateCategory = (cat) => {
     harmonic_minor_modes: 'Modo de la Menor Armónica',
     melodic_minor_modes: 'Modo de la Menor Melódica',
     symmetric: 'Escala Simétrica',
+    universal: 'Escala Universal',
+    exotic: 'Escala Exótica',
     popular: 'Escala Popular / Práctica'
   }
   return dict[cat] || cat
@@ -187,6 +297,100 @@ const currentConfigScaleName = computed(() => {
   const scale = SCALES[configScale.value]
   return scale ? scale.name : configScale.value
 })
+const transposePreview = computed(() => {
+  if (!isTransposeModalOpen.value) return []
+  
+  const activeM = selectedMeasureIndex.value !== -1 ? measuresWithKey.value[selectedMeasureIndex.value] : null
+  const sourceKey = activeM ? activeM.activeKey : key.value
+  const sourceScale = activeM ? activeM.activeScale : scaleType.value
+  
+  const targetKey = transposeTargetKey.value
+  const targetScale = transposeTargetScale.value
+  const mode = transposeMode.value
+  const scope = transposeScope.value
+  
+  let measuresToPreview = []
+  if (scope === 'section') {
+    measuresToPreview = measuresWithKey.value.filter(m => m.activeKey === sourceKey && m.activeScale === sourceScale)
+  } else {
+    measuresToPreview = measuresWithKey.value
+  }
+  
+  const uniqueChords = []
+  const chordKeys = new Set()
+  measuresToPreview.forEach(m => {
+    m.beats.forEach(b => {
+      if (b.root) {
+        const keyStr = `${b.root}_${b.type}`
+        if (!chordKeys.has(keyStr)) {
+          chordKeys.add(keyStr)
+          uniqueChords.push({ root: b.root, type: b.type, activeKey: m.activeKey, activeScale: m.activeScale })
+        }
+      }
+    })
+  })
+  
+  return uniqueChords.map(c => {
+    const targetChord = getTransposedChord(c.root, c.type, c.activeKey, c.activeScale, targetKey, targetScale, mode, sourceKey)
+    return {
+      from: `${c.root}${c.type || ''}`,
+      to: `${targetChord.root}${targetChord.type || ''}`
+    }
+  })
+})
+const transposeEducationNotes = computed(() => {
+  if (!isTransposeModalOpen.value) return null
+  
+  const activeM = selectedMeasureIndex.value !== -1 ? measuresWithKey.value[selectedMeasureIndex.value] : null
+  const sourceKey = activeM ? activeM.activeKey : key.value
+  const sourceScale = activeM ? activeM.activeScale : scaleType.value
+  
+  const targetScale = transposeTargetScale.value
+  
+  if (sourceScale === targetScale) return null
+  
+  const compareKey = sourceKey
+  const sourceNotes = getScaleNotes(compareKey, sourceScale)
+  const targetNotes = getScaleNotes(compareKey, targetScale)
+  
+  const sourceDef = SCALES[sourceScale]
+  const targetDef = SCALES[targetScale]
+  if (!sourceDef || !targetDef) return null
+  
+  const changes = []
+  const len = Math.min(sourceNotes.length, targetNotes.length)
+  for (let i = 0; i < len; i++) {
+    const sNote = sourceNotes[i]
+    const tNote = targetNotes[i]
+    if (sNote !== tNote) {
+      changes.push({
+        degree: sourceDef.degrees[i]?.numeral || `${i+1}`,
+        from: sNote,
+        to: tNote
+      })
+    }
+  }
+  
+  let scaleDesc = ''
+  if (sourceScale === 'major' && targetScale === 'dorian') {
+    scaleDesc = 'Sonoridad más modal y melancólica (carácter menor con el brillo distintivo de la sexta mayor).'
+  } else if (sourceScale === 'major' && targetScale === 'phrygian') {
+    scaleDesc = 'Sonoridad muy tensa y misteriosa, de carácter flamenco y español.'
+  } else if (sourceScale === 'minor' && targetScale === 'harmonic_minor') {
+    scaleDesc = 'Sonoridad dramática y exótica con fuerte empuje tonal por la sensible mayor.'
+  } else if (targetScale === 'hungarian_major') {
+    scaleDesc = 'Color brillante y cinemático, muy exótico por la segunda aumentada.'
+  } else if (targetScale === 'hungarian_gypsy_minor') {
+    scaleDesc = 'Ambiente dramático de tensión gitana y metal neoclásico oscuro.'
+  } else {
+    scaleDesc = `Transición del color de ${sourceDef.name} al de ${targetDef.name}.`
+  }
+  
+  return {
+    changes,
+    scaleDesc
+  }
+})
 const groupedScales = computed(() => {
   const groups = {
     major_minor: { label: 'Mayor / Menor', items: [] },
@@ -194,6 +398,8 @@ const groupedScales = computed(() => {
     harmonic_minor_modes: { label: 'Modos de la Menor Armónica', items: [] },
     melodic_minor_modes: { label: 'Modos de la Menor Melódica', items: [] },
     symmetric: { label: 'Escalas Simétricas', items: [] },
+    universal: { label: 'Nivel 5 — Escalas Universales', items: [] },
+    exotic: { label: 'Nivel 6 — Escalas Exóticas', items: [] },
     popular: { label: 'Populares y Prácticas', items: [] }
   }
   
@@ -282,9 +488,9 @@ const getDynamicScaleExplanation = (keyRoot, scaleId, notesSpanish, parentRoot) 
     case 'harmonic_major':
       return `La escala de <strong>${scaleName}</strong> (mayor armónica) es una variación de la escala mayor natural con el sexto grado rebajado medio tono (<strong>♭6</strong>). Aporta una sonoridad brillante pero con un matiz exótico y melancólico, muy utilizada en la rearmonización de jazz y música para cine. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – 2 – 3 – 4 – 5 – ♭6 – 7).`
     case 'hungarian_gypsy_minor':
-      return `La escala de <strong>${scaleName}</strong> (menor húngara o doble armónica menor) posee dos segundas aumentadas en su estructura. Ofrece una sonoridad intensa y muy dramática, típica del folclore gitano, la música de Europa del Este y muy apreciada en el rock y metal. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – 2 – ♭3 – ♯4 – 5 – ♭6 – 7).`
+      return `La escala de <strong>${scaleName}</strong> (menor húngara o doble armónica menor) es una de las escalas exóticas más importantes para composición cinematográfica, metal neoclásico y música gitana. Combina la estructura de la menor armónica con el intervalo de cuarta aumentada (<strong>♯4</strong> / <strong>${notesSpanish[3]}</strong>) del modo lidio, conteniendo simultáneamente <strong>♯4</strong> y <strong>7</strong> (sensible mayor). En esta tonalidad, sus notas son <strong>${notesStr}</strong>.`
     case 'hungarian_major':
-      return `La escala de <strong>${scaleName}</strong> (mayor húngara) es una escala mayor exótica que combina una segunda aumentada (<strong>♯2</strong>), una cuarta aumentada (<strong>♯4</strong>) y una séptima menor (<strong>♭7</strong>). Genera una sonoridad altamente inusual y disonante, excelente para fraseos de jazz moderno y fusión avanzada para tocar "outside" (fuera de la tonalidad). Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – ♯2 – 3 – ♯4 – 5 – 6 – ♭7).`
+      return `La escala de <strong>${scaleName}</strong> (mayor húngara) modifica la escala mayor elevando la segunda (<strong>♯2</strong> / <strong>${notesSpanish[1]}</strong>) y la cuarta (<strong>♯4</strong> / <strong>${notesSpanish[3]}</strong>). El resultado es una sonoridad brillante, exótica y muy utilizada en música gitana, bandas sonoras, fantasía y composición cinematográfica. En esta tonalidad, está compuesta por las notas <strong>${notesStr}</strong>.`
     case 'bebop_dominant':
       return `La escala de <strong>${scaleName}</strong> (bebop dominante) es una escala mixolidia que incorpora la séptima mayor como nota de paso entre la séptima menor y la octava. Al tener ocho notas, permite que las notas del acorde (1, 3, 5, ♭7) caigan siempre en los tiempos fuertes al tocar corcheas, siendo la base del fraseo de jazz bebop. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – 2 – 3 – 4 – 5 – 6 – ♭7 – 7).`
     default:
@@ -390,7 +596,7 @@ const selectMainScale = (scaleId) => {
     activeDropdown.value = null
     return
   }
-  
+  saveHistory()
   scaleType.value = scaleId
   activeDropdown.value = null
 }
@@ -816,11 +1022,11 @@ const activeChordExtensions = computed(() => {
   if (!dbInfo) {
     if (type === '7') {
       dbInfo = { available: ['9', '13', 'b9', '#9', '#11', 'b13'], avoid: ['11'], reason: 'Evitar la 11 justa por choque de semitono con la tercera mayor.' }
-    } else if (['maj7', 'maj'].includes(type)) {
+    } else if (['maj7', 'maj', ''].includes(type || '')) {
       dbInfo = { available: ['9', '13', '#11'], avoid: ['11'], reason: 'Evitar la 11 justa por choque de semitono con la tercera mayor.' }
-    } else if (['m7', 'min', 'minor'].includes(type)) {
+    } else if (['m7', 'min', 'minor', 'm'].includes(type || '')) {
       dbInfo = { available: ['9', '11', '13'], avoid: [], reason: '' }
-    } else if (['m7b5', 'dim', 'dim7'].includes(type)) {
+    } else if (['m7b5', 'dim', 'dim7'].includes(type || '')) {
       dbInfo = { available: ['9', '11', 'b13'], avoid: [], reason: '' }
     } else {
       dbInfo = { available: ['9', '11', '13'], avoid: [], reason: '' }
@@ -965,7 +1171,7 @@ const propagateSubdivisionMutation = (measureIndex, beatIndex, subdivisionIndex,
       sub.tension = newChord.tension
       sub.bass = newChord.bass
       sub.tensions = newChord.tensions ? [...newChord.tensions] : []
-      sub.isSilence = false
+      sub.isSilence = newChord.isSilence || false
     }
   })
 }
@@ -1102,26 +1308,51 @@ const setMeasuresPerSystem = (num) => {
   }
   defaultMeasuresPerSystem.value = num
 }
+const availableWidth = computed(() => {
+  const w = windowWidth.value
+  if (w >= 1450) {
+    return 1260
+  } else if (w >= 1024) {
+    return w - 170
+  } else if (w >= 768) {
+    return w - 160
+  } else {
+    return w - 120
+  }
+})
+
 const systems = computed(() => {
   const result = []
   let currentSystem = []
+  let currentSystemWidth = 0
+  const gap = 12 // gap-x-3 = 12px
   
   displayedMeasures.value.forEach((measure, idx) => {
-    currentSystem.push(measure)
-    
-    const isLast = idx === displayedMeasures.value.length - 1
+    const measureWidth = getMeasureMinWidth(measure)
     const isPro = currentPlan.value === 'PRO'
     const maxPerSystem = isPro ? defaultMeasuresPerSystem.value : 4
     
+    // Check if adding this measure exceeds the available width of the row container
+    const wouldExceedWidth = currentSystem.length > 0 && 
+      (currentSystemWidth + gap + measureWidth > availableWidth.value)
+      
     const hasExplicitBreak = isPro && measure.systemBreak === true
     const reachedMax = currentSystem.length >= maxPerSystem
     
-    if (isLast || hasExplicitBreak || reachedMax) {
+    if (wouldExceedWidth || hasExplicitBreak || reachedMax) {
       result.push({
         id: `sys-${result.length}`,
         measures: currentSystem
       })
-      currentSystem = []
+      currentSystem = [measure]
+      currentSystemWidth = measureWidth
+    } else {
+      currentSystem.push(measure)
+      if (currentSystem.length === 1) {
+        currentSystemWidth = measureWidth
+      } else {
+        currentSystemWidth += gap + measureWidth
+      }
     }
   })
   
@@ -1157,19 +1388,259 @@ const openSystemSuggestions = (system) => {
   activeSystemSuggestions.value = getSuggestionsForSystem(system.measures, systemStartIdx, sysKey, sysScale)
   isSystemSuggestionsModalOpen.value = true
 }
+
+// --- ASSISTANT SUGGESTIONS STATE ---
+const isSuggestionsPanelOpen = ref(true)
+const allSuggestionsPool = ref([])
+const suggestionOffset = ref(0)
+
+const resolveRomanNumeralToChord = (numeral, keyRoot, scaleType) => {
+  const triads = getDiatonicChords(keyRoot, scaleType, 'triad')
+  const tetrads = getDiatonicChords(keyRoot, scaleType, 'tetrad')
+  
+  const cleanNumeral = numeral
+    .replace('maj7', '')
+    .replace('min7', '')
+    .replace('7', '')
+    .replace('m7b5', '')
+    .replace('m7', '')
+    .replace('M7', '')
+  
+  let match = tetrads.find(c => c.degreeNumeral.toLowerCase() === cleanNumeral.toLowerCase())
+  if (!match) {
+    match = triads.find(c => c.degreeNumeral.toLowerCase() === cleanNumeral.toLowerCase())
+  }
+  
+  if (match) {
+    const useTetrad = numeral.includes('7') || numeral.includes('maj') || numeral.includes('min')
+    return {
+      root: match.root,
+      type: useTetrad ? match.type : (triads.find(c => c.degreeNumeral === match.degreeNumeral)?.type || '')
+    }
+  }
+  
+  const cleanNumUpper = cleanNumeral.toUpperCase()
+  let semitones = 0
+  let isMinor = numeral.toLowerCase() === numeral
+  
+  if (cleanNumUpper === 'I') semitones = 0
+  else if (cleanNumUpper === '♭II' || cleanNumUpper === 'BII') semitones = 1
+  else if (cleanNumUpper === 'II') semitones = 2
+  else if (cleanNumUpper === '♭III' || cleanNumUpper === 'BIII') semitones = 3
+  else if (cleanNumUpper === 'III') semitones = 4
+  else if (cleanNumUpper === 'IV') semitones = 5
+  else if (cleanNumUpper === '♯IV' || cleanNumUpper === 'NIV') semitones = 6
+  else if (cleanNumUpper === 'V') semitones = 7
+  else if (cleanNumUpper === '♭VI' || cleanNumUpper === 'BVI') semitones = 8
+  else if (cleanNumUpper === 'VI') semitones = 9
+  else if (cleanNumUpper === '♭VII' || cleanNumUpper === 'BVII') semitones = 10
+  else if (cleanNumUpper === 'VII') semitones = 11
+  
+  const transposedRoot = transposeNote(keyRoot, semitones, keyRoot)
+  
+  let type = ''
+  if (numeral.includes('7')) {
+    type = isMinor ? 'm7' : '7'
+    if (numeral.includes('maj') || numeral.includes('M')) {
+      type = 'maj7'
+    }
+  } else {
+    type = isMinor ? 'min' : ''
+  }
+  
+  return {
+    root: transposedRoot,
+    type: type
+  }
+}
+
+const getGenericSuggestions = () => {
+  const isMinor = scaleType.value === 'minor' || scaleType.value.includes('minor')
+  const k = key.value
+  
+  const list = []
+  if (!isMinor) {
+    list.push({
+      title: 'Progresión Pop Clásica',
+      description: `Escribe la progresión más exitosa del pop mundial: **I - V - vi - IV** en ${translateNoteToSpanish(k)} Mayor. Aporta balance y estabilidad.`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', 'V', 'vi', 'IV']
+      }
+    })
+    list.push({
+      title: 'Cadencia Lidia Brillante',
+      description: `Añade un color brillante y cinematográfico usando el intercambio modal del IV grado mayor: **I - II - IV - I** (ej. en ${translateNoteToSpanish(k)}: ${k} - ${transposeNote(k, 2, k)} - ${transposeNote(k, 5, k)} - ${k}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', 'II', 'IV', 'I']
+      }
+    })
+    list.push({
+      title: 'Cadencia Plagal de Jazz',
+      description: `Progresión sofisticada ideal para puentes o coros: **ii7 - V7 - Imaj7**. Conecta la subdominante menor y el dominante con resolución de tónica.`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['ii7', 'V7', 'Imaj7', 'Imaj7']
+      }
+    })
+    list.push({
+      title: 'Intercambio Modal Mixolidio',
+      description: `Aporta una vibración rockera y abierta a tu progresión usando el acorde de bemol siete: **I - ♭VII - IV - I** (ej: ${k} - ${transposeNote(k, 10, k)} - ${transposeNote(k, 5, k)} - ${k}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', '♭VII', 'IV', 'I']
+      }
+    })
+  } else {
+    list.push({
+      title: 'Progresión Menor Clásica',
+      description: `Escribe una progresión base menor sumamente expresiva: **i - ♭VI - ♭III - ♭VII** en ${translateNoteToSpanish(k)} menor. Estándar de baladas.`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭VI', '♭III', '♭VII']
+      }
+    })
+    list.push({
+      title: 'Cadencia Frigia Española',
+      description: `Color oscuro y flamenco: **i - ♭II - ♭III - ♭II** (ej. en ${translateNoteToSpanish(k)} menor: ${k}m - ${transposeNote(k, 1, k)} - ${transposeNote(k, 3, k)}m - ${transposeNote(k, 1, k)}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭II', '♭III', '♭II']
+      }
+    })
+    list.push({
+      title: 'Cadencia Menor Armónica',
+      description: `Drama y fuerza dramática: **i - iv - V7 - i**. El V grado con tercera mayor proporciona resolución contundente.`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', 'iv', 'V7', 'i']
+      }
+    })
+    list.push({
+      title: 'Movimiento Dórico Elegante',
+      description: `Elegancia y toque jazz-fusión: **i7 - IV7 - i7**. El acorde IV mayor en escala menor introduce una sexta mayor brillante.`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i7', 'IV7', 'i7', 'i7']
+      }
+    })
+  }
+  return list
+}
+
+const updateSuggestionsPool = () => {
+  if (!measures.value) return
+  const pool = []
+  const len = measures.value.length
+  
+  for (let i = 0; i <= len - 4; i++) {
+    const windowMeasures = measures.value.slice(i, i + 4)
+    const sysKey = measuresWithKey.value[i]?.activeKey || key.value
+    const sysScale = measuresWithKey.value[i]?.activeScale || scaleType.value
+    const windowSuggestions = getSuggestionsForSystem(windowMeasures, i, sysKey, sysScale)
+    
+    windowSuggestions.forEach(s => {
+      pool.push({
+        title: s.title,
+        description: s.description,
+        payload: s.payload,
+        type: 'rule'
+      })
+    })
+  }
+  
+  const uniquePool = []
+  const seen = new Set()
+  pool.forEach(s => {
+    const id = `${s.title}_${s.description}`
+    if (!seen.has(id)) {
+      seen.add(id)
+      uniquePool.push(s)
+    }
+  })
+  
+  allSuggestionsPool.value = uniquePool
+  if (suggestionOffset.value >= uniquePool.length) {
+    suggestionOffset.value = 0
+  }
+}
+
+const displayedSuggestions = computed(() => {
+  if (allSuggestionsPool.value.length === 0) {
+    const generic = getGenericSuggestions()
+    const offset = suggestionOffset.value % generic.length
+    const res = []
+    for (let i = 0; i < 3; i++) {
+      res.push(generic[(offset + i) % generic.length])
+    }
+    return res
+  }
+  
+  const res = []
+  const pool = allSuggestionsPool.value
+  const offset = suggestionOffset.value % pool.length
+  for (let i = 0; i < Math.min(3, pool.length); i++) {
+    res.push(pool[(offset + i) % pool.length])
+  }
+  return res
+})
+
+const refreshSuggestions = () => {
+  const poolSize = allSuggestionsPool.value.length === 0 ? getGenericSuggestions().length : allSuggestionsPool.value.length
+  suggestionOffset.value = (suggestionOffset.value + 3) % poolSize
+  showToast("Sugerencias actualizadas 🔄")
+}
+
+watch([key, scaleType, measures], () => {
+  updateSuggestionsPool()
+}, { deep: true, immediate: true })
+
 const runSuggestion = (suggestion) => {
   if (currentPlan.value !== 'PRO') {
     upgradeReason.value = 'suggestions'
     isUpgradeModalOpen.value = true
     return
   }
-  measures.value = applySuggestion(measures.value, suggestion.payload)
+  saveHistory()
+  if (suggestion.payload && suggestion.payload.type === 'replace_progression') {
+    const newMeasures = JSON.parse(JSON.stringify(measures.value))
+    const keyRoot = key.value
+    const scale = scaleType.value
+    suggestion.payload.progression.forEach((numeral, idx) => {
+      if (newMeasures[idx]) {
+        const resolved = resolveRomanNumeralToChord(numeral, keyRoot, scale)
+        newMeasures[idx].beats.forEach((b, bIdx) => {
+          if (bIdx === 0) {
+            b.root = resolved.root
+            b.type = resolved.type
+            b.tensions = []
+            b.tension = null
+            b.bass = null
+          } else {
+            b.root = null
+            b.type = ''
+            b.tensions = []
+            b.tension = null
+            b.bass = null
+          }
+        })
+      }
+    })
+    measures.value = newMeasures
+    showToast(`Se aplicó la progresión: ${suggestion.title}`)
+  } else {
+    measures.value = applySuggestion(measures.value, suggestion.payload)
+    showToast(`Se aplicó la sugerencia: ${suggestion.title}`)
+  }
   isSystemSuggestionsModalOpen.value = false
+  syncMeasuresBeats()
+  updateSuggestionsPool()
 }
 const isMeasureOptionsOpen = ref(false)
 const selectedMeasureIndex = ref(null)
 const tempSectionLabel = ref('Ninguna')
-const tempShowSubdivisions = ref(true)
+const tempShowSubdivisions = ref(false)
 const tempShowObligado = ref(false)
 // --- LOCAL METRIC / TIME SIGNATURE STATE ---
 const isLocalMetricSubMenuOpen = ref(false)
@@ -1233,7 +1704,6 @@ const tempLocalGroupingStr = ref('')
 
 // --- KEY CHANGE / MODULATION STATE ---
 const isKeyChangeSubMenuOpen = ref(false)
-const keyChangeStep = ref(1)
 const tempKeyChangeKey = ref('C')
 const tempKeyChangeScale = ref('major')
 const tempKeyChangeBeatIndex = ref(0)
@@ -1299,28 +1769,102 @@ const getSystemColumnCount = (system, sIdx) => {
 
 const getBeatMinWidth = (measure, beat, state) => {
   const rhythm = getEffectiveRhythm(measure, beat, state.index)
-  let baseMin = state.durationSlots * 50
+  const isSynced = currentPlan.value === 'PRO' && measure.lyrics?.mode === 'synced'
+  let baseMin = state.durationSlots * (isSynced ? 35 : 50)
   
   if (rhythm === 'sixteenth') {
-    baseMin = Math.max(baseMin, 112)
+    baseMin = Math.max(baseMin, isSynced ? 80 : 112)
   } else if (rhythm === 'triplet') {
-    baseMin = Math.max(baseMin, 84)
+    baseMin = Math.max(baseMin, isSynced ? 60 : 84)
   } else if (rhythm === 'quintuplet') {
-    baseMin = Math.max(baseMin, 120)
+    baseMin = Math.max(baseMin, isSynced ? 90 : 120)
   }
   
-  if (beat.root) {
-    baseMin = Math.max(baseMin, 72)
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig?.unit === 8
+  
+  // 1. Subdivided Beat adaptive width
+  if (measure.showObligado && isSubdividedRhythm(rhythm, isDenom8, beat)) {
+    const slots = getVisibleSlotsForRender(measure, beat, state.index)
+    const totalFlexGrow = slots.reduce((sum, s) => sum + (s.flexGrow || 1), 0)
+    let subWidthNeeded = 0
+    
+    slots.forEach(s => {
+      let slotMin = 20
+      
+      if (s.root) {
+        const subCount = slots.length
+        let charWidth = 8
+        let padding = 10
+        
+        if (subCount >= 4) {
+          charWidth = 7.5
+          padding = 8
+        } else if (subCount >= 3) {
+          charWidth = 9
+          padding = 10
+        } else {
+          charWidth = 10.5
+          padding = 12
+        }
+        
+        const displayParts = splitChordDisplay(s)
+        const maxPartLen = Math.max(displayParts.main.length, displayParts.bass.length)
+        slotMin = padding + maxPartLen * charWidth
+      }
+      
+      // Project required beat width for this slot to fit
+      const requiredBeatWidth = slotMin * (totalFlexGrow / (s.flexGrow || 1))
+      subWidthNeeded = Math.max(subWidthNeeded, requiredBeatWidth)
+    })
+    baseMin = Math.max(baseMin, subWidthNeeded)
+  } 
+  // 2. Normal Beat adaptive width
+  else if (beat.root) {
+    const fontClass = getMeasureFontSizeClass(measure)
+    let charWidth = 8.5
+    let padding = 24
+    
+    if (fontClass.includes('text-xl') || fontClass.includes('lg:text-[30px]')) {
+      charWidth = 16
+      padding = 32
+    } else if (fontClass.includes('lg:text-[26px]') || fontClass.includes('lg:text-[22px]')) {
+      charWidth = 14
+      padding = 28
+    } else if (fontClass.includes('lg:text-[19px]')) {
+      charWidth = 12
+      padding = 26
+    } else if (fontClass.includes('lg:text-[16px]')) {
+      charWidth = 10
+      padding = 24
+    }
+    
+    const displayParts = splitChordDisplay(beat)
+    const maxPartLen = Math.max(displayParts.main.length, displayParts.bass.length)
+    let chordMinWidth = padding + maxPartLen * charWidth
+    
+    baseMin = Math.max(baseMin, chordMinWidth)
+  }
+  
+  // 3. Ensure beat width accommodates lyrics text for both normal, empty, and subdivided beats
+  if (isSynced) {
+    const layoutData = getMeasureLyricsLayout(measure)
+    const slotRes = layoutData[beat.id]
+    if (slotRes && slotRes.hasLyrics) {
+      const textLen = slotRes.hasAssociated 
+        ? (slotRes.preText.length + slotRes.associatedText.length + slotRes.postText.length) 
+        : slotRes.normalText.length
+      const lyricMinWidth = textLen * 8.0 + 24
+      baseMin = Math.max(baseMin, lyricMinWidth)
+    }
   }
   
   return baseMin
 }
 
-const getMeasureFlexStyle = (measure) => {
-  const sig = getMeasureTimeSignature(measure)
-  const beats = sig.beats
-  let totalMinWidth = 0
+const getMeasureMinWidth = (measure) => {
   const states = getMergedBeats(measure)
+  let totalMinWidth = 0
   
   states.forEach(state => {
     if (!state.isMerged) {
@@ -1328,11 +1872,33 @@ const getMeasureFlexStyle = (measure) => {
     }
   })
   
-  totalMinWidth += 36
+  totalMinWidth += 36 // Card base margins/paddings
+  
+  // Add spacers minWidth under PRO plan
+  if (currentPlan.value === 'PRO') {
+    if (measure.keyChange) {
+      totalMinWidth += 120
+    }
+    const idx = measures.value.findIndex(m => m.id === measure.id)
+    if (idx > 0) {
+      const prevSig = getMeasureTimeSignature(idx - 1)
+      if (measure.timeSignature && (measure.timeSignature.beats !== prevSig.beats || measure.timeSignature.unit !== prevSig.unit)) {
+        totalMinWidth += 72
+      }
+    }
+  }
+  
+  return totalMinWidth
+}
+
+const getMeasureFlexStyle = (measure) => {
+  const sig = getMeasureTimeSignature(measure)
+  const beats = sig.beats
+  const minWidth = getMeasureMinWidth(measure)
   
   return {
-    flex: `${beats} ${beats} 0%`,
-    minWidth: `${totalMinWidth}px`
+    flex: `${beats} 0 0%`,
+    minWidth: `${minWidth}px`
   }
 }
 
@@ -1766,7 +2332,7 @@ const startKeyChangeSetup = () => {
     return
   }
   isKeyChangeSubMenuOpen.value = true
-  keyChangeStep.value = 1
+  tempKeyChangeBeatIndex.value = 0 // Always first beat of the measure
 }
 const saveKeyChange = () => {
   if (selectedMeasureIndex.value !== null) {
@@ -2307,6 +2873,53 @@ const clickBeat = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIn
     toggleMeasureSelection(measureIndex)
     return
   }
+  
+  const m = measures.value[measureIndex]
+  if (pendingSelection.value) {
+    if (pendingSelection.value.measureIndex === measureIndex) {
+      let chordObj = null
+      if (subdivisionIndex !== undefined && subdivisionIndex !== null) {
+        const beat = m.beats[beatIndex]
+        if (beat && beat.subdivisions) {
+          chordObj = beat.subdivisions[subdivisionIndex]
+        }
+      } else {
+        chordObj = m.beats[beatIndex]
+      }
+      
+      if (chordObj) {
+        if (!chordObj.id) {
+          chordObj.id = generateUniqueId()
+        }
+        
+        const start = pendingSelection.value.start
+        const end = pendingSelection.value.end
+        
+        if (!m.lyrics) {
+          m.lyrics = { rawText: '', mode: 'free', anchors: [] }
+        }
+        if (!m.lyrics.anchors) {
+          m.lyrics.anchors = []
+        }
+        
+        // Remove overlapping anchors: (a.start < end && a.end > start)
+        m.lyrics.anchors = m.lyrics.anchors.filter(a => !(a.start < end && a.end > start))
+        
+        m.lyrics.anchors.push({
+          chordId: chordObj.id,
+          start,
+          end
+        })
+        
+        pendingSelection.value = null
+        updateConnectors()
+      }
+      return
+    } else {
+      pendingSelection.value = null
+    }
+  }
+  
   activeDropdown.value = null
   activeRhythmSelector.value = null
   isMeasureOptionsOpen.value = false
@@ -2405,6 +3018,7 @@ const selectRhythmFigure = (rhythmType) => {
 const selectSixteenthPattern = (measure, beat, patternKey) => {
   const pattern = SIXTEENTH_PATTERNS[patternKey]
   if (!pattern) return
+  saveHistory()
   
   beat.harmonicRhythm = 'sixteenth'
   beat.sixteenthPattern = patternKey
@@ -2433,6 +3047,7 @@ const selectSixteenthPattern = (measure, beat, patternKey) => {
 const selectEighthPattern = (measure, beat, patternKey) => {
   const pattern = EIGHTH_PATTERNS[patternKey]
   if (!pattern) return
+  saveHistory()
   
   beat.harmonicRhythm = 'eighth'
   beat.eighthPattern = patternKey
@@ -2563,6 +3178,7 @@ const getVisibleSlotsForRender = (measure, beat, beatIdx) => {
 
 const selectSixteenthPatternInModal = (patternObj, patternKey) => {
   if (selectedBeat.value) {
+    saveHistory()
     const { measureIndex, beatIndex } = selectedBeat.value
     const m = measures.value[measureIndex]
     const beat = m.beats[beatIndex]
@@ -2593,6 +3209,7 @@ const selectSixteenthPatternInModal = (patternObj, patternKey) => {
 
 const selectEighthPatternInModal = (patternObj, patternKey) => {
   if (selectedBeat.value) {
+    saveHistory()
     const { measureIndex, beatIndex } = selectedBeat.value
     const m = measures.value[measureIndex]
     const beat = m.beats[beatIndex]
@@ -2626,33 +3243,378 @@ const closeDropdowns = (e) => {
     activeRhythmSelector.value = null
   }
 }
+const handleKeyDown = (event) => {
+  const activeEl = document.activeElement
+  if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+    return
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
+    event.preventDefault()
+    undo()
+  }
+}
+
 onMounted(() => {
   document.addEventListener('click', closeDropdowns)
   window.addEventListener('mouseup', handleGlobalMouseUp)
+  window.addEventListener('resize', handleResize)
+  window.addEventListener('keydown', handleKeyDown)
+  updateConnectors()
 })
 onUnmounted(() => {
   document.removeEventListener('click', closeDropdowns)
   window.removeEventListener('mouseup', handleGlobalMouseUp)
+  window.removeEventListener('resize', handleResize)
+  window.removeEventListener('keydown', handleKeyDown)
 })
-const diatonicChords = computed(() => {
+const activeModalKeyAndScale = computed(() => {
   if (selectedBeat.value) {
     const measureIdx = selectedBeat.value.measureIndex
     const beatIdx = selectedBeat.value.beatIndex
-    const { key: activeKey, scale: activeScale } = getBeatKeyAndScale(measureIdx, beatIdx)
-    return getDiatonicChords(activeKey, activeScale, modalComplexity.value)
+    return getBeatKeyAndScale(measureIdx, beatIdx)
   }
-  return getDiatonicChords(key.value, scaleType.value, modalComplexity.value)
+  return { key: key.value, scale: scaleType.value }
 })
+const diatonicChords = computed(() => {
+  const { key: activeKey, scale: activeScale } = activeModalKeyAndScale.value
+  return getDiatonicChords(activeKey, activeScale, modalComplexity.value)
+})
+
+const getNextWrittenChord = (selectedBeatVal) => {
+  if (!selectedBeatVal) return null
+  const { measureIndex, beatIndex, subdivisionIndex } = selectedBeatVal
+  
+  // 1. Look in the rest of the current measure
+  const m = measures.value[measureIndex]
+  if (m) {
+    const sig = getMeasureTimeSignature(m)
+    // Start searching from the next slot in the current measure
+    // Let's list all slots of the measure chronologically
+    const slots = []
+    for (let bIdx = 0; bIdx < sig.beats; bIdx++) {
+      const beat = m.beats[bIdx]
+      if (beat) {
+        const rhythm = getEffectiveRhythm(m, beat, bIdx)
+        const subSlots = getBeatSlots(m, beat, bIdx)
+        if (subSlots && subSlots.length > 1) {
+          subSlots.forEach((s, sIdx) => {
+            slots.push({ measureIndex, beatIndex: bIdx, subdivisionIndex: sIdx, chord: s })
+          })
+        } else {
+          slots.push({ measureIndex, beatIndex: bIdx, chord: beat })
+        }
+      }
+    }
+    
+    // Find our current slot's index in the list
+    let curIdx = -1
+    for (let i = 0; i < slots.length; i++) {
+      const s = slots[i]
+      if (s.beatIndex === beatIndex && (subdivisionIndex === undefined || s.subdivisionIndex === subdivisionIndex)) {
+        curIdx = i
+        break
+      }
+    }
+    
+    // Search forward from curIdx + 1 in the current measure
+    if (curIdx !== -1) {
+      for (let i = curIdx + 1; i < slots.length; i++) {
+        if (slots[i].chord && slots[i].chord.root) {
+          return {
+            chord: slots[i].chord,
+            measureIndex,
+            beatIndex: slots[i].beatIndex,
+            subdivisionIndex: slots[i].subdivisionIndex,
+            distance: i - curIdx
+          }
+        }
+      }
+    }
+  }
+  
+  // 2. Look in the next measure (measureIndex + 1)
+  const nextM = measures.value[measureIndex + 1]
+  if (nextM) {
+    const sig = getMeasureTimeSignature(nextM)
+    for (let bIdx = 0; bIdx < sig.beats; bIdx++) {
+      const beat = nextM.beats[bIdx]
+      if (beat) {
+        const subSlots = getBeatSlots(nextM, beat, bIdx)
+        if (subSlots && subSlots.length > 1) {
+          for (let sIdx = 0; sIdx < subSlots.length; sIdx++) {
+            if (subSlots[sIdx].root) {
+              return {
+                chord: subSlots[sIdx],
+                measureIndex: measureIndex + 1,
+                beatIndex: bIdx,
+                subdivisionIndex: sIdx,
+                distance: 99 // different measure
+              }
+            }
+          }
+        } else {
+          if (beat.root) {
+            return {
+              chord: beat,
+              measureIndex: measureIndex + 1,
+              beatIndex: bIdx,
+              distance: 99 // different measure
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return null
+}
+
+const activeModalNextChord = computed(() => {
+  return getNextWrittenChord(selectedBeat.value)
+})
+
+const secondaryAlternativeChords = computed(() => {
+  const targetInfo = activeModalNextChord.value
+  if (!targetInfo || !targetInfo.chord || !targetInfo.chord.root) return []
+  
+  const targetRoot = targetInfo.chord.root
+  const targetType = targetInfo.chord.type || ''
+  const isTargetMinor = ['min', 'minor', 'm', 'm7', 'min7', 'm9', 'm11', 'dim'].some(t => targetType.toLowerCase().includes(t))
+  
+  const measureIdx = selectedBeat.value ? selectedBeat.value.measureIndex : 0
+  const beatIdx = selectedBeat.value ? selectedBeat.value.beatIndex : 0
+  const { key: activeKey } = getBeatKeyAndScale(measureIdx, beatIdx)
+  
+  const complexity = modalComplexity.value // 'triad' or 'tetrad'
+  const list = []
+  
+  // 1. Dominante Secundario (V / V7)
+  const vRoot = transposeNote(targetRoot, 7, activeKey)
+  if (vRoot) {
+    list.push({
+      root: vRoot,
+      type: complexity === 'tetrad' ? '7' : '',
+      label: complexity === 'tetrad' ? `${vRoot}7` : vRoot,
+      degree: complexity === 'tetrad' ? `V7 / ${targetRoot}` : `V / ${targetRoot}`,
+      category: 'Dominante Secundario',
+      description: `Genera una fuerte resolución de quinta justa descendente hacia el destino.`
+    })
+  }
+  
+  // 2. Sustitución de Tritono (subV7)
+  const subvRoot = transposeNote(targetRoot, 1, activeKey)
+  if (subvRoot) {
+    list.push({
+      root: subvRoot,
+      type: complexity === 'tetrad' ? '7' : '',
+      label: complexity === 'tetrad' ? `${subvRoot}7` : subvRoot,
+      degree: complexity === 'tetrad' ? `subV7 / ${targetRoot}` : `subV / ${targetRoot}`,
+      category: 'Sustitución de Tritono',
+      description: `Utiliza una resolución cromática descendente muy suave y comparte el tritono resolutivo.`
+    })
+  }
+  
+  // 3. ii Relacionado (ii7 o ii7b5)
+  const iiRoot = transposeNote(targetRoot, 2, activeKey)
+  if (iiRoot) {
+    let iiType = 'min'
+    let iiLabel = `${iiRoot}m`
+    let iiDegree = `ii / ${targetRoot}`
+    
+    if (complexity === 'tetrad') {
+      if (isTargetMinor) {
+        iiType = 'm7b5'
+        iiLabel = `${iiRoot}m7(b5)`
+        iiDegree = `iiø7 / ${targetRoot}`
+      } else {
+        iiType = 'm7'
+        iiLabel = `${iiRoot}m7`
+        iiDegree = `ii7 / ${targetRoot}`
+      }
+    } else {
+      if (isTargetMinor) {
+        iiType = 'dim'
+        iiLabel = `${iiRoot}dim`
+        iiDegree = `ii° / ${targetRoot}`
+      }
+    }
+    
+    list.push({
+      root: iiRoot,
+      type: iiType,
+      label: iiLabel,
+      degree: iiDegree,
+      category: 'ii Relacionado',
+      description: `Prepara la cadencia ii-V secundaria; proviene de la escala diatónica natural de la tónica destino (Eólico/Dórico en menor, Jónico en mayor).`
+    })
+  }
+  
+  // 4. vii° Relacionado (vii°7)
+  const viiRoot = transposeNote(targetRoot, 11, activeKey)
+  if (viiRoot) {
+    let viiType = 'dim'
+    let viiLabel = `${viiRoot}dim`
+    let viiDegree = `vii° / ${targetRoot}`
+    
+    if (complexity === 'tetrad') {
+      if (isTargetMinor) {
+        viiType = 'dim7'
+        viiLabel = `${viiRoot}dim7`
+        viiDegree = `vii°7 / ${targetRoot}`
+      } else {
+        viiType = 'm7b5'
+        viiLabel = `${viiRoot}m7(b5)`
+        viiDegree = `viiø7 / ${targetRoot}`
+      }
+    }
+    
+    list.push({
+      root: viiRoot,
+      type: viiType,
+      label: viiLabel,
+      degree: viiDegree,
+      category: 'Sensible Secundaria',
+      description: `Construido sobre la sensible cromática inferior del destino, aportando máxima tensión por semitono.`
+    })
+  }
+  
+  // 5. Dominante Backdoor (♭VII7)
+  const bviiRoot = transposeNote(targetRoot, 10, activeKey)
+  if (bviiRoot) {
+    list.push({
+      root: bviiRoot,
+      type: complexity === 'tetrad' ? '7' : '',
+      label: complexity === 'tetrad' ? `${bviiRoot}7` : bviiRoot,
+      degree: complexity === 'tetrad' ? `♭VII7 / ${targetRoot}` : `♭VII / ${targetRoot}`,
+      category: 'Backdoor Dominant',
+      description: `Proviene de un intercambio modal con el modo menor paralelo (Eólico) de la tónica destino, resolviendo un tono entero hacia arriba.`
+    })
+  }
+
+  // 6. Acorde Napolitano (♭II / ♭IImaj7)
+  const bIIRoot = transposeNote(targetRoot, 1, activeKey)
+  if (bIIRoot) {
+    list.push({
+      root: bIIRoot,
+      type: complexity === 'tetrad' ? 'maj7' : '',
+      label: complexity === 'tetrad' ? `${bIIRoot}maj7` : bIIRoot,
+      degree: complexity === 'tetrad' ? `♭IImaj7 / ${targetRoot}` : `♭II / ${targetRoot}`,
+      category: 'Intercambio Frigio',
+      description: `Acorde Napolitano. Proviene del modo Frigio del destino; aporta un color dramático, andaluz y de película al resolver medio tono hacia abajo.`
+    })
+  }
+
+  // 7. Subdominante Mayor/Menor (IV / iv)
+  const ivRoot = transposeNote(targetRoot, 5, activeKey)
+  if (ivRoot) {
+    if (isTargetMinor) {
+      list.push({
+        root: ivRoot,
+        type: complexity === 'tetrad' ? 'maj7' : '',
+        label: complexity === 'tetrad' ? `${ivRoot}maj7` : ivRoot,
+        degree: complexity === 'tetrad' ? `IVmaj7 / ${targetRoot}` : `IV / ${targetRoot}`,
+        category: 'Carácter Épico (Dórico)',
+        description: `Subdominante Mayor (IV). Proviene del intercambio modal con el modo Dórico; crea una atmósfera heroica, brillante y épica de película de fantasía.`
+      })
+    } else {
+      list.push({
+        root: ivRoot,
+        type: complexity === 'tetrad' ? 'm7' : 'min',
+        label: complexity === 'tetrad' ? `${ivRoot}m7` : `${ivRoot}m`,
+        degree: complexity === 'tetrad' ? `iv7 / ${targetRoot}` : `iv / ${targetRoot}`,
+        category: 'Carácter Nostálgico',
+        description: `Subdominante Menor (iv). Proviene del intercambio modal con el modo Eólico; aporta un color sumamente melancólico, nostálgico o romántico de cine.`
+      })
+    }
+  }
+
+  // 8. Cadencia Exótica Húngara (♯II° / ♯iv°)
+  if (isTargetMinor) {
+    const hRoot = transposeNote(targetRoot, 6, activeKey) // sharp 4th
+    if (hRoot) {
+      list.push({
+        root: hRoot,
+        type: complexity === 'tetrad' ? 'dim7' : 'dim',
+        label: complexity === 'tetrad' ? `${hRoot}dim7` : `${hRoot}dim`,
+        degree: complexity === 'tetrad' ? `♯iv°7 / ${targetRoot}` : `♯iv° / ${targetRoot}`,
+        category: 'Cadencia Exótica',
+        description: `Aproximación de la Escala Menor Húngara. Aporta un color tenso, misterioso y exótico de carácter gitano antes de resolver al destino.`
+      })
+    }
+  } else {
+    const hRoot = transposeNote(targetRoot, 3, activeKey) // sharp 2nd
+    if (hRoot) {
+      list.push({
+        root: hRoot,
+        type: complexity === 'tetrad' ? 'dim7' : 'dim',
+        label: complexity === 'tetrad' ? `${hRoot}dim7` : `${hRoot}dim`,
+        degree: complexity === 'tetrad' ? `♯II°7 / ${targetRoot}` : `♯II° / ${targetRoot}`,
+        category: 'Cadencia Exótica',
+        description: `Aproximación de la Escala Mayor Húngara. Resuelve cromáticamente hacia arriba con un sonido místico, oriental y muy llamativo.`
+      })
+    }
+  }
+
+  // 9. Tritono Locrio (♭V o ♭Vmaj7) - Locrio Espacial
+  const bVRoot = transposeNote(targetRoot, 6, activeKey)
+  if (bVRoot) {
+    list.push({
+      root: bVRoot,
+      type: complexity === 'tetrad' ? 'maj7' : '',
+      label: complexity === 'tetrad' ? `${bVRoot}maj7` : bVRoot,
+      degree: complexity === 'tetrad' ? `♭Vmaj7 / ${targetRoot}` : `♭V / ${targetRoot}`,
+      category: '🔮 Locrio Espacial',
+      description: `Resuelve a distancia de tritono. Aporta un color de ciencia ficción, ingravidez y misterio interestelar.`,
+      isExotic: true,
+      styleType: 'indigo'
+    })
+  }
+
+  // 10. Mediante Cromática Lidia (III o IIImaj7) - Lidio Mediante
+  const IIIRoot = transposeNote(targetRoot, 4, activeKey)
+  if (IIIRoot) {
+    list.push({
+      root: IIIRoot,
+      type: complexity === 'tetrad' ? 'maj7' : '',
+      label: complexity === 'tetrad' ? `${IIIRoot}maj7` : IIIRoot,
+      degree: complexity === 'tetrad' ? `IIImaj7 / ${targetRoot}` : `III / ${targetRoot}`,
+      category: '🪐 Lidio Mediante',
+      description: `Mediante cromática mayor (4 semitonos arriba). Aporta un brillo místico instantáneo y una transición cinematográfica trascendental.`,
+      isExotic: true,
+      styleType: 'gold'
+    })
+  }
+
+  // 11. Subdominante Menor Mística (iv o iv(mM7)) - Misticismo Noir
+  const iv_exoticRoot = transposeNote(targetRoot, 5, activeKey)
+  if (iv_exoticRoot) {
+    list.push({
+      root: iv_exoticRoot,
+      type: complexity === 'tetrad' ? 'mM7' : 'min',
+      label: complexity === 'tetrad' ? `${iv_exoticRoot}mM7` : `${iv_exoticRoot}m`,
+      degree: complexity === 'tetrad' ? `iv(M7) / ${targetRoot}` : `iv / ${targetRoot}`,
+      category: '🌌 Misticismo Noir',
+      description: `Subdominante menor con séptima mayor. Combina la melancolía del modo menor y la tensión de la séptima mayor, evocando cine negro (Film Noir).`,
+      isExotic: true,
+      styleType: 'emerald'
+    })
+  }
+  
+  return list
+})
+
 const wasBeatAlreadySet = ref(false)
 const openModal = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex) => {
   // Close all other bottom-sheet modals first to prevent stacking
   isMeasureOptionsOpen.value = false
   isRepeatMenuOpen.value = false
   isSystemSuggestionsModalOpen.value = false
-  applyToAllSubslots.value = true
-  selectedBeat.value = { measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex }
+  
   const m = measures.value[measureIndex]
   const b = m ? m.beats[beatIndex] : null
+  applyToAllSubslots.value = b ? isSubdivisionCollapsed(m, b, beatIndex) : false
+  
+  selectedBeat.value = { measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex }
   
   let wasSet = false
   if (b) {
@@ -2670,17 +3632,21 @@ const openModal = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIn
 }
 const selectChord = (chordObj) => {
   if (selectedBeat.value) {
+    saveHistory()
     const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
     const m = measures.value[measureIndex]
     const beat = m.beats[beatIndex]
     
-    // Check if selecting a chord on a silence slot (only if chordObj.root is not empty)
+    // Check if selecting a chord on a silence slot (only if chordObj.root is not empty and rhythm has predefined patterns)
     if (chordObj.root && subdivisionIndex !== undefined) {
-      const slots = getBeatSlots(m, beat, beatIndex)
-      const targetSlot = slots[subdivisionIndex]
-      if (targetSlot && targetSlot.isSilence) {
-        showRhythmPrompt(m, beat, subdivisionIndex, chordObj)
-        return
+      const rhythm = getEffectiveRhythm(m, beat, beatIndex)
+      if (rhythm === 'eighth' || rhythm === 'sixteenth') {
+        const slots = getBeatSlots(m, beat, beatIndex)
+        const targetSlot = slots[subdivisionIndex]
+        if (targetSlot && targetSlot.isSilence) {
+          showRhythmPrompt(m, beat, subdivisionIndex, chordObj)
+          return
+        }
       }
     }
     
@@ -2712,7 +3678,8 @@ const selectChord = (chordObj) => {
         type: chordObj.type,
         tensions: [],
         tension: null,
-        bass: null
+        bass: null,
+        isSilence: !chordObj.root
       }
       
       const isOffbeat = rhythm === 'offbeat'
@@ -2751,7 +3718,8 @@ const selectChord = (chordObj) => {
       propagateChordMutation(measureIndex, beatIndex, subdivisionIndex, oldChord, newChord)
     }
     
-    // Cierra el modal inmediatamente al seleccionar o borrar un acorde
+    // Cerrar inmediatamente el modal/pestaña al seleccionar un acorde.
+    // El usuario puede volver a hacer clic sobre él para abrir y configurar extensiones o bajo alternativo.
     isModalOpen.value = false
     if (chordObj.root) {
       wasBeatAlreadySet.value = true
@@ -3168,12 +4136,11 @@ const openMeasureOptions = (mIdx) => {
   tempShowObligado.value = m.showObligado === true
   isKeyChangeSubMenuOpen.value = false
   isLocalMetricSubMenuOpen.value = false
-  keyChangeStep.value = 1
   
   if (m.keyChange) {
     tempKeyChangeKey.value = m.keyChange.key
     tempKeyChangeScale.value = m.keyChange.scaleType || 'major'
-    tempKeyChangeBeatIndex.value = m.keyChange.beatIndex !== undefined ? m.keyChange.beatIndex : 0
+    tempKeyChangeBeatIndex.value = 0
   } else {
     const mWithKey = measuresWithKey.value[mIdx]
     tempKeyChangeKey.value = mWithKey ? mWithKey.activeKey : key.value
@@ -3246,7 +4213,8 @@ const changeBeatHarmonicRhythm = (measure, beat, rhythmType) => {
             type: beat.type,
             tensions: [...(beat.tensions || [])],
             tension: beat.tension,
-            bass: beat.bass
+            bass: beat.bass,
+            isSilence: beat.isSilence || !beat.root
           };
         } else if (!existing && i === 1 && beat.root && rhythmType === 'offbeat') {
           existing = {
@@ -3254,7 +4222,8 @@ const changeBeatHarmonicRhythm = (measure, beat, rhythmType) => {
             type: beat.type,
             tensions: [...(beat.tensions || [])],
             tension: beat.tension,
-            bass: beat.bass
+            bass: beat.bass,
+            isSilence: beat.isSilence || !beat.root
           };
         }
         
@@ -3263,7 +4232,8 @@ const changeBeatHarmonicRhythm = (measure, beat, rhythmType) => {
           type: existing?.type || '',
           tensions: existing?.tensions ? [...existing.tensions] : [],
           tension: existing?.tension || null,
-          bass: existing?.bass || null
+          bass: existing?.bass || null,
+          isSilence: existing ? (existing.isSilence || !existing.root) : true
         });
       }
     }
@@ -3294,6 +4264,7 @@ const selectBeatHarmonicRhythm = (rhythmType) => {
   }
   
   if (selectedBeat.value) {
+    saveHistory()
     const { measureIndex, beatIndex } = selectedBeat.value;
     const m = measures.value[measureIndex];
     const beat = m?.beats[beatIndex];
@@ -3312,6 +4283,7 @@ const selectBeatHarmonicRhythm = (rhythmType) => {
 }
 const flattenParentBeat = () => {
   if (selectedBeat.value) {
+    saveHistory()
     const { measureIndex, beatIndex } = selectedBeat.value;
     const m = measures.value[measureIndex];
     const beat = m?.beats[beatIndex];
@@ -3636,6 +4608,27 @@ const getLinearBlocks = () => {
   return list
 }
 
+const getSlotNoteX = (rhythm, slotIdx, startX, blockWidth) => {
+  let relativeOffset = 0.5
+  
+  if (rhythm === 'eighth') {
+    relativeOffset = slotIdx === 0 ? 0.30 : 0.70
+  } else if (rhythm === 'offbeat') {
+    relativeOffset = 0.70
+  } else if (rhythm === 'triplet') {
+    const offsets = [0.20, 0.50, 0.80]
+    relativeOffset = offsets[slotIdx] !== undefined ? offsets[slotIdx] : 0.5
+  } else if (rhythm === 'quintuplet') {
+    const offsets = [0.15, 0.325, 0.50, 0.675, 0.85]
+    relativeOffset = offsets[slotIdx] !== undefined ? offsets[slotIdx] : 0.5
+  } else if (rhythm === 'sixteenth') {
+    const offsets = [0.125, 0.375, 0.625, 0.875]
+    relativeOffset = offsets[slotIdx] !== undefined ? offsets[slotIdx] : 0.5
+  }
+  
+  return startX + relativeOffset * blockWidth
+}
+
 const getMeasureBlockCoordinates = (measure) => {
   const coords = []
   if (!measure) return coords
@@ -3681,6 +4674,8 @@ const getMeasureBlockCoordinates = (measure) => {
       coords.push({
         id: `${origMIdx}_${bIdx}`,
         x: startX + blockWidth / 2,
+        firstNoteX: startX + blockWidth / 2,
+        lastNoteX: startX + blockWidth / 2,
         measureIndex: origMIdx,
         beatIndex: bIdx,
         subdivisionIndex: null
@@ -3690,9 +4685,20 @@ const getMeasureBlockCoordinates = (measure) => {
       let slotOffset = 0
       slots.forEach((sub) => {
         const slotWidth = (sub.flexGrow / 4) * blockWidth
+        
+        // Calculate the first and last slot indices covered by this block
+        const startSlot = sub.originalIndex
+        const endSlot = startSlot + sub.flexGrow - 1
+        
+        // Use our slot positions helper
+        const firstNoteX = getSlotNoteX(rhythm, startSlot, startX, blockWidth)
+        const lastNoteX = getSlotNoteX(rhythm, endSlot, startX, blockWidth)
+        
         coords.push({
           id: `${origMIdx}_${bIdx}_${sub.originalIndex}`,
           x: startX + slotOffset + slotWidth / 2,
+          firstNoteX,
+          lastNoteX,
           measureIndex: origMIdx,
           beatIndex: bIdx,
           subdivisionIndex: sub.originalIndex
@@ -3722,14 +4728,18 @@ const getMeasureTiesPaths = (measure) => {
       if (nextBlock.measureIndex === origMIdx) {
         const nextCoord = coords.find(c => c.id === nextBlock.id)
         if (nextCoord) {
+          const startX = coord.lastNoteX !== undefined ? coord.lastNoteX : coord.x
+          const endX = nextCoord.firstNoteX !== undefined ? nextCoord.firstNoteX : nextCoord.x
+          
           paths.push({
-            d: `M ${coord.x} 35 Q ${(coord.x + nextCoord.x) / 2} 15 ${nextCoord.x} 35`,
+            d: `M ${startX} 20 Q ${(startX + endX) / 2} 5 ${endX} 20`,
             type: 'internal'
           })
         }
       } else {
+        const startX = coord.lastNoteX !== undefined ? coord.lastNoteX : coord.x
         paths.push({
-          d: `M ${coord.x} 35 Q ${(coord.x + 1040) / 2} 18 1040 28`,
+          d: `M ${startX} 20 Q ${(startX + 1040) / 2} 5 1040 10`,
           type: 'outgoing'
         })
       }
@@ -3738,8 +4748,9 @@ const getMeasureTiesPaths = (measure) => {
     if (tiedSlots.value.has(coord.id)) {
       const prevBlock = linearBlocks[currentLinearIdx - 1]
       if (prevBlock && prevBlock.measureIndex !== origMIdx) {
+        const endX = coord.firstNoteX !== undefined ? coord.firstNoteX : coord.x
         paths.push({
-          d: `M -40 28 Q ${(coord.x - 40) / 2} 18 ${coord.x} 35`,
+          d: `M -40 10 Q ${(endX - 40) / 2} 5 ${endX} 20`,
           type: 'incoming'
         })
       }
@@ -3824,6 +4835,7 @@ const isNextSlotTied = () => {
 
 const toggleTieActiveSlot = () => {
   if (!canTieActiveSlot()) return
+  saveHistory()
   const linearBlocks = getLinearBlocks()
   const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
   const slotId = subdivisionIndex !== undefined
@@ -3870,26 +4882,33 @@ const getBeatSlots = (measure, beat, beatIdx) => {
   
   if (subCount === 1) return []
   
-  if (beat.subdivisions && beat.subdivisions.length === subCount) {
-    return beat.subdivisions
+  if (!beat.subdivisions || beat.subdivisions.length !== subCount) {
+    const slots = []
+    for (let i = 0; i < subCount; i++) {
+      if (rhythm === 'offbeat' && i === 0) {
+        slots.push({ id: generateUniqueId(), root: '', type: '', tensions: [], tension: null, bass: null, isSilence: true })
+      } else {
+        const isPrimary = (rhythm !== 'offbeat' && i === 0) || (rhythm === 'offbeat' && i === 1)
+        slots.push({
+          id: generateUniqueId(),
+          root: isPrimary ? beat.root : '',
+          type: isPrimary ? beat.type : '',
+          tensions: isPrimary ? [...(beat.tensions || [])] : [],
+          tension: isPrimary ? beat.tension : null,
+          bass: isPrimary ? beat.bass : null,
+          isSilence: isPrimary ? (beat.isSilence || !beat.root) : true
+        })
+      }
+    }
+    beat.subdivisions = slots
   }
   
-  const slots = []
-  for (let i = 0; i < subCount; i++) {
-    if (rhythm === 'offbeat' && i === 0) {
-      slots.push({ root: '', type: '', tensions: [], tension: null, bass: null, isSilence: true })
-    } else {
-      const isPrimary = (rhythm !== 'offbeat' && i === 0) || (rhythm === 'offbeat' && i === 1)
-      slots.push({
-        root: isPrimary ? beat.root : '',
-        type: isPrimary ? beat.type : '',
-        tensions: isPrimary ? [...(beat.tensions || [])] : [],
-        tension: isPrimary ? beat.tension : null,
-        bass: isPrimary ? beat.bass : null
-      })
-    }
-  }
-  return slots
+  // Ensure all slots have a unique ID
+  beat.subdivisions.forEach(s => {
+    if (!s.id) s.id = generateUniqueId()
+  })
+  
+  return beat.subdivisions
 }
 const hasBeatRhythmOverride = (measure, beat, beatIdx) => {
   if (!beat) return false
@@ -3909,6 +4928,7 @@ const selectGlobalGroove = (g) => {
     isUpgradeModalOpen.value = true;
     return;
   }
+  saveHistory()
   globalGroove.value = g;
   activeDropdown.value = null;
 }
@@ -3967,16 +4987,27 @@ const translateRhythmName = (rhythm) => {
   return 'Normal'
 }
 // Toggle subdivisions for ALL measures at once (global sidebar toggle)
-const toggleAllSubdivisions = (on) => {
-  globalShowSubdivisions.value = on
-}
-
-const toggleGlobalShowObligado = (on) => {
+const toggleAllSubdivisions = (event) => {
+  const on = event.target.checked
   if (currentPlan.value !== 'PRO') {
     upgradeReason.value = 'ritmo_armonico'
     isUpgradeModalOpen.value = true
+    event.target.checked = false // Revert native visual state immediately
     return
   }
+  saveHistory()
+  globalShowSubdivisions.value = on
+}
+
+const toggleGlobalShowObligado = (event) => {
+  const on = event.target.checked
+  if (currentPlan.value !== 'PRO') {
+    upgradeReason.value = 'ritmo_armonico'
+    isUpgradeModalOpen.value = true
+    event.target.checked = false // Revert native visual state immediately
+    return
+  }
+  saveHistory()
   globalShowObligado.value = on
   measures.value.forEach(m => {
     m.showObligado = on
@@ -3987,6 +5018,7 @@ const toggleGlobalShowObligado = (on) => {
 
 const saveMeasureOptions = () => {
   if (selectedMeasureIndex.value !== null) {
+    saveHistory()
     const m = measures.value[selectedMeasureIndex.value]
     m.sectionLabel = tempSectionLabel.value === 'Ninguna' ? null : tempSectionLabel.value
     m.showSubdivisions = tempShowSubdivisions.value
@@ -4019,6 +5051,7 @@ const confirmTimes = (timesVal) => {
     alert("Por favor, introduce un número de repeticiones válido (2 o más).")
     return
   }
+  saveHistory()
   const start = minSelectedMeasure.value
   const end = maxSelectedMeasure.value
   
@@ -4047,6 +5080,7 @@ const convertRepeatToCasilla = () => {
     isUpgradeModalOpen.value = true
     return
   }
+  saveHistory()
   if (selectedRangeStart.value === null || selectedRangeEnd.value === null) return
   
   const start = minSelectedMeasure.value
@@ -4071,7 +5105,11 @@ const convertRepeatToCasilla = () => {
       beats: emptyBeats,
       sectionLabel: null,
       showObligado: globalShowObligado.value,
-      showSubdivisions: globalShowSubdivisions.value
+      showSubdivisions: globalShowSubdivisions.value,
+      lyrics: {
+        rawText: '',
+        mode: 'free'
+      }
     })
   }
   
@@ -4079,6 +5117,7 @@ const convertRepeatToCasilla = () => {
   clearSelection()
 }
 const removeRepeat = (id) => {
+  saveHistory()
   repeats.value = repeats.value.filter(r => r.id !== id)
 }
 const addMeasure = () => {
@@ -4087,6 +5126,7 @@ const addMeasure = () => {
     isUpgradeModalOpen.value = true
     return
   }
+  saveHistory()
   const nextIdx = measures.value.length
   const sig = getMeasureTimeSignature(nextIdx)
   const emptyBeats = Array.from({ length: sig.beats }, () => ({ root: '', type: '' }))
@@ -4095,19 +5135,793 @@ const addMeasure = () => {
     beats: emptyBeats,
     sectionLabel: null,
     showObligado: globalShowObligado.value,
-    showSubdivisions: globalShowSubdivisions.value
+    showSubdivisions: globalShowSubdivisions.value,
+    lyrics: {
+      rawText: '',
+      mode: 'free'
+    }
   })
   syncMeasuresBeats()
 }
-const formatDisplayChord = (beat) => {
-  if (!beat || !beat.root) return '-'
-  let formatted = formatChord(beat)
-  if (beat.type === 'maj') formatted = beat.root
-  if (beat.type === 'min') formatted = beat.root + 'm'
-  if (beat.type === 'dim') formatted = beat.root + 'dim'
-  return formatted
+
+// --- LYRICS HELPERS & NAVIGATION ---
+const getMeasureLyricsRef = (measure) => {
+  if (!measure.lyrics) {
+    measure.lyrics = {
+      rawText: '',
+      mode: 'free'
+    }
+  }
+  return measure.lyrics
 }
-const splitChordDisplay = (beat) => {
+
+watch(measures, (newMeasures) => {
+  if (!newMeasures) return
+  newMeasures.forEach(m => {
+    if (!m.lyrics) {
+      m.lyrics = {
+        rawText: '',
+        mode: 'free',
+        anchors: []
+      }
+    } else if (!m.lyrics.anchors) {
+      m.lyrics.anchors = []
+    }
+    
+    const validChordIds = new Set()
+    if (m.beats) {
+      m.beats.forEach(b => {
+        if (!b.id) {
+          b.id = generateUniqueId()
+        }
+        const isBeatActive = b.root && !b.isSilence
+        const hasActiveSub = b.subdivisions && b.subdivisions.some(s => s.root && !s.isSilence)
+        if (isBeatActive || hasActiveSub) {
+          validChordIds.add(b.id)
+        }
+        if (b.subdivisions) {
+          b.subdivisions.forEach(s => {
+            if (!s.id) {
+              s.id = generateUniqueId()
+            }
+            if (s.root && !s.isSilence) {
+              validChordIds.add(s.id) // Support legacy anchors pointing to subdivisions
+            }
+          })
+        }
+      })
+    }
+    
+    // Cleanup invalid anchors only if they change to avoid recursive updates
+    const filtered = m.lyrics.anchors.filter(anchor => validChordIds.has(anchor.chordId))
+    if (filtered.length !== m.lyrics.anchors.length) {
+      m.lyrics.anchors = filtered
+    }
+  })
+  
+  // Update connectors since chords or measures changed
+  updateConnectors()
+}, { immediate: true, deep: true })
+
+const hasSpacerBefore = (measure) => {
+  if (!measure) return false
+  if (currentPlan.value !== 'PRO') return false
+  
+  const hasKeyChange = !!measure.keyChange
+  const hasMetricChange = measure.timeSignature && measure.displayedMeasureIndex > 0 && 
+    (measure.timeSignature.beats !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).beats || 
+     measure.timeSignature.unit !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).unit)
+     
+  return hasKeyChange || hasMetricChange
+}
+
+const isFirstOfGroup = (measuresList, idx) => {
+  if (idx === 0) return true
+  return hasSpacerBefore(measuresList[idx])
+}
+
+const isLastOfGroup = (measuresList, idx) => {
+  if (idx === measuresList.length - 1) return true
+  return hasSpacerBefore(measuresList[idx + 1])
+}
+
+const handleLyricsKeydown = (event, currentIndex) => {
+  if (event.key === 'Tab') {
+    const direction = event.shiftKey ? 'prev' : 'next'
+    const targetIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1
+    
+    // Check if target is within bounds
+    if (targetIndex >= 0 && targetIndex < measures.value.length) {
+      event.preventDefault()
+      // If the global switch is off, but we are navigating, we must turn it on so the target textarea is visible and can be focused!
+      if (!showLyricsGlobal.value) {
+        showLyricsGlobal.value = true
+      }
+      
+      // We wait for Vue to render the elements in nextTick
+      setTimeout(() => {
+        const targetEl = document.getElementById(`lyrics-textarea-${targetIndex}`)
+        if (targetEl) {
+          targetEl.focus()
+        }
+      }, 50)
+    }
+  }
+}
+
+const shouldShowLyricsRow = (system) => {
+  if (showLyricsGlobal.value) return true
+  
+  // Show if any measure in the system has text
+  const hasText = system.measures.some(m => m.lyrics && m.lyrics.rawText && m.lyrics.rawText.trim() !== '')
+  if (hasText) return true
+  
+  // Show if any measure in the system is being hovered
+  const isHovered = system.measures.some(m => m.originalMeasureIndex === hoveredMeasureIndex.value)
+  if (isHovered) return true
+  
+  return false
+}
+
+const activateLyricsForMeasure = (measureOriginalIndex) => {
+  showLyricsGlobal.value = true
+  setTimeout(() => {
+    const el = document.getElementById(`lyrics-textarea-${measureOriginalIndex}`)
+    if (el) {
+      el.focus()
+    }
+  }, 50)
+}
+
+const getSelectionCharacterOffsetWithin = (element) => {
+  let start = 0
+  let end = 0
+  const doc = element.ownerDocument || element.document
+  const win = doc.defaultView || doc.parentWindow
+  const sel = win.getSelection()
+  if (sel.rangeCount > 0) {
+    const range = sel.getRangeAt(0)
+    const preCaretRange = range.cloneRange()
+    preCaretRange.selectNodeContents(element)
+    preCaretRange.setEnd(range.startContainer, range.startOffset)
+    start = preCaretRange.toString().length
+    end = start + range.toString().length
+  }
+  return { start, end }
+}
+
+const getLyricSegmentsWithPending = (measure) => {
+  const measureIndex = measure.originalMeasureIndex
+  const rawText = measure.lyrics?.rawText || ''
+  const anchors = measure.lyrics?.anchors || []
+  const pending = pendingSelection.value && pendingSelection.value.measureIndex === measureIndex ? pendingSelection.value : null
+  
+  if (!rawText) return []
+  
+  // Create an array of types/chords for each character
+  const charAttrs = Array.from({ length: rawText.length }, (_, idx) => {
+    if (pending && idx >= pending.start && idx < pending.end) {
+      return { type: 'pending', anchor: null }
+    }
+    const anchor = anchors.find(a => idx >= a.start && idx < a.end)
+    if (anchor) {
+      return { type: 'associated', anchor }
+    }
+    return { type: 'normal', anchor: null }
+  })
+  
+  // Group adjacent characters with identical attributes
+  const segments = []
+  let currentSegment = null
+  
+  for (let i = 0; i < rawText.length; i++) {
+    const attr = charAttrs[i]
+    const char = rawText[i]
+    
+    if (!currentSegment) {
+      currentSegment = {
+        text: char,
+        start: i,
+        end: i + 1,
+        type: attr.type,
+        anchor: attr.anchor
+      }
+    } else if (
+      currentSegment.type === attr.type &&
+      JSON.stringify(currentSegment.anchor) === JSON.stringify(attr.anchor)
+    ) {
+      currentSegment.text += char
+      currentSegment.end = i + 1
+    } else {
+      segments.push(currentSegment)
+      currentSegment = {
+        text: char,
+        start: i,
+        end: i + 1,
+        type: attr.type,
+        anchor: attr.anchor
+      }
+    }
+  }
+  if (currentSegment) {
+    segments.push(currentSegment)
+  }
+  
+  return segments
+}
+
+const isChordIdRelatedToBeat = (id1, id2, measure) => {
+  if (!id1 || !id2 || !measure) return false
+  if (id1 === id2) return true
+  
+  const b1 = (measure.beats || []).find(b => b.id === id1)
+  if (b1 && b1.subdivisions && b1.subdivisions.some(s => s.id === id2)) {
+    return true
+  }
+  const b2 = (measure.beats || []).find(b => b.id === id2)
+  if (b2 && b2.subdivisions && b2.subdivisions.some(s => s.id === id1)) {
+    return true
+  }
+  return false
+}
+
+function updateConnectors() {
+  if (currentPlan.value !== 'PRO' || !showLyricsGlobal.value) {
+    activeConnectors.value = []
+    return
+  }
+  
+  setTimeout(() => {
+    const connectors = []
+    
+    systems.value.forEach(system => {
+      const systemEl = document.getElementById(`system-row-${system.id}`)
+      if (!systemEl) return
+      
+      const systemRect = systemEl.getBoundingClientRect()
+      
+      system.measures.forEach(measure => {
+        const anchors = measure.lyrics?.anchors || []
+        if (measure.lyrics?.mode !== 'synced') return
+        
+        anchors.forEach((anchor, aIdx) => {
+          let chordEl = document.getElementById(`chord-card-${anchor.chordId}`)
+          if (!chordEl) {
+            // It might be a beat ID that is subdivided. Let's find the beat.
+            const beatObj = measure.beats?.find(b => b.id === anchor.chordId)
+            if (beatObj && beatObj.subdivisions) {
+              const activeSub = beatObj.subdivisions.find(s => s.root && !s.isSilence)
+              if (activeSub) {
+                chordEl = document.getElementById(`chord-card-${activeSub.id}`)
+              }
+            }
+          }
+          const spanEl = document.getElementById(`lyric-span-${measure.originalMeasureIndex}-${anchor.start}-${anchor.end}`)
+          
+          if (chordEl && spanEl) {
+            const chordRect = chordEl.getBoundingClientRect()
+            const spanRect = spanEl.getBoundingClientRect()
+            
+            const x1 = chordRect.left + chordRect.width / 2 - systemRect.left
+            const y1 = chordRect.bottom - systemRect.top
+            const x2 = spanRect.left + spanRect.width / 2 - systemRect.left
+            const y2 = spanRect.top - systemRect.top
+            
+            const controlPointYOffset = Math.abs(y2 - y1) * 0.5
+            const path = `M ${x1} ${y1} C ${x1} ${y1 + controlPointYOffset}, ${x2} ${y2 - controlPointYOffset}, ${x2} ${y2}`
+            
+            const isHovered = isChordIdRelatedToBeat(hoveredChordId.value, anchor.chordId, measure) || 
+                              (hoveredAnchor.value && 
+                               isChordIdRelatedToBeat(hoveredAnchor.value.chordId, anchor.chordId, measure) && 
+                               hoveredAnchor.value.start === anchor.start &&
+                               hoveredAnchor.value.end === anchor.end)
+            
+            connectors.push({
+              id: `${measure.originalMeasureIndex}-${aIdx}`,
+              systemId: system.id,
+              path,
+              active: isHovered,
+              chordId: anchor.chordId,
+              anchor
+            })
+          }
+        })
+      })
+    })
+    
+    activeConnectors.value = connectors
+  }, 30)
+}
+
+const getLyricsActiveChordForBeat = (measure, beat) => {
+  if (beat.subdivisions && beat.subdivisions.length > 0) {
+    const activeSub = beat.subdivisions.find(s => s.root && !s.isSilence)
+    return activeSub || beat
+  }
+  return beat
+}
+
+const getNextUnusedChord = (measure) => {
+  if (!measure || !measure.beats) return null
+  
+  const activeBeats = []
+  const slots = getAllMeasureSlots(measure)
+  slots.forEach(s => {
+    const hasChord = s.beat.root || (s.beat.subdivisions && s.beat.subdivisions.some(sub => sub.root && !sub.isSilence))
+    if (hasChord) {
+      activeBeats.push(s.beat)
+    }
+  })
+  
+  if (activeBeats.length === 0) return null
+  
+  const usedChordIds = new Set((measure.lyrics?.anchors || []).map(a => a.chordId))
+  const unused = activeBeats.find(b => !usedChordIds.has(b.id))
+  
+  return unused || null
+}
+
+const assignPendingSelection = (measure) => {
+  if (!pendingSelection.value || pendingSelection.value.measureIndex !== measure.originalMeasureIndex) return
+  
+  const activeBeats = []
+  const slots = getAllMeasureSlots(measure)
+  slots.forEach(s => {
+    const hasChord = s.beat.root || (s.beat.subdivisions && s.beat.subdivisions.some(sub => sub.root && !sub.isSilence))
+    if (hasChord) {
+      activeBeats.push(s.beat)
+    }
+  })
+  
+  if (activeBeats.length === 0) {
+    showToast('⚠️ No hay acordes en este compás. Agrega un acorde primero.')
+    return
+  }
+  
+  const unusedChord = getNextUnusedChord(measure)
+  
+  if (!unusedChord) {
+    showToast('Todos los acordes ya están asignados. Sugerencia: agrega otro acorde en el compás.')
+    return
+  }
+  
+  const start = pendingSelection.value.start
+  const end = pendingSelection.value.end
+  
+  if (!measure.lyrics.anchors) {
+    measure.lyrics.anchors = []
+  }
+  
+  // Remove overlapping anchors
+  measure.lyrics.anchors = measure.lyrics.anchors.filter(a => !(a.start < end && a.end > start))
+  
+  measure.lyrics.anchors.push({
+    chordId: unusedChord.id,
+    start,
+    end
+  })
+  
+  pendingSelection.value = null
+  window.getSelection()?.removeAllRanges()
+  updateConnectors()
+}
+
+const handleLyricsDblClick = (event, measure) => {
+  if (measure.lyrics?.mode !== 'synced') return
+  
+  const selection = window.getSelection()
+  if (!selection || selection.isCollapsed) return
+  
+  if (pendingSelection.value && pendingSelection.value.measureIndex === measure.originalMeasureIndex) {
+    assignPendingSelection(measure)
+  }
+}
+
+const handleLyricsMouseUp = (event, measure) => {
+  if (measure.lyrics?.mode !== 'synced') return
+  
+  const container = event.currentTarget
+  const { start, end } = getSelectionCharacterOffsetWithin(container)
+  
+  if (start === end) return
+  
+  const rawText = measure.lyrics.rawText || ''
+  const selectedText = rawText.substring(start, end)
+  
+  pendingSelection.value = {
+    measureIndex: measure.originalMeasureIndex,
+    start,
+    end,
+    text: selectedText
+  }
+}
+
+const handleSegmentClick = (segment, measure) => {
+  if (measure.lyrics?.mode !== 'synced') return
+  
+  const anchor = segment.anchor || segment
+  if (anchor) {
+    measure.lyrics.anchors = measure.lyrics.anchors.filter(a => 
+      !(a.start === anchor.start && a.end === anchor.end)
+    )
+    hoveredAnchor.value = null
+    updateConnectors()
+  }
+}
+
+const measureLayoutCache = new WeakMap()
+
+const tokenizeText = (text) => {
+  if (!text) return []
+  const regex = /(\s+)|([^\s]+(?:\s+|$))/g
+  return text.match(regex) || []
+}
+
+const distributeTokens = (tokens, P) => {
+  const result = Array.from({ length: P }, () => '')
+  if (tokens.length === 0) return result
+  
+  if (tokens.length <= P) {
+    tokens.forEach((tok, idx) => {
+      result[idx] = tok
+    })
+    return result
+  }
+  
+  const tokensPerSlot = tokens.length / P
+  let tokenIdx = 0
+  for (let i = 0; i < P; i++) {
+    const nextTokenIdx = Math.round((i + 1) * tokensPerSlot)
+    result[i] = tokens.slice(tokenIdx, nextTokenIdx).join('')
+    tokenIdx = nextTokenIdx
+  }
+  return result
+}
+
+const getAllMeasureSlots = (measure) => {
+  const slots = []
+  const mergedBeats = getMergedBeats(measure)
+  mergedBeats.forEach((state) => {
+    if (state.isMerged) return
+    slots.push({
+      id: state.beat.id,
+      beat: state.beat,
+      state,
+      isSubdivision: false
+    })
+  })
+  return slots
+}
+
+const getMeasureLyricsLayout = (measure) => {
+  const rawText = measure.lyrics?.rawText || ''
+  const anchors = measure.lyrics?.anchors || []
+  const anchorsStr = JSON.stringify(anchors)
+  
+  if (measureLayoutCache.has(measure)) {
+    const cached = measureLayoutCache.get(measure)
+    if (cached.rawText === rawText && cached.anchorsStr === anchorsStr) {
+      return cached.result
+    }
+  }
+  
+  const allSlots = getAllMeasureSlots(measure)
+  const slotCount = allSlots.length
+  
+  const result = {}
+  allSlots.forEach(s => {
+    result[s.id] = {
+      slotId: s.id,
+      hasLyrics: false,
+      hasAssociated: false,
+      preText: '',
+      associatedText: '',
+      postText: '',
+      normalText: '',
+      preStart: 0, preEnd: 0,
+      assocStart: 0, assocEnd: 0,
+      postStart: 0, postEnd: 0,
+      normalStart: 0, normalEnd: 0
+    }
+  })
+  
+  if (slotCount === 0 || !rawText) {
+    measureLayoutCache.set(measure, { rawText, anchorsStr, result })
+    return result
+  }
+  
+  const activeAnchors = []
+  anchors.forEach(anchor => {
+    const slotIdx = allSlots.findIndex(s => s.id === anchor.chordId)
+    if (slotIdx !== -1) {
+      activeAnchors.push({
+        anchor,
+        slotIdx,
+        start: anchor.start,
+        end: anchor.end
+      })
+    }
+  })
+  
+  activeAnchors.sort((a, b) => a.slotIdx - b.slotIdx)
+  
+  if (activeAnchors.length === 0) {
+    const tokens = tokenizeText(rawText)
+    const distributed = distributeTokens(tokens, slotCount)
+    
+    let currentCharIdx = 0
+    allSlots.forEach((s, idx) => {
+      const text = distributed[idx] || ''
+      result[s.id] = {
+        slotId: s.id,
+        hasLyrics: text.length > 0,
+        hasAssociated: false,
+        normalText: text,
+        normalStart: currentCharIdx,
+        normalEnd: currentCharIdx + text.length
+      }
+      currentCharIdx += text.length
+    })
+    
+    measureLayoutCache.set(measure, { rawText, anchorsStr, result })
+    return result
+  }
+  
+  const K = activeAnchors.length
+  
+  // Calculate wordStart and wordEnd for each active anchor to preserve full words
+  const anchorWords = activeAnchors.map((aa, idx) => {
+    let wordStart = aa.start
+    const prevEnd = idx > 0 ? activeAnchors[idx - 1].end : 0
+    while (wordStart > prevEnd && !/\s/.test(rawText[wordStart - 1])) {
+      wordStart--
+    }
+    
+    let wordEnd = aa.end
+    const nextStart = idx < K - 1 ? activeAnchors[idx + 1].start : rawText.length
+    while (wordEnd < nextStart && !/\s/.test(rawText[wordEnd])) {
+      wordEnd++
+    }
+    
+    return {
+      wordStart,
+      wordEnd,
+      prefixStart: wordStart,
+      prefixEnd: aa.start,
+      suffixStart: aa.end,
+      suffixEnd: wordEnd
+    }
+  })
+  
+  const distributeRange = (startChar, endChar, targets) => {
+    if (startChar >= endChar) return
+    const text = rawText.substring(startChar, endChar)
+    const tokens = tokenizeText(text)
+    const distributed = distributeTokens(tokens, targets.length)
+    
+    let currentCharIdx = startChar
+    targets.forEach((target, idx) => {
+      const part = distributed[idx] || ''
+      const partLen = part.length
+      const start = currentCharIdx
+      const end = currentCharIdx + partLen
+      currentCharIdx = end
+      
+      if (partLen === 0) return
+      
+      const slotRes = result[target.slotId]
+      slotRes.hasLyrics = true
+      
+      if (target.type === 'pre') {
+        slotRes.preText = slotRes.preText ? (part + slotRes.preText) : part
+        slotRes.preStart = start
+        slotRes.preEnd = end + (slotRes.preEnd - slotRes.preStart)
+      } else if (target.type === 'post') {
+        slotRes.postText = slotRes.postText ? (slotRes.postText + part) : part
+        slotRes.postStart = slotRes.postStart || start
+        slotRes.postEnd = end
+      } else {
+        slotRes.normalText = part
+        slotRes.normalStart = start
+        slotRes.normalEnd = end
+      }
+    })
+  }
+  
+  // Set up associated anchors with their syllables, prefix, and suffix
+  activeAnchors.forEach((aa, idx) => {
+    const word = anchorWords[idx]
+    const slotRes = result[aa.anchor.chordId]
+    slotRes.hasLyrics = true
+    slotRes.hasAssociated = true
+    slotRes.associatedText = rawText.substring(aa.start, aa.end)
+    slotRes.assocStart = aa.start
+    slotRes.assocEnd = aa.end
+    slotRes.anchor = aa.anchor
+    
+    // Assign suffix (suffix of full word)
+    const suffixText = rawText.substring(word.suffixStart, word.suffixEnd)
+    if (suffixText) {
+      slotRes.postText = suffixText
+      slotRes.postStart = word.suffixStart
+      slotRes.postEnd = word.suffixEnd
+    }
+    
+    // Assign prefix (prefix of full word)
+    const prefixText = rawText.substring(word.prefixStart, word.prefixEnd)
+    if (prefixText) {
+      slotRes.preText = prefixText
+      slotRes.preStart = word.prefixStart
+      slotRes.preEnd = word.prefixEnd
+    }
+  })
+  
+  // Region 0: Before the first anchor's word
+  // Distribute [0, anchorWords[0].wordStart] across slots 0 ... firstAnchorIdx
+  const reg0Targets = []
+  const firstAnchorIdx = activeAnchors[0].slotIdx
+  for (let i = 0; i < firstAnchorIdx; i++) {
+    reg0Targets.push({ slotId: allSlots[i].id, type: 'normal' })
+  }
+  reg0Targets.push({ slotId: allSlots[firstAnchorIdx].id, type: 'pre' })
+  distributeRange(0, anchorWords[0].wordStart, reg0Targets)
+  
+  // Region k (between anchors' words)
+  for (let k = 0; k < K - 1; k++) {
+    const curr = activeAnchors[k]
+    const next = activeAnchors[k + 1]
+    const currWord = anchorWords[k]
+    const nextWord = anchorWords[k + 1]
+    
+    // Distribute [currWord.wordEnd, nextWord.wordStart] across:
+    // curr.slotIdx (type 'post'), empty slots between them (type 'normal'), next.slotIdx (type 'pre')
+    const regKTargets = []
+    regKTargets.push({ slotId: allSlots[curr.slotIdx].id, type: 'post' })
+    for (let i = curr.slotIdx + 1; i < next.slotIdx; i++) {
+      regKTargets.push({ slotId: allSlots[i].id, type: 'normal' })
+    }
+    regKTargets.push({ slotId: allSlots[next.slotIdx].id, type: 'pre' })
+    distributeRange(currWord.wordEnd, nextWord.wordStart, regKTargets)
+  }
+  
+  // Region K: After the last anchor's word
+  // Distribute [lastWord.wordEnd, rawText.length] across:
+  // lastAnchor.slotIdx (type 'post'), empty slots after it (type 'normal')
+  const last = activeAnchors[K - 1]
+  const lastWord = anchorWords[K - 1]
+  const regKLastTargets = []
+  regKLastTargets.push({ slotId: allSlots[last.slotIdx].id, type: 'post' })
+  for (let i = last.slotIdx + 1; i < slotCount; i++) {
+    regKLastTargets.push({ slotId: allSlots[i].id, type: 'normal' })
+  }
+  distributeRange(lastWord.wordEnd, rawText.length, regKLastTargets)
+  
+  measureLayoutCache.set(measure, { rawText, anchorsStr, result })
+  return result
+}
+
+const buildSegmentsForTextRange = (text, startCharIdx, baseType, anchor, pending) => {
+  if (!text) return []
+  const segments = []
+  let currentSegment = null
+  
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+    const idx = startCharIdx + i
+    
+    let type = baseType
+    let currentAnchor = anchor
+    
+    if (pending && idx >= pending.start && idx < pending.end) {
+      type = 'pending'
+      currentAnchor = null
+    }
+    
+    if (!currentSegment) {
+      currentSegment = { text: char, start: idx, end: idx + 1, type, anchor: currentAnchor }
+    } else if (currentSegment.type === type && JSON.stringify(currentSegment.anchor) === JSON.stringify(currentAnchor)) {
+      currentSegment.text += char
+      currentSegment.end = idx + 1
+    } else {
+      segments.push(currentSegment)
+      currentSegment = { text: char, start: idx, end: idx + 1, type, anchor: currentAnchor }
+    }
+  }
+  if (currentSegment) {
+    segments.push(currentSegment)
+  }
+  return segments
+}
+
+const getSlotLayout = (measure, slotId) => {
+  const layoutData = getMeasureLyricsLayout(measure)
+  const slotRes = layoutData[slotId]
+  if (!slotRes || !slotRes.hasLyrics) {
+    return { hasLyrics: false, hasAssociated: false, segments: [] }
+  }
+  
+  const pending = pendingSelection.value && pendingSelection.value.measureIndex === measure.originalMeasureIndex ? pendingSelection.value : null
+  
+  if (slotRes.hasAssociated) {
+    const preSegments = buildSegmentsForTextRange(slotRes.preText, slotRes.preStart, 'normal', null, pending)
+    const assocSegments = buildSegmentsForTextRange(slotRes.associatedText, slotRes.assocStart, 'associated', slotRes.anchor, pending)
+    const postSegments = buildSegmentsForTextRange(slotRes.postText, slotRes.postStart, 'normal', null, pending)
+    
+    return {
+      hasLyrics: true,
+      hasAssociated: true,
+      pre: preSegments,
+      associated: assocSegments[0] || { text: slotRes.associatedText, start: slotRes.assocStart, end: slotRes.assocEnd, type: 'associated', anchor: slotRes.anchor },
+      post: postSegments
+    }
+  } else {
+    const normalSegments = buildSegmentsForTextRange(slotRes.normalText, slotRes.normalStart, 'normal', null, pending)
+    return {
+      hasLyrics: true,
+      hasAssociated: false,
+      normalSegments
+    }
+  }
+}
+
+const getSlotSegments = (measure, slotId) => {
+  const layout = getSlotLayout(measure, slotId)
+  if (!layout.hasLyrics) return []
+  if (layout.hasAssociated) {
+    return [...layout.pre, layout.associated, ...layout.post]
+  } else {
+    return layout.normalSegments
+  }
+}
+
+const handleSlotLyricsMouseUp = (event, measure, chordId) => {
+  if (measure.lyrics?.mode !== 'synced') return
+  
+  const container = event.currentTarget
+  const { start: localStart, end: localEnd } = getSelectionCharacterOffsetWithin(container)
+  
+  if (localStart === localEnd) return
+  
+  const segments = getSlotSegments(measure, chordId)
+  const slotStartOffset = segments.length > 0 ? segments[0].start : 0
+  
+  const start = slotStartOffset + localStart
+  const end = slotStartOffset + localEnd
+  
+  const rawText = measure.lyrics.rawText || ''
+  const selectedText = rawText.substring(start, end)
+  
+  pendingSelection.value = {
+    measureIndex: measure.originalMeasureIndex,
+    start,
+    end,
+    text: selectedText
+  }
+}
+
+const handleSlotLyricsDblClick = (event, measure) => {
+  if (measure.lyrics?.mode !== 'synced') return
+  
+  const selection = window.getSelection()
+  if (!selection || selection.isCollapsed) return
+  
+  if (pendingSelection.value && pendingSelection.value.measureIndex === measure.originalMeasureIndex) {
+    assignPendingSelection(measure)
+  }
+}
+
+watch([showLyricsGlobal, hoveredChordId, hoveredAnchor], () => {
+  updateConnectors()
+})
+watch(systems, () => {
+  updateConnectors()
+}, { deep: true })
+
+function formatDisplayChord(beat) {
+  if (!beat || !beat.root) return '-'
+  return formatChord(beat)
+}
+function splitChordDisplay(beat) {
   const full = formatDisplayChord(beat)
   if (full === '-') return { main: '-', bass: '' }
   const parts = full.split('/')
@@ -4115,6 +5929,89 @@ const splitChordDisplay = (beat) => {
     main: parts[0],
     bass: parts[1] ? `/${parts[1]}` : ''
   }
+}
+const openTransposeModal = () => {
+  const activeM = selectedMeasureIndex.value !== -1 ? measuresWithKey.value[selectedMeasureIndex.value] : null
+  transposeTargetKey.value = activeM ? activeM.activeKey : key.value
+  transposeTargetScale.value = activeM ? activeM.activeScale : scaleType.value
+  transposeMode.value = 'tonal'
+  transposeScope.value = 'all'
+  isTransposeModalOpen.value = true
+}
+const handleTransposeButtonClick = () => {
+  if (currentPlan.value === 'PRO') {
+    openTransposeModal()
+  } else {
+    upgradeReason.value = 'transpose'
+    isUpgradeModalOpen.value = true
+  }
+}
+const applyTranspose = () => {
+  saveHistory()
+  const activeM = selectedMeasureIndex.value !== -1 ? measuresWithKey.value[selectedMeasureIndex.value] : null
+  const sourceKey = activeM ? activeM.activeKey : key.value
+  const sourceScale = activeM ? activeM.activeScale : scaleType.value
+  
+  const targetKey = transposeTargetKey.value
+  const targetScale = transposeTargetScale.value
+  const mode = transposeMode.value
+  const scope = transposeScope.value
+  
+  const sourceIdx = NOTE_TO_INDEX[sourceKey]
+  const targetIdx = NOTE_TO_INDEX[targetKey]
+  if (sourceIdx === undefined || targetIdx === undefined) return
+  const mainDiff = (targetIdx - sourceIdx + 12) % 12
+  
+  if (scope === 'all') {
+    key.value = targetKey
+    scaleType.value = targetScale
+  }
+  
+  measures.value.forEach((m, idx) => {
+    const mWithKey = measuresWithKey.value[idx]
+    const mSourceKey = mWithKey.activeKey
+    const mSourceScale = mWithKey.activeScale
+    
+    const isMInScope = scope === 'all' || (mSourceKey === sourceKey && mSourceScale === sourceScale)
+    
+    if (isMInScope) {
+      m.beats.forEach(b => {
+        if (b.root) {
+          const transposed = getTransposedChord(b.root, b.type, mSourceKey, mSourceScale, targetKey, targetScale, mode, sourceKey)
+          b.root = transposed.root
+          b.type = transposed.type
+        }
+      })
+      
+      if (m.keyChange) {
+        m.keyChange.key = transposeNote(m.keyChange.key, mainDiff, targetKey)
+        if (mode !== 'tonal') {
+          m.keyChange.scaleType = targetScale
+        }
+      }
+    }
+  })
+  
+  if (scope === 'section') {
+    const firstMIdx = measuresWithKey.value.findIndex(m => m.activeKey === sourceKey && m.activeScale === sourceScale)
+    if (firstMIdx !== -1) {
+      measures.value[firstMIdx].keyChange = {
+        key: targetKey,
+        scaleType: targetScale
+      }
+    }
+    
+    const afterMIdx = measuresWithKey.value.findIndex((m, idx) => idx > firstMIdx && !(m.activeKey === sourceKey && m.activeScale === sourceScale))
+    if (afterMIdx !== -1 && !measures.value[afterMIdx].keyChange) {
+      measures.value[afterMIdx].keyChange = {
+        key: sourceKey,
+        scaleType: sourceScale
+      }
+    }
+  }
+  
+  isTransposeModalOpen.value = false
+  syncMeasuresBeats()
 }
 const exportPdf = () => {
   if (currentPlan.value === 'PRO' && viewMode.value === 'expanded') {
@@ -4147,7 +6044,7 @@ const exportPdf = () => {
 }
 </script>
 <template>
-  <div class="h-[100dvh] w-full flex flex-col bg-[#F9FBF9] text-[#1C1C1E] font-sans antialiased overflow-hidden">
+  <div class="h-[100dvh] w-full flex flex-col bg-[#F5FCE6] text-[#1C1C1E] font-sans antialiased overflow-hidden">
     
     <transition name="fade" mode="out-in">
       
@@ -4156,9 +6053,7 @@ const exportPdf = () => {
         <div class="max-w-2xl mx-auto w-full pt-12 pb-8 px-4 sm:px-6">
           <div class="flex items-center justify-between mb-8 px-4">
             <div class="flex items-center gap-3">
-              <div class="w-10 h-10 bg-[#34C759] rounded-xl flex items-center justify-center shadow-sm">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
-              </div>
+              <img :src="logoUrl" alt="HarmoniGrid Logo" class="w-10 h-10 rounded-xl object-cover shadow-sm border border-gray-250/50" />
               <h1 class="text-[34px] leading-tight font-bold text-black tracking-tight flex items-center gap-2">
                 HarmoniGrid
                 <span v-if="currentPlan === 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[12px] px-2.5 py-0.5 rounded-full font-black shadow-sm">PRO</span>
@@ -4169,7 +6064,7 @@ const exportPdf = () => {
             <div class="flex items-center bg-gray-100 p-0.5 rounded-full border border-gray-200/80 shadow-inner">
               <button 
                 @click="setPlan('FREE')" 
-                :class="currentPlan === 'FREE' ? 'bg-[#34C759] text-white shadow-sm font-black' : 'text-gray-500 font-bold hover:text-gray-700'"
+                :class="currentPlan === 'FREE' ? 'bg-[#8EE000] text-black shadow-sm font-black' : 'text-gray-500 font-bold hover:text-gray-700'"
                 class="px-3 py-1 text-xs rounded-full transition-all"
               >
                 FREE
@@ -4185,32 +6080,32 @@ const exportPdf = () => {
           </div>
           <div class="space-y-6">
             <!-- Bloque 1: General -->
-            <div class="bg-white rounded-2xl shadow-sm border border-[#34C759]/10 overflow-visible">
+            <div class="bg-white rounded-2xl shadow-sm border border-[#8EE000]/10 overflow-visible">
               <div class="flex items-center justify-between p-4 border-b border-gray-100">
                 <span class="text-[17px] font-semibold text-gray-800">Título de la canción</span>
-                <input v-model="configTitle" type="text" class="text-[17px] text-right text-[#34C759] font-semibold focus:outline-none w-1/2 bg-transparent" placeholder="Ej: Mi Canción" />
+                <input v-model="configTitle" type="text" class="text-[17px] text-right text-[#6CA600] font-semibold focus:outline-none w-1/2 bg-transparent" placeholder="Ej: Mi Canción" />
               </div>
               
               <div class="flex items-center justify-between p-4 border-b border-gray-100">
                 <span class="text-[17px] font-semibold text-gray-800">Compases Iniciales</span>
                 <div class="flex items-center gap-3">
-                  <button @click="configMeasuresCount = Math.max(1, configMeasuresCount - 1)" class="w-8 h-8 rounded-full bg-[#34C759]/10 text-[#34C759] flex items-center justify-center active:bg-[#34C759]/20">-</button>
+                  <button @click="configMeasuresCount = Math.max(1, configMeasuresCount - 1)" class="w-8 h-8 rounded-full bg-[#8EE000]/10 text-[#6CA600] flex items-center justify-center active:bg-[#8EE000]/20">-</button>
                   <input 
                     :value="configMeasuresCount" 
                     @input="handleMeasuresInput" 
                     @blur="handleMeasuresBlur" 
                     type="number" 
                     min="1" 
-                    class="text-[17px] font-bold w-16 text-center bg-gray-50 border border-gray-200 rounded-lg focus:border-[#34C759] focus:bg-white focus:outline-none transition-all py-1 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" 
+                    class="text-[17px] font-bold w-16 text-center bg-gray-50 border border-gray-200 rounded-lg focus:border-[#8EE000] focus:bg-white focus:outline-none transition-all py-1 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" 
                   />
-                  <button @click="currentPlan === 'PRO' ? configMeasuresCount++ : (configMeasuresCount >= 20 ? (upgradeReason='limit', isUpgradeModalOpen=true) : configMeasuresCount++)" class="w-8 h-8 rounded-full bg-[#34C759]/10 text-[#34C759] flex items-center justify-center active:bg-[#34C759]/20">+</button>
+                  <button @click="currentPlan === 'PRO' ? configMeasuresCount++ : (configMeasuresCount >= 20 ? (upgradeReason='limit', isUpgradeModalOpen=true) : configMeasuresCount++)" class="w-8 h-8 rounded-full bg-[#8EE000]/10 text-[#6CA600] flex items-center justify-center active:bg-[#8EE000]/20">+</button>
                 </div>
               </div>
               <!-- CUSTOM DROPDOWN: Cifra Indicadora -->
               <div class="relative dropdown-container border-b border-gray-100 z-30">
                 <button @click="toggleDropdown('timeSignature')" class="flex items-center justify-between w-full p-4 active:bg-gray-50 transition-colors">
                   <span class="text-[17px] font-semibold text-gray-800">Cifra Indicadora</span>
-                  <div class="flex items-center gap-1 text-[#34C759]">
+                  <div class="flex items-center gap-1 text-[#6CA600]">
                     <span class="text-[17px] font-semibold">{{ configTimeSignature }}/{{ configTimeSignatureUnit }}</span>
                     <svg class="w-4 h-4 transition-transform" :class="{'rotate-180': activeDropdown === 'timeSignature'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                   </div>
@@ -4229,14 +6124,14 @@ const exportPdf = () => {
                           @click="selectWizardTimeSignature(item.beats, item.unit, item.isPro)"
                           class="flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-bold text-gray-700 hover:bg-gray-50 transition-colors w-full"
                           :class="{
-                            'text-[#34C759] bg-[#34C759]/5 border-l-2 border-l-[#34C759] pl-1.5': configTimeSignature === item.beats && configTimeSignatureUnit === item.unit
+                            'text-[#6CA600] bg-[#8EE000]/5 border-l-2 border-l-[#34C759] pl-1.5': configTimeSignature === item.beats && configTimeSignatureUnit === item.unit
                           }"
                         >
                           <div class="flex items-center gap-1.5">
                             <span>{{ item.name }}</span>
                             <span v-if="item.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.2 rounded font-black shrink-0">PRO</span>
                           </div>
-                          <span v-if="configTimeSignature === item.beats && configTimeSignatureUnit === item.unit" class="text-xs font-black text-[#34C759]">✓</span>
+                          <span v-if="configTimeSignature === item.beats && configTimeSignatureUnit === item.unit" class="text-xs font-black text-[#6CA600]">✓</span>
                         </button>
                       </div>
                     </div>
@@ -4253,14 +6148,14 @@ const exportPdf = () => {
                           min="1" max="32"
                           :value="configTimeSignature"
                           @input="configTimeSignature = Math.max(1, parseInt($event.target.value) || 4)"
-                          class="w-10 text-center text-sm font-black border border-gray-300 rounded-lg py-1 focus:border-[#34C759] focus:outline-none"
+                          class="w-10 text-center text-sm font-black border border-gray-300 rounded-lg py-1 focus:border-[#8EE000] focus:outline-none"
                           placeholder="Nº"
                         />
                         <span class="text-gray-400 font-black text-lg leading-none">/</span>
                         <select
                           :value="configTimeSignatureUnit"
                           @change="configTimeSignatureUnit = parseInt($event.target.value); activeDropdown = null"
-                          class="text-sm font-bold border border-gray-300 rounded-lg py-1 px-1.5 focus:border-[#34C759] focus:outline-none bg-white"
+                          class="text-sm font-bold border border-gray-300 rounded-lg py-1 px-1.5 focus:border-[#8EE000] focus:outline-none bg-white"
                         >
                           <option value="2">2</option>
                           <option value="4">4</option>
@@ -4269,7 +6164,7 @@ const exportPdf = () => {
                         </select>
                         <button
                           @click="activeDropdown = null"
-                          class="text-[10px] bg-[#34C759] text-white px-2 py-1 rounded-lg font-black hover:bg-[#248A3D] transition-colors"
+                          class="text-[10px] bg-[#8EE000] text-black px-2 py-1 rounded-lg font-black hover:bg-[#7BC200] transition-colors"
                         >✓ OK</button>
                       </div>
                       <!-- FREE: locked state -->
@@ -4287,25 +6182,25 @@ const exportPdf = () => {
               </div>
             </div>
             <!-- Bloque 2: Tonalidad -->
-            <div class="bg-white rounded-2xl shadow-sm border border-[#34C759]/10 p-5">
+            <div class="bg-white rounded-2xl shadow-sm border border-[#8EE000]/10 p-5">
               <span class="block text-[17px] font-semibold text-gray-800 mb-5">Tonalidad Central</span>
               
               <div class="space-y-4">
                 <div class="flex flex-wrap gap-2">
-                  <button v-for="k in keysNatural" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#34C759] text-white shadow-md shadow-[#34C759]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
+                  <button v-for="k in keysNatural" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
                 </div>
                 <div class="flex flex-wrap gap-2">
-                  <button v-for="k in keysSharp" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#34C759] text-white shadow-md shadow-[#34C759]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
+                  <button v-for="k in keysSharp" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
                 </div>
                 <div class="flex flex-wrap gap-2">
-                  <button v-for="k in keysFlat" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#34C759] text-white shadow-md shadow-[#34C759]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
+                  <button v-for="k in keysFlat" :key="k" @click="configKey = k" :class="configKey === k ? 'bg-[#8EE000] text-black shadow-md shadow-[#8EE000]/30' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="w-11 h-11 rounded-full font-bold text-[16px] transition-all flex items-center justify-center">{{ k }}</button>
                 </div>
               </div>
               <!-- CUSTOM DROPDOWN: Escala -->
               <div class="mt-6 border-t border-gray-100 pt-2 relative dropdown-container z-20">
                 <button @click="toggleDropdown('configScale')" class="flex items-center justify-between w-full p-3 -mx-3 rounded-lg active:bg-gray-50 transition-colors">
                   <span class="text-[17px] font-semibold text-gray-800">Tipo de Escala</span>
-                  <div class="flex items-center gap-1 text-[#34C759]">
+                  <div class="flex items-center gap-1 text-[#6CA600]">
                     <span class="text-[17px] font-semibold">{{ currentConfigScaleName }}</span>
                     <svg class="w-4 h-4 transition-transform" :class="{'rotate-180': activeDropdown === 'configScale'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                   </div>
@@ -4319,7 +6214,7 @@ const exportPdf = () => {
                           <span class="text-gray-800 font-semibold">{{ s.name }}</span>
                           <span class="text-[10px] text-gray-400 font-normal leading-tight">{{ s.characteristic }}</span>
                         </div>
-                        <span v-if="configScale === s.id" class="text-[#34C759]">✓</span>
+                        <span v-if="configScale === s.id" class="text-[#6CA600]">✓</span>
                         <span v-else-if="s.isPro && currentPlan !== 'PRO'" class="text-[10px] bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded font-black flex items-center gap-0.5">👑 PRO</span>
                       </button>
                     </div>
@@ -4328,44 +6223,47 @@ const exportPdf = () => {
               </div>
             </div>
           </div>
-          <button @click="startProject" class="w-full mt-8 bg-[#34C759] active:bg-[#248A3D] text-white font-bold text-[18px] py-4 rounded-2xl shadow-lg shadow-[#34C759]/30 transition-all transform active:scale-[0.98]">
+          <button @click="startProject" class="w-full mt-8 bg-[#8EE000] active:bg-[#6FA300] text-black font-black text-[18px] py-4 rounded-2xl shadow-lg shadow-[#8EE000]/30 transition-all transform active:scale-[0.98]">
             Crear Partitura
           </button>
         </div>
       </div>
       <!-- ==================== MAIN EDITOR ==================== -->
-      <div v-else class="flex-1 flex flex-col h-full bg-[#F9FBF9] relative">
+      <div v-else class="flex-1 flex flex-col h-full bg-[#F5FCE6] relative">
         
         <!-- HEADER -->
-        <header class="flex items-center justify-between px-4 h-16 bg-white/90 backdrop-blur-xl border-b border-gray-200 z-20 sticky top-0 shadow-sm">
-          <button @click="isSetupMode = true" class="text-[#34C759] font-medium text-[16px] w-24 text-left flex items-center hover:opacity-70 transition-opacity">
-            <svg class="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg> Atrás
-          </button>
+        <header class="flex items-center justify-between px-4 h-16 bg-[#8EE000] border-b border-[#8EE000]/25 z-20 sticky top-0 shadow-sm">
+          <div class="flex items-center gap-3">
+            <img :src="logoUrl" alt="HarmoniGrid Logo" class="w-8 h-8 rounded-lg object-cover border border-black/15 shadow-sm cursor-pointer hover:scale-105 transition-transform" @click="isSetupMode = true" />
+            <button @click="isSetupMode = true" class="text-black font-black text-[16px] flex items-center hover:opacity-75 transition-opacity">
+              <svg class="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg> Atrás
+            </button>
+          </div>
           
-          <div class="flex-1 text-center font-bold text-[18px] text-gray-900 truncate px-2">
-            <input v-model="title" class="bg-transparent text-center focus:outline-none w-full placeholder-gray-400 font-extrabold" />
+          <div class="flex-1 text-center font-bold text-[18px] text-black truncate px-2">
+            <input v-model="title" class="bg-transparent text-center focus:outline-none w-full placeholder-gray-800 font-black text-black" />
           </div>
           
           <div class="flex items-center gap-3">
             <!-- Plan Toggle Switch in Editor Header -->
-            <div class="flex items-center bg-gray-100 p-0.5 rounded-full border border-gray-200/80 shadow-inner">
+            <div class="flex items-center bg-black/10 p-0.5 rounded-full border border-black/15 shadow-inner">
               <button 
                 @click="setPlan('FREE')" 
-                :class="currentPlan === 'FREE' ? 'bg-[#34C759] text-white shadow-sm font-black' : 'text-gray-500 font-bold hover:text-gray-700'"
+                :class="currentPlan === 'FREE' ? 'bg-black text-[#8EE000] shadow-sm font-black' : 'text-gray-800 font-bold hover:text-black'"
                 class="px-2.5 py-1 text-[11px] rounded-full transition-all duration-300"
               >
                 FREE
               </button>
               <button 
                 @click="setPlan('PRO')" 
-                :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-sm font-black' : 'text-gray-500 font-bold hover:text-gray-700'"
+                :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-sm font-black' : 'text-gray-800 font-bold hover:text-black'"
                 class="px-2.5 py-1 text-[11px] rounded-full transition-all duration-300 flex items-center gap-0.5"
               >
                 👑 PRO
               </button>
             </div>
             
-            <button @click="exportPdf" class="text-white bg-[#34C759] hover:bg-[#248A3D] px-3 py-1.5 rounded-full font-bold text-[14px] w-24 text-center shadow-md shadow-[#34C759]/20 transition-all">
+            <button @click="exportPdf" class="text-white bg-black hover:bg-gray-900 px-3 py-1.5 rounded-full font-black text-[14px] w-24 text-center shadow-md shadow-black/10 transition-all">
               Exportar
             </button>
           </div>
@@ -4376,18 +6274,18 @@ const exportPdf = () => {
           <div class="flex items-center gap-2">
             <!-- Custom Main Key Dropdown -->
             <div class="relative dropdown-container">
-              <button @click="toggleDropdown('mainKey')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1 hover:border-[#34C759] transition-colors">
+              <button @click="toggleDropdown('mainKey')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1 hover:border-[#8EE000] transition-colors">
                 {{ key }} <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
               </button>
               <transition name="dropdown">
                 <div v-if="activeDropdown === 'mainKey'" class="absolute top-full left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-gray-100 p-2 grid grid-cols-5 gap-1 z-50">
-                  <button v-for="k in [...keysNatural, ...keysSharp, ...keysFlat]" :key="k" @click="key = k; activeDropdown = null" :class="key === k ? 'bg-[#34C759] text-white' : 'hover:bg-gray-100 text-gray-700'" class="py-2 rounded-lg font-bold text-sm text-center transition-colors">{{k}}</button>
+                  <button v-for="k in [...keysNatural, ...keysSharp, ...keysFlat]" :key="k" @click="selectKey(k)" :class="key === k ? 'bg-[#8EE000] text-black' : 'hover:bg-gray-100 text-gray-700'" class="py-2 rounded-lg font-bold text-sm text-center transition-colors">{{k}}</button>
                 </div>
               </transition>
             </div>
             <!-- Custom Main Scale Dropdown -->
             <div class="relative dropdown-container">
-              <button @click="toggleDropdown('mainScale')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1 hover:border-[#34C759] transition-colors">
+              <button @click="toggleDropdown('mainScale')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1 hover:border-[#8EE000] transition-colors">
                 {{ currentScaleName }} <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
               </button>
               <transition name="dropdown">
@@ -4399,7 +6297,7 @@ const exportPdf = () => {
                         <span class="text-gray-800 font-semibold">{{ s.name }}</span>
                         <span class="text-[10px] text-gray-400 font-normal leading-tight">{{ s.characteristic }}</span>
                       </div>
-                      <span v-if="scaleType === s.id" class="text-[#34C759]">✓</span>
+                      <span v-if="scaleType === s.id" class="text-[#6CA600]">✓</span>
                       <span v-else-if="s.isPro && currentPlan !== 'PRO'" class="text-[10px] bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded font-black flex items-center gap-0.5">👑 PRO</span>
                     </button>
                   </div>
@@ -4408,7 +6306,7 @@ const exportPdf = () => {
             </div>
             <!-- Custom Global Groove Dropdown -->
             <div class="relative dropdown-container">
-              <button @click="toggleDropdown('globalGroove')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1.5 hover:border-[#34C759] transition-colors">
+              <button @click="toggleDropdown('globalGroove')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1.5 hover:border-[#8EE000] transition-colors">
                 <span>🎵 Groove: {{ translateGrooveName(globalGroove) }}</span>
                 <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
               </button>
@@ -4422,7 +6320,7 @@ const exportPdf = () => {
                     <button 
                       @click="selectGlobalGroove(g)" 
                       class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-50 text-[14px] flex flex-col font-semibold transition-all duration-150 relative"
-                      :class="globalGroove === g ? 'bg-[#34C759]/10 text-[#34C759]' : 'text-gray-700'"
+                      :class="globalGroove === g ? 'bg-[#8EE000]/10 text-[#6CA600]' : 'text-gray-700'"
                     >
                       <div class="flex items-center justify-between w-full">
                         <span class="font-bold flex items-center gap-1.5">
@@ -4433,7 +6331,7 @@ const exportPdf = () => {
                           <span v-if="GROOVE_DETAILS[g]?.badge" class="text-[9px] bg-gray-100 text-gray-500 font-bold px-1.5 py-0.5 rounded border border-gray-200/50">
                             {{ GROOVE_DETAILS[g].badge }}
                           </span>
-                          <span v-if="globalGroove === g" class="text-[#34C759]">✓</span>
+                          <span v-if="globalGroove === g" class="text-[#6CA600]">✓</span>
                           <span v-else-if="g !== 'Ninguno' && currentPlan !== 'PRO'" class="text-[8px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.5 rounded font-black uppercase tracking-wide">👑 PRO</span>
                         </div>
                       </div>
@@ -4447,14 +6345,25 @@ const exportPdf = () => {
                       <p class="text-[11px] text-slate-350 leading-normal">{{ GROOVE_DETAILS[g]?.description }}</p>
                       <div class="mt-1 bg-slate-950 p-2 rounded-lg border border-slate-800/80 font-mono text-[10px] leading-tight select-none">
                         <div class="text-slate-500 whitespace-pre">{{ GROOVE_DETAILS[g]?.previewHeader }}</div>
-                        <div class="text-[#34C759] font-bold whitespace-pre mt-0.5">{{ GROOVE_DETAILS[g]?.previewLine }}</div>
+                        <div class="text-[#6CA600] font-bold whitespace-pre mt-0.5">{{ GROOVE_DETAILS[g]?.previewLine }}</div>
                       </div>
                     </div>
                   </div>
                 </div>
               </transition>
             </div>
-            </div>
+            
+            <!-- Deshacer (Undo) Button -->
+            <button 
+              @click="undo" 
+              :disabled="undoStack.length === 0" 
+              class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1.5 hover:border-[#8EE000] active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed select-none cursor-pointer"
+              title="Deshacer última acción"
+            >
+              <span>↩️</span>
+              <span>Deshacer</span>
+            </button>
+          </div>
           <div class="flex items-center gap-3">
             <!-- Segmented Control for Compact/Expanded mode (PRO only, Promo in FREE) -->
             <div v-if="currentPlan === 'PRO'" class="flex p-0.5 bg-gray-100 rounded-lg border border-gray-200 shadow-inner">
@@ -4485,7 +6394,7 @@ const exportPdf = () => {
               @click="toggleSelectionMode" 
               class="text-[14px] font-bold flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all border"
               :class="isSelectionMode 
-                ? (currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' : 'bg-[#34C759] text-white border-transparent shadow-sm') 
+                ? (currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' : 'bg-[#8EE000] text-black border-transparent shadow-sm') 
                 : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-200'"
             >
               <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -4515,12 +6424,20 @@ const exportPdf = () => {
               <span>⚙️ Ordenar compases</span>
               <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black">PRO</span>
             </button>
+            <!-- Transportar -->
+            <button 
+              @click="handleTransposeButtonClick" 
+              class="text-[14px] font-bold flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
+            >
+              <span>🔄 Transportar</span>
+              <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black">PRO</span>
+            </button>
           </div>
         </div>
         <!-- SUB-TOOLBAR PROMO/EXPLANATION CAPTION -->
         <div class="px-4 py-1.5 bg-gray-50 border-b border-gray-200/80 text-[12px] text-gray-500 flex items-center gap-1.5 select-none shrink-0">
           <span v-if="currentPlan === 'FREE'" class="flex items-center gap-1.5">
-            <span class="w-2 h-2 bg-[#34C759] rounded-full animate-ping"></span>
+            <span class="w-2 h-2 bg-[#8EE000] rounded-full animate-ping"></span>
             <span><strong>FREE:</strong> Usa repeticiones para optimizar tu estructura.</span>
           </span>
           <span v-else class="flex items-center gap-1.5">
@@ -4529,22 +6446,22 @@ const exportPdf = () => {
           </span>
         </div>
         <!-- GRID AREA -->
-        <main class="flex-1 overflow-y-auto px-2 py-6 md:p-8 relative" @click="closeDropdowns">
-          <div class="w-full max-w-[1450px] mx-auto flex gap-2 md:gap-6 px-2 md:px-6">
+        <main class="flex-1 overflow-y-auto px-2 py-6 md:px-4 md:py-8 relative" @click="closeDropdowns">
+          <div class="w-full max-w-[1450px] mx-auto flex gap-2 md:gap-4 px-1 md:px-2">
             
             <!-- GLOBAL INDICATORS -->
             <div class="flex flex-col items-center pt-2 flex-shrink-0 select-none text-center min-w-[96px] md:min-w-[120px] gap-3">
               <!-- Interactive Key Signature Info Badge (Now above Time Signature) -->
               <button 
                 @click="isKeyInfoOpen = true; isVerMasExpanded = false" 
-                class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#34C759] active:scale-[0.97] transition-all w-full text-center shadow-sm animate-scale-up"
+                class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-full text-center shadow-sm animate-scale-up"
                 :class="{'hover:border-violet-500': currentPlan === 'PRO'}"
               >
                 <span class="text-[10px] md:text-[11px] font-black text-gray-700 leading-tight uppercase tracking-wider block w-full truncate">
                   {{ translateNoteToSpanish(key) }} {{ currentScaleName }}
                 </span>
                 <span 
-                  :class="keySignatureFormatted === 'Limpia' ? 'text-gray-400 bg-gray-200/80' : (currentPlan === 'PRO' ? 'text-violet-600 bg-violet-50 border border-violet-100/50' : 'text-[#34C759] bg-[#34C759]/10 border border-[#34C759]/20')" 
+                  :class="keySignatureFormatted === 'Limpia' ? 'text-gray-400 bg-gray-200/80' : (currentPlan === 'PRO' ? 'text-violet-600 bg-violet-50 border border-violet-100/50' : 'text-[#6CA600] bg-[#8EE000]/10 border border-[#8EE000]/20')" 
                   class="px-1.5 py-0.5 rounded-md text-[9px] md:text-[10px] font-black tracking-wide animate-pulse-subtle flex items-center justify-center gap-0.5 w-max mx-auto"
                 >
                   {{ keySignatureFormatted }}
@@ -4554,7 +6471,7 @@ const exportPdf = () => {
               <div class="relative w-full flex justify-center mt-2 select-none z-35">
                 <button
                   @click.stop="isMetricInfoModalOpen = true"
-                  class="group flex flex-col items-center p-2.5 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#34C759] active:scale-[0.97] transition-all w-full text-center shadow-sm"
+                  class="group flex flex-col items-center p-2.5 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-full text-center shadow-sm"
                   :class="{'hover:border-violet-500': currentPlan === 'PRO'}"
                 >
                   <span class="text-[8.5px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">Métrica</span>
@@ -4563,7 +6480,7 @@ const exportPdf = () => {
                       <span>{{ timeSignature }}</span>
                     </div>
                     <!-- line separator -->
-                    <div class="w-6 h-0.5 bg-gray-400 my-0.5 group-hover:bg-[#34C759] transition-colors" :class="{'group-hover:bg-violet-500': currentPlan === 'PRO'}"></div>
+                    <div class="w-6 h-0.5 bg-gray-400 my-0.5 group-hover:bg-[#8EE000] transition-colors" :class="{'group-hover:bg-violet-500': currentPlan === 'PRO'}"></div>
                     <div class="text-3xl md:text-4xl font-serif font-black text-gray-850">{{ timeSignatureUnit }}</div>
                   </div>
                   <span class="text-[8px] text-gray-400 font-bold mt-1 group-hover:text-gray-600 flex items-center gap-0.5">
@@ -4580,10 +6497,10 @@ const exportPdf = () => {
                     <input 
                       type="checkbox" 
                       :checked="globalShowSubdivisions"
-                      @change="toggleAllSubdivisions($event.target.checked)"
+                      @change="toggleAllSubdivisions($event)"
                       class="sr-only peer"
                     >
-                    <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#34C759]"></div>
+                    <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#8EE000]"></div>
                   </div>
                 </label>
               </div>
@@ -4599,17 +6516,99 @@ const exportPdf = () => {
                     <input 
                       type="checkbox" 
                       :checked="globalShowObligado"
-                      @change="toggleGlobalShowObligado($event.target.checked)"
+                      @change="toggleGlobalShowObligado($event)"
                       class="sr-only peer"
                     >
-                    <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#34C759]"></div>
+                    <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#8EE000]"></div>
                   </div>
                 </label>
+              </div>
+
+              <!-- Global showLyrics Toggle -->
+              <div class="w-full mt-2">
+                <label class="flex items-center justify-between gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors" title="Mostrar/ocultar letras y anotaciones en los compases">
+                  <div class="flex flex-col text-left">
+                    <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-none">✎ Letras</span>
+                    <span class="text-[7.5px] text-gray-400 font-bold leading-none mt-0.5">Anotaciones</span>
+                  </div>
+                  <div class="relative">
+                    <input 
+                      type="checkbox" 
+                      v-model="showLyricsGlobal"
+                      class="sr-only peer"
+                    >
+                    <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#8EE000]"></div>
+                  </div>
+                </label>
+              </div>
+              
+              <!-- Suggestions Toggle Button -->
+              <div class="w-full mt-2 animate-scale-up">
+                <button
+                  @click="isSuggestionsPanelOpen = !isSuggestionsPanelOpen"
+                  class="flex items-center justify-between gap-2 px-2 py-2 rounded-xl border w-full hover:bg-gray-100 transition-colors"
+                  :class="isSuggestionsPanelOpen 
+                    ? 'bg-amber-50 border-amber-300 text-amber-900 shadow-sm shadow-amber-100/50' 
+                    : 'bg-gray-50/80 border-gray-200 text-gray-500'"
+                  title="Mostrar/ocultar panel de sugerencias y asistente de ideas"
+                >
+                  <span class="text-[9px] font-black uppercase tracking-wider leading-none">💡 Ideas</span>
+                  <div class="flex items-center">
+                    <span class="w-2.5 h-2.5 rounded-full transition-all" :class="allSuggestionsPool.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-gray-305'"></span>
+                  </div>
+                </button>
               </div>
             </div>
             
             <!-- MEASURES SYSTEMS GRID -->
-            <div class="flex-1 space-y-12">
+            <div class="flex-1 space-y-8">
+              <!-- Asistente de Sugerencias Panel -->
+              <transition name="fade">
+                <div v-if="isSuggestionsPanelOpen" class="bg-gradient-to-tr from-amber-50/80 to-amber-100/35 backdrop-blur-md border border-amber-250/70 rounded-3xl p-5 shadow-lg shadow-amber-100/10 animate-scale-up space-y-4">
+                  <div class="flex items-center justify-between border-b border-amber-200/50 pb-3">
+                    <div class="flex items-center gap-2">
+                      <span class="text-xl">💡</span>
+                      <div>
+                        <h3 class="text-xs font-black text-amber-950 uppercase tracking-wider">Asistente de Sugerencias Inteligentes (PRO)</h3>
+                        <p class="text-[10px] text-amber-800/80 font-medium">
+                          <span v-if="allSuggestionsPool.length > 0">Se detectaron {{ allSuggestionsPool.length }} consejos específicos para tu progresión</span>
+                          <span v-else>Plantillas educativas e ideas de progresión listas para usar</span>
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div class="flex items-center gap-2">
+                      <button @click="refreshSuggestions" class="bg-white hover:bg-amber-50 text-amber-800 text-[10px] font-black px-2.5 py-1.5 rounded-lg border border-amber-200 shadow-xs flex items-center gap-1 active:scale-[0.97] transition-all">
+                        🔄 Refrescar
+                      </button>
+                      <button @click="isSuggestionsPanelOpen = false" class="text-amber-800 hover:text-amber-950 text-xs font-bold bg-amber-200/40 w-6 h-6 rounded-full flex items-center justify-center">✕</button>
+                    </div>
+                  </div>
+                  
+                  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div v-for="(sug, idx) in displayedSuggestions" :key="idx" class="bg-white/80 backdrop-blur-xs border border-amber-200/50 rounded-2xl p-4 flex flex-col justify-between shadow-xs hover:shadow-sm transition-all">
+                      <div class="space-y-1.5">
+                        <span class="inline-block text-[9px] font-black text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                          {{ sug.type === 'rule' ? 'Análisis Progresión' : 'Idea de Progresión' }}
+                        </span>
+                        <h4 class="text-xs font-bold text-gray-900">{{ sug.title }}</h4>
+                        <p class="text-[11px] text-gray-650 leading-relaxed font-medium" v-html="sug.description"></p>
+                      </div>
+                      
+                      <div class="mt-4 pt-3 border-t border-gray-100">
+                        <button 
+                          @click="runSuggestion(sug)"
+                          class="w-full py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-extrabold text-[11px] rounded-xl transition-all shadow-xs flex items-center justify-center gap-1"
+                        >
+                          <span>Aplicar Sugerencia</span>
+                          <span v-if="currentPlan !== 'PRO'" class="bg-white/20 text-white text-[8px] px-1 py-0.5 rounded font-black">PRO</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </transition>
+
               <!-- Groove Banner -->
               <div 
                 v-if="globalGroove !== 'Ninguno'" 
@@ -4626,7 +6625,7 @@ const exportPdf = () => {
                   <span class="text-gray-300">|</span>
                   <div class="font-mono text-[10px] bg-slate-900 text-slate-100 px-2.5 py-1 rounded-lg flex items-center gap-3 border border-slate-800">
                     <span class="text-slate-500">{{ GROOVE_DETAILS[globalGroove]?.previewHeader }}</span>
-                    <span class="text-[#34C759] font-bold">{{ GROOVE_DETAILS[globalGroove]?.previewLine }}</span>
+                    <span class="text-[#6CA600] font-bold">{{ GROOVE_DETAILS[globalGroove]?.previewLine }}</span>
                   </div>
                 </div>
                 <div class="text-[11px] text-violet-600 font-medium italic hidden md:block pr-1">
@@ -4636,9 +6635,32 @@ const exportPdf = () => {
               <div 
                 v-for="(system, sIdx) in systems" 
                 :key="system.id"
-                class="system-row gap-x-3 gap-y-10 w-full relative"
-                :class="{ 'z-30': isSystemActive(system), 'z-10': !isSystemActive(system) }"
+                :id="'system-row-' + system.id"
+                class="flex flex-col gap-y-3 w-full relative system-row"
               >
+                <!-- SVG Connectors overlay -->
+                <svg 
+                  class="absolute inset-0 pointer-events-none w-full h-full z-25 overflow-visible"
+                  v-if="currentPlan === 'PRO' && showLyricsGlobal"
+                >
+                  <path
+                    v-for="conn in activeConnectors.filter(c => c.systemId === system.id)"
+                    :key="conn.id"
+                    :d="conn.path"
+                    :stroke="conn.active ? '#8B5CF6' : '#C4B5FD'"
+                    :stroke-width="conn.active ? 2.5 : 1.5"
+                    :stroke-dasharray="conn.active ? 'none' : '3,3'"
+                    fill="none"
+                    class="transition-all duration-200"
+                    :opacity="conn.active ? 1 : 0.45"
+                  />
+                </svg>
+
+                <!-- MEASURES ROW -->
+                <div 
+                  class="system-row gap-x-3 gap-y-10 w-full relative"
+                  :class="{ 'z-30': isSystemActive(system), 'z-10': !isSystemActive(system) }"
+                >
                 <template v-for="(measure, mIdx) in system.measures" :key="measure.id">
                   
                   <!-- Recuadro de nueva escala (Between measures, only in PRO) -->
@@ -4651,7 +6673,7 @@ const exportPdf = () => {
                       class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-violet-500 active:scale-[0.97] transition-all w-full text-center shadow-sm"
                     >
                       <span class="text-[10px] md:text-[11px] font-black text-gray-700 leading-tight uppercase tracking-wider block w-full truncate">
-                        {{ translateNoteToSpanish(measure.keyChange.key) }} {{ measure.keyChange.scaleType === 'major' ? 'Mayor' : 'Menor' }}
+                        {{ translateNoteToSpanish(measure.keyChange.key) }} {{ SCALES[measure.keyChange.scaleType]?.name || measure.keyChange.scaleType }}
                       </span>
                       <span 
                         class="px-1.5 py-0.5 rounded-md text-[9px] md:text-[10px] font-black tracking-wide"
@@ -4684,12 +6706,12 @@ const exportPdf = () => {
 
                   <!-- Measure Card -->
                   <div 
-                    class="relative bg-white border-2 border-gray-300 rounded-lg flex overflow-visible h-28 shadow-sm transition-all hover:border-[#34C759] group"
+                    class="relative bg-white border-2 border-gray-300 rounded-lg flex overflow-visible h-28 shadow-sm transition-all hover:border-[#8EE000] group"
                     :class="{
                       'border-l-[4px] border-l-black': getRepeatStart(measure.originalMeasureIndex), 
                       'border-r-[4px] border-r-black': getRepeatEnd(measure.originalMeasureIndex),
                       'border-[#a78bfa] hover:border-[#8b5cf6]': measure.isExpandedCopy,
-                      'border-[#34C759] bg-[#34C759]/5': isSelectionMode && isMeasureSelected(measure.originalMeasureIndex) && currentPlan === 'FREE',
+                      'border-[#8EE000] bg-[#8EE000]/5': isSelectionMode && isMeasureSelected(measure.originalMeasureIndex) && currentPlan === 'FREE',
                       'border-violet-500 bg-violet-50/50 shadow-md shadow-violet-100': isSelectionMode && isMeasureSelected(measure.originalMeasureIndex) && currentPlan === 'PRO',
                       'z-40': isRhythmSelectorActiveForMeasure(measure.originalMeasureIndex)
                     }"
@@ -4704,7 +6726,7 @@ const exportPdf = () => {
                       class="absolute inset-0 z-30 cursor-pointer rounded-lg transition-all duration-200"
                       :class="[
                         isMeasureSelected(measure.originalMeasureIndex)
-                          ? (currentPlan === 'PRO' ? 'bg-violet-500/10 hover:bg-violet-500/20' : 'bg-[#34C759]/10 hover:bg-[#34C759]/20')
+                          ? (currentPlan === 'PRO' ? 'bg-violet-500/10 hover:bg-violet-500/20' : 'bg-[#8EE000]/10 hover:bg-[#8EE000]/20')
                           : 'hover:bg-gray-100/50'
                       ]"
                     ></div>
@@ -4723,7 +6745,7 @@ const exportPdf = () => {
                       </div>
                     </div>
                     <!-- SECTION LABEL (INSIDE CARD TO AVOID BRACKET CONFLICTS) -->
-                    <div v-if="measure.sectionLabel" class="absolute top-1.5 left-2 bg-[#34C759] text-white px-1.5 py-0.5 text-[10px] font-black rounded z-10 shadow-sm uppercase tracking-wider">
+                    <div v-if="measure.sectionLabel" class="absolute top-1.5 left-2 bg-[#8EE000] text-black px-1.5 py-0.5 text-[10px] font-black rounded z-10 shadow-sm uppercase tracking-wider">
                       {{ measure.sectionLabel }}
                     </div>
                     
@@ -4741,15 +6763,15 @@ const exportPdf = () => {
                     </div>
                     
                     <!-- Key display on first measure only -->
-                    <div v-if="measure.displayedMeasureIndex === 0" class="absolute top-1 right-2 text-[10px] font-black text-[#34C759]/50">
+                    <div v-if="measure.displayedMeasureIndex === 0" class="absolute top-1 right-2 text-[10px] font-black text-[#6CA600]/50">
                       {{ key }}{{ scaleType === 'minor' ? 'm' : '' }}
                     </div>
 
                     <!-- Harmonic Rhythm Indicators (♪, ♬, ↷, 3, 5) -->
                     <div 
                       v-if="getActiveMeasureRhythms(measure).length > 0" 
-                      class="absolute top-1.5 bg-gray-100 text-gray-600 px-1.5 py-0.5 text-[9px] font-black rounded z-10 border border-gray-200 flex items-center gap-1"
-                      :class="measure.displayedMeasureIndex === 0 ? 'right-12' : 'right-2'"
+                      class="absolute -top-6 bg-white/95 backdrop-blur-sm border border-gray-200 rounded-full px-2 py-0.5 shadow-sm text-gray-600 flex items-center gap-1 z-20 text-[9px] font-black"
+                      :class="measure.displayedMeasureIndex === 0 ? 'right-12' : (getRepeatEnd(measure.originalMeasureIndex) ? 'right-12' : 'right-2')"
                       title="Ritmo Armónico Activo"
                     >
                       <span 
@@ -4764,7 +6786,7 @@ const exportPdf = () => {
                     <button 
                       v-if="viewMode === 'compact'"
                       @click.stop="openMeasureOptions(measure.originalMeasureIndex)"
-                      class="absolute -bottom-3.5 left-1/2 -translate-x-1/2 bg-white text-gray-400 hover:text-[#34C759] hover:border-[#34C759] border border-gray-300 rounded-full w-7 h-7 flex items-center justify-center text-xs z-20 shadow-md transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                      class="absolute -bottom-3.5 left-1/2 -translate-x-1/2 bg-white text-gray-400 hover:text-[#6CA600] hover:border-[#8EE000] border border-gray-300 rounded-full w-7 h-7 flex items-center justify-center text-xs z-20 shadow-md transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
                     >⚙️</button>
                     
                     <!-- MEASURE INDEX & PROJECTION BADGE -->
@@ -4829,7 +6851,7 @@ const exportPdf = () => {
                           :key="pIdx"
                           :d="path.d"
                           fill="none"
-                          stroke="#34C759"
+                          stroke="#8EE000"
                           stroke-width="1.8"
                           stroke-linecap="round"
                           class="tie-arc transition-all duration-300"
@@ -4872,12 +6894,16 @@ const exportPdf = () => {
                           <div
                             v-if="!measure.showObligado || !isSubdividedRhythm(getEffectiveRhythm(measure, state.beat, state.index), getMeasureTimeSignature(measure).unit === 8, state.beat)"
                             @click.stop="clickBeat(measure.originalMeasureIndex, state.index, measure.displayedMeasureIndex)"
-                            class="w-full h-full flex flex-col items-center justify-center active:bg-[#34C759]/10 hover:bg-[#34C759]/5 relative transition-colors rounded-lg group/beat cursor-pointer"
+                            class="w-full h-full flex flex-col items-center justify-center active:bg-[#8EE000]/10 hover:bg-[#8EE000]/5 relative transition-colors rounded-lg group/beat cursor-pointer"
                           >
                             <!-- Chord name wrapped in white badge for clean margins and readability -->
                             <div 
                               v-if="state.beat.root"
+                              :id="'chord-card-' + state.beat.id"
+                              @mouseenter="hoveredChordId = state.beat.id"
+                              @mouseleave="hoveredChordId = null"
                               class="bg-white/95 border border-gray-200/80 rounded-xl px-3 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 group-hover/beat:scale-105 transition-transform animate-scale-up"
+                              :class="{ 'border-violet-500 ring-2 ring-violet-100 shadow-md shadow-violet-100': currentPlan === 'PRO' && (hoveredChordId === state.beat.id || (hoveredAnchor && isChordIdRelatedToBeat(hoveredAnchor.chordId, state.beat.id, measure))) }"
                             >
                               <div class="flex flex-col items-center justify-center">
                                 <span :class="[getMeasureFontSizeClass(measure), 'text-gray-800 font-black leading-none']">
@@ -4926,7 +6952,7 @@ const exportPdf = () => {
                             <button 
                               v-if="measure.showObligado"
                               @click.stop="openRhythmSelector(measure.originalMeasureIndex, state.index)"
-                              class="absolute top-1 right-1 text-[9px] text-[#34C759]/50 hover:text-[#34C759] hover:scale-110 active:scale-95 transition-all opacity-0 group-hover/beat:opacity-100 z-20 w-4 h-4 flex items-center justify-center bg-gray-550 hover:bg-gray-100 rounded border border-gray-200/80 shadow-sm"
+                              class="absolute top-1 right-1 text-[9px] text-[#6CA600]/50 hover:text-[#6CA600] hover:scale-110 active:scale-95 transition-all opacity-0 group-hover/beat:opacity-100 z-20 w-4 h-4 flex items-center justify-center bg-gray-550 hover:bg-gray-100 rounded border border-gray-200/80 shadow-sm"
                               title="Cambiar figura rítmica"
                             >
                               ✏️
@@ -4948,7 +6974,7 @@ const exportPdf = () => {
                                     class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
                                     :class="[
                                       getEffectiveRhythm(measure, state.beat, state.index) === fig.value 
-                                        ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
+                                        ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
                                         : 'text-slate-200 bg-slate-850/50 border border-transparent',
                                       !isFigureValid(fig.value, measure, state.index)
                                         ? 'opacity-40 cursor-not-allowed'
@@ -4976,14 +7002,14 @@ const exportPdf = () => {
                                     @click.stop="selectSixteenthPatternWrapper(measure, state.beat, key)"
                                     class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
                                     :class="isPatternActive(measure, state.beat, state.index, key)
-                                      ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
+                                      ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
                                       : 'text-slate-200 bg-slate-850/30 border border-transparent'"
                                   >
                                     <div class="flex-1 min-w-0 flex flex-col justify-center">
                                       <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
                                       <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ pat.label }}</span>
                                     </div>
-                                    <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#34C759] text-xs font-black shrink-0 ml-2">✓</span>
+                                    <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
                                   </button>
                                 </div>
                               </div>
@@ -4997,11 +7023,11 @@ const exportPdf = () => {
                             <!-- SVG Rhythmic Beam Display with Click to Edit Rhythm -->
                             <div 
                               @click.stop="openRhythmSelector(measure.originalMeasureIndex, state.index)"
-                              class="h-6 w-full bg-gray-50/70 hover:bg-[#34C759]/10 border-b border-gray-100 flex items-center justify-center select-none relative group/rhythm transition-colors outline-none cursor-pointer shrink-0"
+                              class="h-6 w-full bg-gray-50/70 hover:bg-[#8EE000]/10 border-b border-gray-100 flex items-center justify-center select-none relative group/rhythm transition-colors outline-none cursor-pointer shrink-0"
                               title="Cambiar figura rítmica del pulso"
                             >
                               <svg 
-                                class="h-4 text-[#34C759] transition-all duration-200" 
+                                class="h-4 text-[#6CA600] transition-all duration-200" 
                                 :class="measure.showSubdivisions !== false ? 'w-full' : (getVisibleSlotsForRender(measure, state.beat, state.index).length === 1 ? 'w-16 mx-auto' : 'w-full')"
                                 :style="{ opacity: (measure.showSubdivisions === false && state.index > 0) ? 0.65 : 1 }"
                                 viewBox="0 0 100 24" 
@@ -5059,7 +7085,7 @@ const exportPdf = () => {
                                   <text x="50" y="6" font-size="6" font-weight="950" text-anchor="middle" fill="currentColor" class="font-sans">5</text>
                                 </template>
                               </svg>
-                              <span class="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-[#34C759]/75 group-hover/rhythm:text-[#34C759] group-hover/rhythm:scale-110 transition-all font-bold">✏️</span>
+                              <span class="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-[#6CA600]/75 group-hover/rhythm:text-[#6CA600] group-hover/rhythm:scale-110 transition-all font-bold">✏️</span>
                               
                               <!-- Rhythm Selector Popover for Subdivided Beat -->
                               <transition name="dropdown">
@@ -5077,7 +7103,7 @@ const exportPdf = () => {
                                       class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
                                       :class="[
                                         getEffectiveRhythm(measure, state.beat, state.index) === fig.value 
-                                          ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
+                                          ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
                                           : 'text-slate-200 bg-slate-850/50 border border-transparent',
                                         !isFigureValid(fig.value, measure, state.index)
                                           ? 'opacity-40 cursor-not-allowed'
@@ -5105,14 +7131,14 @@ const exportPdf = () => {
                                       @click.stop="selectSixteenthPatternWrapper(measure, state.beat, key)"
                                       class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
                                       :class="isPatternActive(measure, state.beat, state.index, key)
-                                        ? 'bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/30' 
+                                        ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
                                         : 'text-slate-200 bg-slate-850/30 border border-transparent'"
                                     >
                                       <div class="flex-1 min-w-0 flex flex-col justify-center">
                                         <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
                                         <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ pat.label }}</span>
                                       </div>
-                                      <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#34C759] text-xs font-black shrink-0 ml-2">✓</span>
+                                      <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
                                     </button>
                                   </div>
                                 </div>
@@ -5130,7 +7156,7 @@ const exportPdf = () => {
                                 :class="[
                                   getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0 
                                     ? (measure.showSubdivisions !== false ? 'bg-gray-105 cursor-not-allowed text-gray-450' : 'bg-transparent cursor-not-allowed text-gray-400') 
-                                    : 'active:bg-[#34C759]/10 hover:bg-[#34C759]/5 text-gray-800'
+                                    : 'active:bg-[#8EE000]/10 hover:bg-[#8EE000]/5 text-gray-800'
                                 ]"
                               >
                                 <!-- Mini override rhythm indicator over chord -->
@@ -5157,7 +7183,13 @@ const exportPdf = () => {
                                   ]"
                                 >
                                   <span v-if="!sub.root">𝄾</span>
-                                  <span v-else class="flex flex-col items-center justify-center leading-none">
+                                  <span v-else 
+                                    :id="'chord-card-' + sub.id"
+                                    @mouseenter="hoveredChordId = sub.id"
+                                    @mouseleave="hoveredChordId = null"
+                                    class="flex flex-col items-center justify-center leading-none px-1 py-0.5 rounded border border-transparent transition-all"
+                                    :class="{ 'border-violet-500 bg-violet-50 text-violet-750 font-black shadow-sm ring-1 ring-violet-100': currentPlan === 'PRO' && (hoveredChordId === sub.id || (hoveredAnchor && isChordIdRelatedToBeat(hoveredAnchor.chordId, sub.id, measure))) }"
+                                  >
                                     <span>{{ splitChordDisplay(sub).main }}</span>
                                     <span v-if="splitChordDisplay(sub).bass" class="text-[9px] text-gray-500 font-semibold mt-0.5">
                                       {{ splitChordDisplay(sub).bass }}
@@ -5215,6 +7247,17 @@ const exportPdf = () => {
                         ⚠️ Falta {{ getMeasureRemainingBeats(measure) }} {{ getMeasureTimeSignature(measure).unit === 8 ? 'corchea' : 'negra' }}{{ getMeasureRemainingBeats(measure) !== 1 ? 's' : '' }}
                       </span>
                     </div>
+
+                    <!-- Lyrics indicator icon (visible when showLyricsGlobal is false and measure has lyrics) -->
+                    <div 
+                      v-if="!showLyricsGlobal && measure.lyrics?.rawText && measure.lyrics.rawText.trim() !== ''"
+                      @click.stop="activateLyricsForMeasure(measure.originalMeasureIndex)"
+                      class="absolute top-1.5 right-2 text-[10px] bg-violet-100 hover:bg-violet-200 text-violet-700 w-5 h-5 rounded-full flex items-center justify-center cursor-pointer shadow-sm border border-violet-200/50 z-25 transition-all transform hover:scale-105"
+                      :class="{ 'mr-10': measure.displayedMeasureIndex === 0 }"
+                      title="Ver letra / anotaciones"
+                    >
+                      💬
+                    </div>
                   </div>
                 </template>
                 
@@ -5222,7 +7265,7 @@ const exportPdf = () => {
                 <button 
                   v-if="viewMode === 'compact' && sIdx === systems.length - 1 && (currentPlan === 'PRO' || measures.length < 20)"
                   @click="addMeasure"
-                  class="h-28 border-2 border-dashed border-gray-300 bg-white/50 rounded-lg text-gray-400 flex items-center justify-center hover:bg-[#34C759]/5 hover:border-[#34C759] hover:text-[#34C759] transition-all group"
+                  class="h-28 border-2 border-dashed border-gray-300 bg-white/50 rounded-lg text-gray-400 flex items-center justify-center hover:bg-[#8EE000]/5 hover:border-[#8EE000] hover:text-[#6CA600] transition-all group"
                   :style="getAddButtonFlexStyle()"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
@@ -5239,8 +7282,238 @@ const exportPdf = () => {
                   <span class="text-[10px] text-violet-600 font-bold">🚀 Pasar a PRO para ilimitados</span>
                 </button>
               </div>
+
+              <!-- LYRICS ROW -->
+              <div 
+                v-if="shouldShowLyricsRow(system)"
+                class="flex flex-row w-full items-stretch gap-x-3 mt-1 select-none z-20 transition-all duration-300"
+              >
+                <template v-for="(measure, mIdx) in system.measures" :key="'lyrics-' + measure.id">
+                  <!-- Spacer for key change -->
+                  <div 
+                    v-if="currentPlan === 'PRO' && measure.keyChange"
+                    class="flex-shrink-0 min-w-[96px] md:min-w-[120px] max-w-[140px]"
+                  ></div>
+                  
+                  <!-- Spacer for metric change -->
+                  <div 
+                    v-if="currentPlan === 'PRO' && measure.timeSignature && measure.displayedMeasureIndex > 0 && (measure.timeSignature.beats !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).beats || measure.timeSignature.unit !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).unit)"
+                    class="flex-shrink-0 min-w-[64px] md:min-w-[72px] max-w-[90px]"
+                  ></div>
+                  
+                  <!-- Lyric block column -->
+                  <div 
+                    :style="getMeasureFlexStyle(measure)"
+                    class="relative transition-all duration-200 flex flex-col justify-stretch group"
+                    @mouseenter="hoveredMeasureIndex = measure.originalMeasureIndex"
+                    @mouseleave="hoveredMeasureIndex = null"
+                  >
+                    <!-- Mode Selector (Libre vs Sincro) -->
+                    <div 
+                      v-if="hoveredMeasureIndex === measure.originalMeasureIndex && (showLyricsGlobal || (measure.lyrics && measure.lyrics.rawText && measure.lyrics.rawText.trim() !== ''))"
+                      class="absolute -top-6 right-2 flex bg-white/95 backdrop-blur-sm shadow-md rounded-full p-0.5 border border-gray-200 z-30 transition-all text-[10px] font-bold"
+                    >
+                      <button 
+                        @click="measure.lyrics.mode = 'free'"
+                        :class="measure.lyrics?.mode !== 'synced' ? 'bg-[#8EE000] text-black px-2 py-0.5 rounded-full shadow-sm' : 'text-gray-500 hover:text-gray-700 px-2 py-0.5'"
+                      >
+                        Libre
+                      </button>
+                      <button 
+                        @click="currentPlan === 'PRO' ? (measure.lyrics.mode = 'synced') : (upgradeReason = 'synced_lyrics', isUpgradeModalOpen = true)"
+                        :class="measure.lyrics?.mode === 'synced' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-2 py-0.5 rounded-full shadow-sm' : 'text-gray-500 hover:text-gray-700 px-2 py-0.5 flex items-center gap-0.5'"
+                      >
+                        Sincro
+                        <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 rounded-full font-black">PRO</span>
+                      </button>
+                    </div>
+
+                    <!-- Tooltip and floating Assign Button for pending selection -->
+                    <div 
+                      v-if="pendingSelection && pendingSelection.measureIndex === measure.originalMeasureIndex"
+                      class="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-900 text-white shadow-xl rounded-xl px-2.5 py-1.5 flex items-center gap-2 text-xs font-bold border border-slate-800 z-45 animate-scale-up whitespace-nowrap cursor-default animate-bounce"
+                    >
+                      <button 
+                        @click.stop="assignPendingSelection(measure)"
+                        class="bg-violet-600 hover:bg-violet-700 text-white px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all text-xs font-black shadow-md shadow-violet-900/20 active:scale-95 animate-scale-up"
+                      >
+                        <span>➕ Asignar</span>
+                        <span v-if="getNextUnusedChord(measure)" class="bg-violet-850 text-[9px] px-1.5 py-0.5 rounded font-black text-violet-100 uppercase tracking-wide">
+                          {{ formatDisplayChord(getNextUnusedChord(measure)) }}
+                        </span>
+                        <span v-else class="text-[9px] text-violet-300 font-normal italic">
+                          (Sin acordes libres)
+                        </span>
+                      </button>
+                      
+                      <!-- Cancel button -->
+                      <button 
+                        @click.stop="pendingSelection = null" 
+                        class="text-slate-400 hover:text-white bg-slate-850 hover:bg-slate-800 rounded-full w-5 h-5 flex items-center justify-center text-xs transition-colors"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <!-- Edit / View Area (if visible) -->
+                    <div 
+                      v-if="showLyricsGlobal || (measure.lyrics && measure.lyrics.rawText && measure.lyrics.rawText.trim() !== '') || measure.originalMeasureIndex === activeEditingLyricsIndex"
+                      class="w-full h-full min-h-[38px] flex items-stretch bg-white border-y border-gray-300 hover:border-y-gray-400 focus-within:border-y-violet-500 focus-within:ring-2 focus-within:ring-violet-100 transition-all overflow-hidden"
+                      :class="{
+                        'border-l border-gray-300 rounded-l-full hover:border-l-gray-400 focus-within:border-l-violet-500': isFirstOfGroup(system.measures, mIdx),
+                        'border-r border-gray-300 rounded-r-full hover:border-r-gray-400 focus-within:border-r-violet-500': isLastOfGroup(system.measures, mIdx),
+                        'border-r border-gray-250': !isLastOfGroup(system.measures, mIdx)
+                      }"
+                    >
+                      <!-- MODE: FREE (standard textarea) -->
+                      <div 
+                        v-if="measure.lyrics?.mode !== 'synced'"
+                        class="grid w-full h-full items-stretch"
+                      >
+                        <!-- Auto-grow hidden span -->
+                        <span class="lyric-span select-none invisible col-start-1 row-start-1 whitespace-pre-wrap break-words leading-relaxed text-gray-800 font-sans text-[13px]" style="grid-area: 1 / 1 / 2 / 2; letter-spacing: 0.02em; padding: 8px 12px;">{{ measure.lyrics?.rawText || ' ' }}</span>
+                        <!-- Actual Textarea -->
+                        <textarea 
+                          :id="'lyrics-textarea-' + measure.originalMeasureIndex"
+                          v-model="measure.lyrics.rawText"
+                          placeholder="Escribe..."
+                          class="lyric-textarea col-start-1 row-start-1 w-full h-full resize-none bg-transparent outline-none leading-relaxed text-gray-800 font-sans border-0 shadow-none focus:ring-0 focus:outline-none text-[13px]"
+                          style="grid-area: 1 / 1 / 2 / 2; letter-spacing: 0.02em; padding: 8px 12px;"
+                          @keydown="handleLyricsKeydown($event, measure.originalMeasureIndex)"
+                          @focus="activeEditingLyricsIndex = measure.originalMeasureIndex"
+                          @blur="activeEditingLyricsIndex = null"
+                        ></textarea>
+                      </div>
+
+                      <!-- MODE: SYNCED (interactive renderer matching beats row grid layout) -->
+                      <div 
+                        v-else
+                        class="flex-1 flex flex-row items-stretch select-text cursor-text"
+                        style="padding: 0 16px;" 
+                      >
+                        <template v-for="state in getMergedBeats(measure)" :key="state.index">
+                          <div 
+                            v-if="!state.isMerged"
+                            class="flex h-full z-10 relative m-0.5 pointer-events-none"
+                            :style="{ 
+                              flex: currentPlan === 'PRO' ? `${state.durationSlots} ${state.durationSlots} 0%` : getBeatFlexGrow(measure, state.beat, state.index),
+                              minWidth: `${getBeatMinWidth(measure, state.beat, state)}px`
+                            }"
+                            :class="{
+                              'ml-2.5': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0,
+                              'ml-2': currentPlan === 'PRO' && measure.showSubdivisions === false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0
+                            }"
+                          >
+                            <!-- Always render beat slot (never subdivided in lyrics row) -->
+                            <div 
+                              class="w-full h-full flex flex-col justify-center relative select-text pointer-events-none"
+                              @mouseup="handleSlotLyricsMouseUp($event, measure, state.beat.id)"
+                              @dblclick="handleSlotLyricsDblClick($event, measure)"
+                            >
+                              <div 
+                                v-for="layout in [getSlotLayout(measure, state.beat.id)]"
+                                :key="state.beat.id"
+                                class="leading-relaxed text-gray-800 font-sans text-[13px] py-2 whitespace-nowrap overflow-visible select-text w-full"
+                                :class="layout.hasLyrics ? 'pointer-events-auto' : 'pointer-events-none'"
+                              >
+                                <template v-if="!layout.hasLyrics">
+                                  <span class="opacity-0 pointer-events-none select-none">.</span>
+                                </template>
+                                <template v-else-if="layout.hasAssociated">
+                                  <div class="flex justify-center w-full relative">
+                                    <div class="relative">
+                                      <!-- Pre text aligned to the left of the syllable and flows left -->
+                                      <div class="absolute right-full top-0 whitespace-nowrap pr-0.5 select-text">
+                                        <span
+                                          v-for="segment in layout.pre"
+                                          :key="segment.start + '-' + segment.end"
+                                          class="transition-all duration-150 inline-block rounded px-0.5 animate-scale-up"
+                                          :class="{
+                                            'hover:bg-gray-150 cursor-pointer': segment.type === 'normal',
+                                            'bg-amber-100 text-amber-900 font-bold border border-dashed border-amber-300 animate-pulse': segment.type === 'pending'
+                                          }"
+                                          @click.stop="handleSegmentClick(segment, measure)"
+                                        >{{ segment.text }}</span>
+                                      </div>
+
+                                      <!-- Centered syllable -->
+                                      <span
+                                        :id="'lyric-span-' + measure.originalMeasureIndex + '-' + layout.associated.start + '-' + layout.associated.end"
+                                        class="transition-all duration-150 inline-block rounded px-0.5 animate-scale-up"
+                                        :class="{
+                                          'bg-violet-50 text-violet-750 font-black border border-violet-200 underline decoration-violet-400 decoration-wavy underline-offset-4 cursor-pointer hover:bg-violet-100': true,
+                                          'bg-violet-100 ring-2 ring-violet-200': hoveredChordId === layout.associated.anchor.chordId || (hoveredAnchor && hoveredAnchor.chordId === layout.associated.anchor.chordId && hoveredAnchor.start === layout.associated.anchor.start)
+                                        }"
+                                        @mouseenter="hoveredAnchor = layout.associated.anchor"
+                                        @mouseleave="hoveredAnchor = null"
+                                        @click.stop="handleSegmentClick(layout.associated, measure)"
+                                      >{{ layout.associated.text }}</span>
+
+                                      <!-- Trailing text aligned to the right of the syllable and flows right -->
+                                      <div class="absolute left-full top-0 whitespace-nowrap pl-0.5 select-text">
+                                        <span
+                                          v-for="segment in layout.post"
+                                          :key="segment.start + '-' + segment.end"
+                                          class="transition-all duration-150 inline-block rounded px-0.5 animate-scale-up"
+                                          :class="{
+                                            'hover:bg-gray-150 cursor-pointer': segment.type === 'normal',
+                                            'bg-amber-100 text-amber-900 font-bold border border-dashed border-amber-300 animate-pulse': segment.type === 'pending'
+                                          }"
+                                          @click.stop="handleSegmentClick(segment, measure)"
+                                        >{{ segment.text }}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </template>
+                                <template v-else>
+                                  <span
+                                    v-for="segment in layout.normalSegments"
+                                    :key="segment.start + '-' + segment.end"
+                                    class="transition-all duration-150 inline-block rounded px-0.5 animate-scale-up"
+                                    :class="{
+                                      'hover:bg-gray-150 cursor-pointer': segment.type === 'normal',
+                                      'bg-amber-100 text-amber-900 font-bold border border-dashed border-amber-300 animate-pulse': segment.type === 'pending'
+                                    }"
+                                    @click.stop="handleSegmentClick(segment, measure)"
+                                  >{{ segment.text }}</span>
+                                </template>
+                              </div>
+                            </div>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                    
+                    <!-- Sutil Hint button (if hidden but hovered) -->
+                    <button 
+                      v-else-if="hoveredMeasureIndex === measure.originalMeasureIndex"
+                      @click.stop="activateLyricsForMeasure(measure.originalMeasureIndex)"
+                      class="w-full min-h-[38px] flex items-center justify-center border border-dashed border-gray-300 rounded-full hover:border-[#8EE000] hover:bg-[#8EE000]/5 text-gray-400 hover:text-[#6CA600] transition-all text-xs font-semibold cursor-pointer py-2"
+                    >
+                      + Letra
+                    </button>
+                    
+                    <!-- Default invisible spacing block to preserve alignment -->
+                    <div v-else class="w-full min-h-[38px] opacity-0 pointer-events-none"></div>
+                  </div>
+                </template>
+                
+                <!-- Spacer for ADD MEASURE BUTTON -->
+                <div 
+                  v-if="viewMode === 'compact' && sIdx === systems.length - 1 && (currentPlan === 'PRO' || measures.length < 20)"
+                  class="flex-shrink-0"
+                  :style="getAddButtonFlexStyle()"
+                ></div>
+                <!-- Spacer for Promocional button -->
+                <div 
+                  v-if="viewMode === 'compact' && sIdx === systems.length - 1 && currentPlan === 'FREE' && measures.length >= 20"
+                  class="flex-shrink-0"
+                  :style="getAddButtonFlexStyle()"
+                ></div>
+              </div>
             </div>
           </div>
+        </div>
         </main>
         <!-- Floating Bottom Action Bar for Custom System Layouts (Ordering Mode) -->
         <transition name="fade">
@@ -5285,11 +7558,11 @@ const exportPdf = () => {
           <div 
             v-if="isSelectionMode && selectedRangeStart !== null && selectedRangeEnd !== null" 
             class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[92%] max-w-xl bg-white/85 backdrop-blur-xl border border-gray-200/80 rounded-2xl shadow-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 transition-all"
-            :class="currentPlan === 'PRO' ? 'border-violet-200 shadow-violet-100/50' : 'border-[#34C759]/20 shadow-green-100/50'"
+            :class="currentPlan === 'PRO' ? 'border-violet-200 shadow-violet-100/50' : 'border-[#8EE000]/20 shadow-green-100/50'"
           >
             <div class="flex items-center gap-3">
               <div class="w-10 h-10 rounded-xl flex items-center justify-center font-bold"
-                   :class="currentPlan === 'PRO' ? 'bg-violet-100 text-violet-700' : 'bg-[#34C759]/10 text-[#34C759]'">
+                   :class="currentPlan === 'PRO' ? 'bg-violet-100 text-violet-700' : 'bg-[#8EE000]/10 text-[#6CA600]'">
                 <span class="text-sm">#</span>
               </div>
               <div class="text-left">
@@ -5303,8 +7576,8 @@ const exportPdf = () => {
             <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
               <button 
                 @click="openTimesSelector" 
-                class="flex-1 sm:flex-initial px-4 py-2 text-[14px] font-bold text-white rounded-xl transition-all shadow-md active:scale-95"
-                :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 shadow-violet-200/50' : 'bg-[#34C759] shadow-[#34C759]/20'"
+                class="flex-1 sm:flex-initial px-4 py-2 text-[14px] font-bold rounded-xl transition-all shadow-md active:scale-95"
+                :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-violet-200/50' : 'bg-[#8EE000] text-black shadow-[#8EE000]/20'"
               >
                 REPETIR
               </button>
@@ -5332,7 +7605,7 @@ const exportPdf = () => {
             v-if="isSelectionMode && (selectedRangeStart === null || selectedRangeEnd === null)" 
             class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 text-white backdrop-blur-md px-4 py-2.5 rounded-full text-xs font-bold shadow-lg flex items-center gap-2 select-none"
           >
-            <span class="w-2 h-2 bg-[#34C759] rounded-full animate-ping" :class="{'bg-violet-400': currentPlan === 'PRO'}"></span>
+            <span class="w-2 h-2 bg-[#8EE000] rounded-full animate-ping" :class="{'bg-violet-400': currentPlan === 'PRO'}"></span>
             <span>Haz clic/toca o arrastra sobre los compases para seleccionar un rango</span>
             <button @click="isSelectionMode = false" class="ml-2 text-gray-400 hover:text-white font-black">X</button>
           </div>
@@ -5342,7 +7615,7 @@ const exportPdf = () => {
           <div v-if="isTimesModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
             <div class="bg-white rounded-3xl shadow-2xl p-6 max-w-sm w-full border border-gray-100 text-center animate-scale-up">
               <div class="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-md"
-                   :class="currentPlan === 'PRO' ? 'bg-violet-100 text-violet-700' : 'bg-[#34C759]/10 text-[#34C759]'">
+                   :class="currentPlan === 'PRO' ? 'bg-violet-100 text-violet-700' : 'bg-[#8EE000]/10 text-[#6CA600]'">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
@@ -5360,7 +7633,7 @@ const exportPdf = () => {
                   @click="confirmTimes(t)"
                   class="py-2.5 rounded-xl font-extrabold text-[15px] border transition-all active:scale-95"
                   :class="customTimes === t
-                    ? (currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' : 'bg-[#34C759] text-white border-transparent shadow-sm')
+                    ? (currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' : 'bg-[#8EE000] text-black border-transparent shadow-sm')
                     : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'"
                 >
                   x{{ t }}
@@ -5396,7 +7669,7 @@ const exportPdf = () => {
                 <button 
                   @click="confirmTimes(customTimes)" 
                   class="flex-1 py-3 text-white font-extrabold rounded-xl text-sm transition-all shadow-md active:scale-95"
-                  :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 shadow-violet-200/50' : 'bg-[#34C759] shadow-[#34C759]/20'"
+                  :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 shadow-violet-200/50' : 'bg-[#8EE000] shadow-[#8EE000]/20'"
                 >
                   Confirmar
                 </button>
@@ -5416,7 +7689,7 @@ const exportPdf = () => {
         <div v-if="isRepeatMenuOpen" @click.stop class="relative bg-[#F2F2F7] w-full rounded-t-[16px] shadow-2xl animate-slide-up-ios pb-safe max-h-[90vh] flex flex-col z-10 md:w-[500px] md:mx-auto md:rounded-3xl md:mb-10">
           <div class="bg-white px-4 py-4 flex items-center justify-between border-b border-gray-200 shadow-sm rounded-t-[16px] md:rounded-t-3xl shrink-0">
             <h3 class="text-[17px] font-bold text-gray-900 text-center w-full absolute left-0 pointer-events-none">Lista de Repeticiones</h3>
-            <button @click="isRepeatMenuOpen = false" class="text-[#34C759] text-[17px] font-bold ml-auto relative z-10 bg-[#34C759]/10 px-3 py-1 rounded-full hover:bg-[#34C759]/20 transition-colors">Hecho</button>
+            <button @click="isRepeatMenuOpen = false" class="text-[#6CA600] text-[17px] font-bold ml-auto relative z-10 bg-[#8EE000]/10 px-3 py-1 rounded-full hover:bg-[#8EE000]/20 transition-colors">Hecho</button>
           </div>
           
           <div class="p-4 md:p-6 overflow-y-auto">
@@ -5425,7 +7698,7 @@ const exportPdf = () => {
                 <div class="flex flex-col">
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <span class="text-[16px] font-semibold text-gray-800">
-                      Compás <span class="text-[#34C759] font-bold">{{ r.startMeasure }}</span> al <span class="text-[#34C759] font-bold">{{ r.endMeasure }}</span> 
+                      Compás <span class="text-[#6CA600] font-bold">{{ r.startMeasure }}</span> al <span class="text-[#6CA600] font-bold">{{ r.endMeasure }}</span> 
                       <span class="text-gray-500 font-medium ml-1">(x{{ r.times }})</span>
                     </span>
                     <span v-if="r.type === 'casilla'" class="bg-violet-100 text-violet-700 text-[10px] px-1.5 py-0.5 rounded font-black uppercase">Casillas</span>
@@ -5451,7 +7724,7 @@ const exportPdf = () => {
               </p>
               <button 
                 @click="isRepeatMenuOpen = false; isSelectionMode = true" 
-                class="inline-flex items-center gap-1.5 px-4 py-2 bg-[#34C759] text-white text-sm font-bold rounded-xl shadow-md hover:bg-[#248A3D] transition-colors"
+                class="inline-flex items-center gap-1.5 px-4 py-2 bg-[#8EE000] text-black text-sm font-bold rounded-xl shadow-md hover:bg-[#7BC200] transition-colors"
               >
                 Seleccionar compases
               </button>
@@ -5466,7 +7739,7 @@ const exportPdf = () => {
             <div class="bg-white px-4 py-4 flex items-center justify-between border-b border-gray-200 rounded-t-[16px] shrink-0">
               <button @click="isMeasureOptionsOpen = false" class="text-gray-500 text-[17px] font-medium">Cancelar</button>
               <h3 class="text-[17px] font-bold text-gray-900 pointer-events-none">Compás {{ selectedMeasureIndex + 1 }}</h3>
-              <button @click="saveMeasureOptions" class="text-[#34C759] text-[17px] font-bold">Guardar</button>
+              <button @click="saveMeasureOptions" class="text-[#6CA600] text-[17px] font-bold">Guardar</button>
             </div>
             
             <div class="p-6 overflow-y-auto space-y-6">
@@ -5474,7 +7747,7 @@ const exportPdf = () => {
               <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-visible relative dropdown-container">
                 <button @click="toggleDropdown('sectionLabel')" class="w-full flex items-center justify-between p-4 active:bg-gray-50 rounded-2xl">
                   <span class="text-[17px] font-semibold text-gray-800">Sección</span>
-                  <span class="text-[17px] text-[#34C759] font-bold flex items-center gap-1">
+                  <span class="text-[17px] text-[#6CA600] font-bold flex items-center gap-1">
                     {{ tempSectionLabel }} 
                     <svg class="w-4 h-4" :class="{'rotate-180': activeDropdown === 'sectionLabel'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                   </span>
@@ -5482,7 +7755,7 @@ const exportPdf = () => {
                 
                 <transition name="dropdown">
                   <div v-if="activeDropdown === 'sectionLabel'" class="absolute top-full left-0 w-full bg-white border border-gray-200 rounded-xl shadow-xl max-h-48 overflow-y-auto mt-2 z-40">
-                    <button v-for="s in SECTIONS" :key="s" @click="tempSectionLabel = s; activeDropdown = null" class="w-full text-left p-4 border-b border-gray-100 font-semibold text-[16px] hover:bg-[#34C759]/5" :class="tempSectionLabel === s ? 'text-[#34C759]' : 'text-gray-700'">{{ s }}</button>
+                    <button v-for="s in SECTIONS" :key="s" @click="tempSectionLabel = s; activeDropdown = null" class="w-full text-left p-4 border-b border-gray-100 font-semibold text-[16px] hover:bg-[#8EE000]/5" :class="tempSectionLabel === s ? 'text-[#6CA600]' : 'text-gray-700'">{{ s }}</button>
                   </div>
                 </transition>
               </div>
@@ -5496,13 +7769,13 @@ const exportPdf = () => {
                   <button 
                     @click="tempMeasureGroove = 'global'"
                     class="w-full flex items-center justify-between p-3 rounded-xl border text-left active:scale-98 transition-all hover:bg-gray-50 bg-white"
-                    :class="tempMeasureGroove === 'global' ? 'border-[#34C759] bg-[#34C759]/5' : 'border-gray-200'"
+                    :class="tempMeasureGroove === 'global' ? 'border-[#8EE000] bg-[#8EE000]/5' : 'border-gray-200'"
                   >
                     <div>
                       <span class="block text-[15px] font-bold text-gray-800">Usar Groove Global</span>
                       <span class="block text-[11px] text-gray-400 mt-0.5">Sigue el patrón de la canción: <strong class="text-violet-650">{{ translateGrooveName(globalGroove) }}</strong></span>
                     </div>
-                    <div class="w-5 h-5 rounded-full border flex items-center justify-center" :class="tempMeasureGroove === 'global' ? 'border-[#34C759] bg-[#34C759]' : 'border-gray-300'">
+                    <div class="w-5 h-5 rounded-full border flex items-center justify-center" :class="tempMeasureGroove === 'global' ? 'border-[#8EE000] bg-[#8EE000]' : 'border-gray-300'">
                       <div v-if="tempMeasureGroove === 'global'" class="w-2.5 h-2.5 rounded-full bg-white"></div>
                     </div>
                   </button>
@@ -5510,13 +7783,13 @@ const exportPdf = () => {
                   <button 
                     @click="tempMeasureGroove = 'neutral'"
                     class="w-full flex items-center justify-between p-3 rounded-xl border text-left active:scale-98 transition-all hover:bg-gray-550 bg-white"
-                    :class="tempMeasureGroove === 'neutral' ? 'border-[#34C759] bg-[#34C759]/5' : 'border-gray-200'"
+                    :class="tempMeasureGroove === 'neutral' ? 'border-[#8EE000] bg-[#8EE000]/5' : 'border-gray-200'"
                   >
                     <div>
                       <span class="block text-[15px] font-bold text-gray-800">Neutral (sin groove)</span>
                       <span class="block text-[11px] text-gray-400 mt-0.5">Fuerza el compás a su comportamiento neutral (negras normales ♩)</span>
                     </div>
-                    <div class="w-5 h-5 rounded-full border flex items-center justify-center" :class="tempMeasureGroove === 'neutral' ? 'border-[#34C759] bg-[#34C759]' : 'border-gray-300'">
+                    <div class="w-5 h-5 rounded-full border flex items-center justify-center" :class="tempMeasureGroove === 'neutral' ? 'border-[#8EE000] bg-[#8EE000]' : 'border-gray-300'">
                       <div v-if="tempMeasureGroove === 'neutral'" class="w-2.5 h-2.5 rounded-full bg-white"></div>
                     </div>
                   </button>
@@ -5554,7 +7827,7 @@ const exportPdf = () => {
                         v-model="tempShowSubdivisions" 
                         class="sr-only peer"
                       >
-                      <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#34C759]"></div>
+                      <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#8EE000]"></div>
                     </label>
                   </div>
                   
@@ -5570,7 +7843,7 @@ const exportPdf = () => {
                         v-model="tempShowObligado" 
                         class="sr-only peer"
                       >
-                      <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#34C759]"></div>
+                      <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#8EE000]"></div>
                     </label>
                   </div>
 
@@ -5648,45 +7921,14 @@ const exportPdf = () => {
           <!-- KEY CHANGE SETUP SUB-MENU -->
           <template v-else-if="isKeyChangeSubMenuOpen">
             <div class="bg-white px-4 py-4 flex items-center justify-between border-b border-gray-200 rounded-t-[16px] shrink-0">
-              <button @click="keyChangeStep === 2 ? keyChangeStep = 1 : isKeyChangeSubMenuOpen = false" class="text-gray-500 text-[17px] font-medium">Atrás</button>
+              <button @click="isKeyChangeSubMenuOpen = false" class="text-gray-500 text-[17px] font-medium bg-gray-550 hover:bg-gray-100 px-3 py-1 rounded-full transition-colors">Atrás</button>
               <h3 class="text-[17px] font-bold text-gray-900 pointer-events-none">Nueva Tonalidad</h3>
-              <button v-if="keyChangeStep === 2" @click="saveKeyChange" class="text-violet-650 text-[17px] font-bold">Aplicar</button>
-              <div v-else class="w-12"></div>
+              <button @click="saveKeyChange" class="text-violet-650 text-[17px] font-bold">Aplicar</button>
             </div>
             
             <div class="p-6 overflow-y-auto space-y-6">
-              <!-- Step 1: "¿Desde qué acorde?" -->
-              <div v-if="keyChangeStep === 1" class="space-y-4">
-                <div>
-                  <h4 class="text-base font-extrabold text-gray-800">¿Desde qué acorde quieres cambiar?</h4>
-                  <p class="text-xs text-gray-500 mt-1 font-medium">Selecciona el pulso en el compás {{ selectedMeasureIndex + 1 }} para iniciar la modulación:</p>
-                </div>
-                
-                <div class="space-y-2">
-                  <button 
-                    v-for="(beat, idx) in (measures[selectedMeasureIndex] ? measures[selectedMeasureIndex].beats.slice(0, getMeasureTimeSignature(selectedMeasureIndex).beats) : [])"
-                    :key="idx"
-                    @click="tempKeyChangeBeatIndex = idx; keyChangeStep = 2"
-                    class="w-full flex items-center justify-between p-4 rounded-xl border text-left active:scale-98 transition-all hover:bg-gray-550 bg-white border-gray-200"
-                  >
-                    <div class="flex items-center gap-3">
-                      <span class="w-7 h-7 rounded-full bg-violet-50 text-violet-750 flex items-center justify-center text-xs font-black">
-                        {{ idx + 1 }}
-                      </span>
-                      <div>
-                        <span class="block text-[15px] font-bold text-gray-800">
-                          {{ beat.root ? formatDisplayChord(beat) : 'Silencio / Vacío' }}
-                        </span>
-                        <span class="block text-[11px] text-gray-400 font-medium">Pulso {{ idx + 1 }} del compás</span>
-                      </div>
-                    </div>
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
-                  </button>
-                </div>
-              </div>
-              
-              <!-- Step 2: "Selecciona nueva tonalidad" -->
-              <div v-if="keyChangeStep === 2" class="space-y-6">
+              <!-- "Selecciona nueva tonalidad" -->
+              <div class="space-y-6">
                 <div class="space-y-4">
                   <h4 class="text-base font-extrabold text-gray-800">Selecciona la nueva tonalidad</h4>
                   
@@ -5705,26 +7947,30 @@ const exportPdf = () => {
                     </button>
                   </div>
                   
-                  <!-- Scale Mode Selectors -->
-                  <div class="flex gap-3">
-                    <button 
-                      @click="tempKeyChangeScale = 'major'"
-                      class="flex-1 py-3 text-center rounded-xl font-bold border transition-all active:scale-95 text-[15px]"
-                      :class="tempKeyChangeScale === 'major' 
-                        ? 'bg-violet-600 border-violet-600 text-white shadow-md' 
-                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
-                    >
-                      Mayor
+                  <!-- CUSTOM DROPDOWN: Tipo de Escala para Cambio de Tonalidad -->
+                  <div class="relative dropdown-container bg-white rounded-2xl shadow-sm border border-gray-100 overflow-visible">
+                    <button @click="toggleDropdown('keyChangeScale')" class="w-full flex items-center justify-between p-4 active:bg-gray-50 rounded-2xl text-left">
+                      <span class="text-[17px] font-semibold text-gray-800">Tipo de Escala</span>
+                      <span class="text-[17px] text-violet-650 font-bold flex items-center gap-1">
+                        {{ SCALES[tempKeyChangeScale]?.name || tempKeyChangeScale }}
+                        <svg class="w-4 h-4" :class="{'rotate-180': activeDropdown === 'keyChangeScale'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                      </span>
                     </button>
-                    <button 
-                      @click="tempKeyChangeScale = 'minor'"
-                      class="flex-1 py-3 text-center rounded-xl font-bold border transition-all active:scale-95 text-[15px]"
-                      :class="tempKeyChangeScale === 'minor' 
-                        ? 'bg-violet-600 border-violet-600 text-white shadow-md' 
-                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-550'"
-                    >
-                      Menor
-                    </button>
+                    
+                    <transition name="dropdown">
+                      <div v-if="activeDropdown === 'keyChangeScale'" class="absolute bottom-full left-0 w-full bg-white border border-gray-200 rounded-xl shadow-xl max-h-60 overflow-y-auto mb-2 z-40 p-2 space-y-3 text-left">
+                        <div v-for="group in groupedScales" :key="group.label" class="space-y-1">
+                          <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider px-2 pt-1">{{ group.label }}</div>
+                          <button v-for="s in group.items" :key="s.id" @click="tempKeyChangeScale = s.id; activeDropdown = null" class="w-full text-left px-2.5 py-2 rounded-lg hover:bg-gray-50 text-[14px] flex justify-between font-medium items-center">
+                            <div class="flex flex-col">
+                              <span class="text-gray-850 font-bold leading-tight">{{ s.name }}</span>
+                              <span class="text-[10px] text-gray-400 font-normal leading-tight mt-0.5">{{ s.characteristic }}</span>
+                            </div>
+                            <span v-if="tempKeyChangeScale === s.id" class="text-violet-600 font-black">✓</span>
+                          </button>
+                        </div>
+                      </div>
+                    </transition>
                   </div>
                 </div>
                 
@@ -5866,7 +8112,7 @@ const exportPdf = () => {
           <div class="bg-white px-4 py-4 flex items-center justify-between border-b border-gray-200 shrink-0 rounded-t-[16px] md:rounded-t-3xl shadow-sm">
             <button @click="isModalOpen = false" class="text-gray-500 text-[17px] font-medium bg-gray-100 px-3 py-1.5 rounded-full hover:bg-gray-200 transition-colors">Cerrar</button>
             <h3 class="text-[17px] font-bold text-gray-900 pointer-events-none flex flex-col items-center">
-              <span>{{ key }} {{ scaleType === 'major' ? 'Mayor' : 'Menor' }}</span>
+              <span>{{ translateNoteToSpanish(activeModalKeyAndScale.key) }} {{ SCALES[activeModalKeyAndScale.scale]?.name || activeModalKeyAndScale.scale }}</span>
               <span v-if="selectedBeat" class="text-xs text-gray-400 font-normal">
                 Editando Compás {{ selectedBeat.measureIndex + 1 }}
                 <span v-if="viewMode === 'expanded' && displayedMeasures[selectedBeat.displayedMeasureIndex]?.displayPass" class="text-violet-600 font-bold ml-0.5">
@@ -5881,11 +8127,11 @@ const exportPdf = () => {
             
             <!-- 1. ACORDE ACTIVO / PREVIEW CARD (Only if a chord is selected) -->
             <div v-if="activeEditingBeat && activeEditingBeat.root" class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col items-center relative overflow-hidden">
-              <div class="absolute right-0 top-0 opacity-5 pointer-events-none font-black text-7xl select-none uppercase tracking-widest text-[#34C759]">
+              <div class="absolute right-0 top-0 opacity-5 pointer-events-none font-black text-7xl select-none uppercase tracking-widest text-[#6CA600]">
                 {{ activeChordExtensions ? activeChordExtensions.degree : '' }}
               </div>
               
-              <span class="text-[11px] text-[#34C759] font-black uppercase tracking-widest mb-1">
+              <span class="text-[11px] text-[#6CA600] font-black uppercase tracking-widest mb-1">
                 {{ activeChordExtensions?.degree ? `${activeChordExtensions.degree} Grado` : 'Acorde Personalizado' }}
               </span>
               
@@ -5932,7 +8178,7 @@ const exportPdf = () => {
                 <h4 class="text-sm font-black text-gray-800 flex items-center gap-1.5">
                   <span>🎹</span> <span>Bajo Alternativo</span>
                 </h4>
-                <span v-if="activeEditingBeat.bass" class="text-xs text-[#34C759] font-bold">
+                <span v-if="activeEditingBeat.bass" class="text-xs text-[#6CA600] font-bold">
                   Bajo en: {{ translateNoteToSpanish(activeEditingBeat.bass) }}
                 </span>
               </div>
@@ -5978,7 +8224,7 @@ const exportPdf = () => {
                   <div class="flex flex-wrap gap-1.5">
                     <button 
                       @click="selectBassNote(activeEditingBeat.root)"
-                      :class="!activeEditingBeat.bass ? 'bg-[#34C759] text-white border-transparent' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
+                      :class="!activeEditingBeat.bass ? 'bg-[#8EE000] text-black border-transparent' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
                       class="px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-colors"
                     >
                       {{ translateNoteToSpanish(activeEditingBeat.root) }} (Fund.)
@@ -5987,7 +8233,7 @@ const exportPdf = () => {
                       v-for="note in getScaleNotes(key, scaleType).filter(n => n !== activeEditingBeat.root)" 
                       :key="note"
                       @click="selectBassNote(note)"
-                      :class="activeEditingBeat.bass === note ? 'bg-[#34C759] text-white border-transparent' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                      :class="activeEditingBeat.bass === note ? 'bg-[#8EE000] text-black border-transparent' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
                       class="px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all"
                     >
                       /{{ translateNoteToSpanish(note) }}
@@ -5997,7 +8243,7 @@ const exportPdf = () => {
                 
                 <div class="pt-1.5">
                   <details class="group">
-                    <summary class="list-none text-xs text-[#34C759] font-black cursor-pointer hover:underline flex items-center gap-1">
+                    <summary class="list-none text-xs text-[#6CA600] font-black cursor-pointer hover:underline flex items-center gap-1">
                       <span>+ Ver todas las notas cromáticas</span>
                       <svg class="w-3 h-3 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                     </summary>
@@ -6006,7 +8252,7 @@ const exportPdf = () => {
                         v-for="note in (keySignatureFormatted.includes('♭') ? ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'] : ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']).filter(n => !getScaleNotes(key, scaleType).includes(n) && n !== activeEditingBeat.root)"
                         :key="note"
                         @click="selectBassNote(note)"
-                        :class="activeEditingBeat.bass === note ? 'bg-[#34C759] text-white border-transparent' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
+                        :class="activeEditingBeat.bass === note ? 'bg-[#8EE000] text-black border-transparent' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
                         class="px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all"
                       >
                         /{{ translateNoteToSpanish(note) }}
@@ -6036,7 +8282,7 @@ const exportPdf = () => {
                     :key="tension.name"
                     @click="toggleExtension(tension.name); activeTensionExplanation = tension"
                     :class="activeEditingBeat.tensions?.includes(tension.name) 
-                      ? (currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' : 'bg-[#34C759] text-white border-transparent shadow-sm')
+                      ? (currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' : 'bg-[#8EE000] text-black border-transparent shadow-sm')
                       : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'"
                     class="px-3.5 py-2 rounded-xl text-xs font-black border transition-all flex items-center gap-1"
                   >
@@ -6072,7 +8318,7 @@ const exportPdf = () => {
                   <div class="flex items-center gap-1.5 mb-1">
                     <span class="text-sm font-extrabold text-gray-800">Tensión {{ activeTensionExplanation.name }}</span>
                     <span v-if="activeTensionExplanation.reason" class="text-[9px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-black uppercase">Evitar</span>
-                    <span v-else class="text-[9px] bg-[#34C759]/10 text-[#34C759] px-1.5 py-0.5 rounded font-black uppercase">Recomendada</span>
+                    <span v-else class="text-[9px] bg-[#8EE000]/10 text-[#6CA600] px-1.5 py-0.5 rounded font-black uppercase">Recomendada</span>
                   </div>
                   
                   <p class="text-xs text-gray-600 leading-relaxed mb-2.5">
@@ -6278,6 +8524,92 @@ const exportPdf = () => {
               </div>
             </div>
             
+            <!-- 3.5. SECONDARY ALTERNATIVES GRID -->
+            <div v-if="activeModalNextChord && secondaryAlternativeChords.length > 0" class="space-y-3 pt-4 border-t border-gray-200">
+              <div class="flex items-center justify-between">
+                <span class="block text-[11px] font-black text-violet-700 uppercase tracking-wider flex items-center gap-1 select-none">
+                  <span>✨ Alternativas Secundarias (Hacia {{ formatDisplayChord(activeModalNextChord.chord) }})</span>
+                  <span v-if="currentPlan !== 'PRO'" class="text-[9px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.2 rounded-full font-black shadow-sm shrink-0 ml-1">👑 PRO</span>
+                </span>
+                <span class="text-[10px] text-gray-400 font-bold">
+                  {{ activeModalNextChord.distance === 99 ? 'Sig. compás' : `A ${activeModalNextChord.distance} pulso${activeModalNextChord.distance !== 1 ? 's' : ''}` }}
+                </span>
+              </div>
+              
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button 
+                  v-for="alt in secondaryAlternativeChords" 
+                  :key="alt.root + alt.type"
+                  @click="currentPlan === 'PRO' ? selectChord({ root: alt.root, type: alt.type }) : (isModalOpen = false, upgradeReason = 'alternativas_secundarias', isUpgradeModalOpen = true)"
+                  :class="[
+                    alt.isExotic 
+                      ? (alt.styleType === 'gold' 
+                          ? 'bg-gradient-to-br from-amber-50/60 via-amber-50/10 to-orange-50/30 border-amber-200 hover:border-amber-300 shadow-sm active:scale-98' 
+                          : alt.styleType === 'indigo'
+                            ? 'bg-gradient-to-br from-indigo-50/60 via-indigo-50/10 to-fuchsia-50/30 border-indigo-200 hover:border-indigo-300 shadow-sm active:scale-98'
+                            : 'bg-gradient-to-br from-teal-50/60 via-teal-50/10 to-emerald-50/30 border-teal-200 hover:border-teal-300 shadow-sm active:scale-98')
+                      : 'bg-white border border-violet-100 hover:border-violet-300 active:scale-98 shadow-sm',
+                    'rounded-2xl p-3.5 text-left transition-all flex items-start gap-3.5 group'
+                  ]"
+                >
+                  <!-- Left side: Chord Bubble + PRO Badge below -->
+                  <div class="flex flex-col items-center gap-1.5 shrink-0 select-none">
+                    <span 
+                      :class="[
+                        alt.isExotic 
+                          ? (alt.styleType === 'gold' 
+                              ? 'text-amber-800 bg-amber-50/80 border-amber-200 group-hover:bg-amber-100 group-hover:text-amber-900 shadow-inner' 
+                              : alt.styleType === 'indigo'
+                                ? 'text-indigo-800 bg-indigo-50/80 border-indigo-200 group-hover:bg-indigo-100 group-hover:text-indigo-900 shadow-inner'
+                                : 'text-teal-800 bg-teal-50/80 border-teal-200 group-hover:bg-teal-100 group-hover:text-teal-900 shadow-inner')
+                          : 'text-violet-700 bg-violet-50 border border-violet-100 shadow-inner group-hover:bg-violet-100/50 group-hover:text-violet-800',
+                        'font-extrabold text-[11px] sm:text-xs rounded-xl px-2 py-1.5 min-w-[62px] min-h-[34px] flex items-center justify-center transition-colors text-center leading-none'
+                      ]"
+                    >
+                      {{ alt.label }}
+                    </span>
+                    <span 
+                      v-if="currentPlan !== 'PRO'" 
+                      :class="[
+                        alt.isExotic
+                          ? (alt.styleType === 'gold'
+                              ? 'text-amber-700 bg-amber-100/80 border-amber-200'
+                              : alt.styleType === 'indigo'
+                                ? 'text-indigo-700 bg-indigo-100/80 border-indigo-200'
+                                : 'text-teal-700 bg-teal-100/80 border-teal-200')
+                          : 'text-violet-750 bg-violet-100 border border-violet-250',
+                        'text-[7.5px] px-1 py-0.5 rounded-md font-black uppercase tracking-tight flex items-center gap-0.5'
+                      ]"
+                    >
+                      🔒 PRO
+                    </span>
+                  </div>
+                  
+                  <!-- Right side: Details -->
+                  <div class="flex-1 min-w-0">
+                    <div class="font-black text-xs text-gray-800 flex items-center justify-between gap-1.5 flex-wrap">
+                      <span>{{ alt.degree }}</span>
+                      <span 
+                        :class="[
+                          alt.isExotic
+                            ? (alt.styleType === 'gold'
+                                ? 'text-amber-700 bg-amber-50/80 border-amber-100'
+                                : alt.styleType === 'indigo'
+                                  ? 'text-indigo-700 bg-indigo-50/80 border-indigo-100'
+                                  : 'text-teal-700 bg-teal-50/80 border-teal-100')
+                            : 'text-violet-600 bg-violet-50 border border-violet-100/55',
+                          'text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-wider shrink-0 select-none'
+                        ]"
+                      >
+                        {{ alt.category }}
+                      </span>
+                    </div>
+                    <div class="text-[10px] text-gray-400 mt-1 leading-normal font-medium select-none">{{ alt.description }}</div>
+                  </div>
+                </button>
+              </div>
+            </div>
+
             <!-- 4. DIATONIC CHORDS GRID (To change the core root/type) -->
             <div class="space-y-3 pt-4 border-t border-gray-200">
               <span class="block text-[11px] font-bold text-gray-400 uppercase tracking-wider">
@@ -6285,8 +8617,8 @@ const exportPdf = () => {
               </span>
               
               <div class="flex p-1 bg-gray-200/80 rounded-xl mb-4 max-w-sm mx-auto shadow-inner">
-                <button @click="modalComplexity = 'triad'" :class="modalComplexity === 'triad' ? 'bg-white shadow-sm text-[#34C759] font-bold' : 'text-gray-500 font-medium'" class="flex-1 py-1.5 text-[14px] rounded-lg transition-all">Tríadas</button>
-                <button @click="modalComplexity = 'tetrad'" :class="modalComplexity === 'tetrad' ? 'bg-white shadow-sm text-[#34C759] font-bold' : 'text-gray-500 font-medium'" class="flex-1 py-1.5 text-[14px] rounded-lg transition-all">Tétradas</button>
+                <button @click="modalComplexity = 'triad'" :class="modalComplexity === 'triad' ? 'bg-white shadow-sm text-[#6CA600] font-bold' : 'text-gray-500 font-medium'" class="flex-1 py-1.5 text-[14px] rounded-lg transition-all">Tríadas</button>
+                <button @click="modalComplexity = 'tetrad'" :class="modalComplexity === 'tetrad' ? 'bg-white shadow-sm text-[#6CA600] font-bold' : 'text-gray-500 font-medium'" class="flex-1 py-1.5 text-[14px] rounded-lg transition-all">Tétradas</button>
               </div>
               
               <div class="grid grid-cols-3 sm:grid-cols-4 gap-3">
@@ -6294,10 +8626,10 @@ const exportPdf = () => {
                   v-for="chord in diatonicChords" 
                   :key="chord.degreeNumeral"
                   @click="selectChord(chord)"
-                  class="bg-white border border-gray-100 rounded-2xl py-4 flex flex-col items-center justify-center shadow-sm active:scale-95 active:bg-[#34C759]/5 transition-all group"
+                  class="bg-white border border-gray-100 rounded-2xl py-4 flex flex-col items-center justify-center shadow-sm active:scale-95 active:bg-[#8EE000]/5 transition-all group"
                 >
-                  <span class="text-[11px] text-gray-400 font-bold mb-0.5 uppercase tracking-widest group-active:text-[#34C759]/50">{{ chord.degreeNumeral }}</span>
-                  <span class="text-lg font-black text-gray-800 group-active:text-[#34C759]">{{ chord.label }}</span>
+                  <span class="text-[11px] text-gray-400 font-bold mb-0.5 uppercase tracking-widest group-active:text-[#6CA600]/50">{{ chord.degreeNumeral }}</span>
+                  <span class="text-lg font-black text-gray-800 group-active:text-[#6CA600]">{{ chord.label }}</span>
                 </button>
               </div>
             </div>
@@ -6309,7 +8641,7 @@ const exportPdf = () => {
             <button @click="isSystemSuggestionsModalOpen = false" class="text-gray-500 text-[17px] font-medium bg-gray-100 px-3 py-1.5 rounded-full hover:bg-gray-200 transition-colors">Cerrar</button>
             <h3 class="text-[17px] font-bold text-gray-900 pointer-events-none flex flex-col items-center">
               <span>💡 Ampolleta de Ideas</span>
-              <span class="text-xs text-[#34C759] font-bold mt-0.5">Sistema {{ activeSystemIndex + 1 }} (Compases {{ activeSystemIndex * 4 + 1 }} - {{ (activeSystemIndex + 1) * 4 }})</span>
+              <span class="text-xs text-[#6CA600] font-bold mt-0.5">Sistema {{ activeSystemIndex + 1 }} (Compases {{ activeSystemIndex * 4 + 1 }} - {{ (activeSystemIndex + 1) * 4 }})</span>
             </h3>
             <div class="w-16"></div>
           </div>
@@ -6319,35 +8651,85 @@ const exportPdf = () => {
               { key: 'enrich', label: '1. Enriquecer acordes', badgeClass: 'bg-emerald-100 text-emerald-700' },
               { key: 'movement', label: '2. Agregar movimiento', badgeClass: 'bg-amber-100 text-amber-700' },
               { key: 'color', label: '3. Color / Estilo', badgeClass: 'bg-blue-100 text-blue-700' },
-              { key: 'voice_leading', label: '4. Voice Leading', badgeClass: 'bg-rose-100 text-rose-700' }
+              { key: 'voice_leading', label: '4. Voice Leading', badgeClass: 'bg-rose-100 text-rose-700' },
+              { key: 'modulation', label: '5. Modulación / Tonalidad', badgeClass: 'bg-violet-100 text-violet-700' }
             ]" :key="cat.key">
               <div v-if="getSuggestionsByCategory(cat.key).length > 0" class="space-y-3">
                 <h4 class="text-xs font-black uppercase tracking-wider text-gray-500 mb-1 flex items-center gap-1.5">
                   {{ cat.label }}
                 </h4>
                 
-                <div v-for="suggestion in getSuggestionsByCategory(cat.key)" :key="suggestion.id" class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 space-y-3 relative overflow-hidden">
+                <div v-for="suggestion in getSuggestionsByCategory(cat.key)" :key="suggestion.id" class="bg-white rounded-3xl p-5 shadow-sm border border-gray-150/60 space-y-4 relative overflow-hidden transition-all hover:shadow-md hover:border-gray-300">
+                  <!-- Header: Category & Plan Badge -->
                   <div class="flex items-center justify-between">
-                    <span class="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider" :class="cat.badgeClass">
-                      {{ cat.label.substring(3) }}
+                    <span class="px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-gray-100 text-gray-600" :class="cat.badgeClass">
+                      {{ suggestion.metadata?.categoryLabel || cat.label.substring(3) }}
                     </span>
-                    <span v-if="currentPlan !== 'PRO'" class="text-[10px] bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded font-black flex items-center gap-0.5">👑 PRO</span>
+                    <div class="flex items-center gap-1.5">
+                      <span v-if="suggestion.metadata?.tension" class="text-[9px] bg-slate-900 text-slate-100 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                        ⚡ {{ suggestion.metadata.tension }}
+                      </span>
+                      <span v-if="currentPlan !== 'PRO'" class="text-[9.5px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-2 py-0.5 rounded-full font-black shadow-sm flex items-center gap-0.5">👑 PRO</span>
+                    </div>
                   </div>
                   
-                  <h5 class="text-sm font-extrabold text-gray-800">{{ suggestion.title }}</h5>
-                  
-                  <p class="text-xs text-gray-600 leading-relaxed">{{ suggestion.text }}</p>
-                  
-                  <div class="bg-gray-50 rounded-xl p-2.5 font-mono text-xs text-center border border-gray-100">
-                    <span class="text-gray-400 block text-[9px] uppercase font-bold tracking-wider mb-1">Efecto / Cambio</span>
-                    <span class="font-bold text-gray-800 text-[13px]">{{ suggestion.preview }}</span>
+                  <!-- Title and Concept Name -->
+                  <div>
+                    <h5 class="text-base font-black text-gray-900 leading-tight">{{ suggestion.title }}</h5>
+                    <div v-if="suggestion.metadata" class="mt-1.5 flex items-center gap-2 flex-wrap">
+                      <span class="text-xs text-gray-400 font-bold">Concepto:</span>
+                      <span class="text-xs bg-violet-50 text-violet-750 px-2.5 py-0.5 rounded-lg font-black border border-violet-100/50">
+                        {{ suggestion.metadata.name }}
+                      </span>
+                      <span v-if="suggestion.metadata.function" class="text-xs bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-lg font-black border border-emerald-100/50">
+                        {{ suggestion.metadata.function }}
+                      </span>
+                    </div>
                   </div>
                   
-                  <div class="pt-2 border-t border-gray-100 flex justify-end">
+                  <!-- Educational Metadata Fields (Grid) -->
+                  <div v-if="suggestion.metadata" class="grid grid-cols-2 gap-2.5 text-xs bg-gray-50/50 p-3 rounded-2xl border border-gray-150/40">
+                    <div>
+                      <span class="text-[9.5px] text-gray-400 font-bold uppercase block">Origen</span>
+                      <span class="font-bold text-gray-800">{{ suggestion.metadata.origin }}</span>
+                    </div>
+                    <div>
+                      <span class="text-[9.5px] text-gray-400 font-bold uppercase block">Modo Asociado</span>
+                      <span class="font-bold text-gray-800">{{ suggestion.metadata.mode || '-' }}</span>
+                    </div>
+                    <div class="col-span-2">
+                      <span class="text-[9.5px] text-gray-400 font-bold uppercase block">Destino</span>
+                      <span class="font-bold text-gray-800">{{ suggestion.metadata.target || '-' }}</span>
+                    </div>
+                    <div class="col-span-2 mt-0.5">
+                      <span class="text-[9.5px] text-gray-400 font-bold uppercase block">Estilos Asociados</span>
+                      <div class="flex gap-1 flex-wrap mt-1">
+                        <span v-for="style in suggestion.metadata.styles" :key="style" class="bg-gray-150/60 text-gray-600 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide">
+                          {{ style }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <!-- Explicación pedagógica -->
+                  <p class="text-xs text-gray-600 leading-relaxed font-medium">
+                    {{ suggestion.metadata?.explanation || suggestion.text }}
+                  </p>
+                  
+                  <!-- Preview comparison box -->
+                  <div class="bg-gray-50 rounded-2xl p-3 font-mono text-xs text-center border border-gray-100 flex flex-col items-center justify-center shadow-inner">
+                    <span class="text-gray-400 block text-[9.5px] uppercase font-bold tracking-wider mb-1">Efecto / Cambio en Partitura</span>
+                    <span class="font-extrabold text-[#6CA600] text-[13px] flex items-center gap-1">
+                      {{ suggestion.preview }}
+                    </span>
+                  </div>
+                  
+                  <!-- Action button -->
+                  <div class="pt-1 flex justify-end">
                     <button 
                       @click="runSuggestion(suggestion)"
-                      class="px-4 py-2 text-xs font-black rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1 text-white"
-                      :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 shadow-violet-150' : 'bg-[#34C759] shadow-[#34C759]/20'"
+                      class="px-5 py-2.5 text-xs font-black rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1.5 w-full sm:w-auto justify-center"
+                      :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-violet-150 hover:shadow-violet-250' : 'bg-[#8EE000] text-black shadow-[#8EE000]/20 hover:bg-[#7BC200]'"
                     >
                       <span>Aplicar idea</span>
                       <span v-if="currentPlan !== 'PRO'">👑</span>
@@ -6371,7 +8753,7 @@ const exportPdf = () => {
           <!-- Header -->
           <div class="flex items-center gap-3.5 mb-5">
             <div class="w-12 h-12 rounded-2xl flex items-center justify-center text-2xl font-black shadow-md border"
-              :class="keyInfoData.accidentalsCountScale === 0 ? 'bg-gray-50 border-gray-200 text-gray-400' : 'bg-[#34C759]/10 border-[#34C759]/20 text-[#34C759]'">
+              :class="keyInfoData.accidentalsCountScale === 0 ? 'bg-gray-50 border-gray-200 text-gray-400' : 'bg-[#8EE000]/10 border-[#8EE000]/20 text-[#6CA600]'">
               {{ keyInfoData.accidentalsCountScale > 0 ? (keyInfoData.accidentalType === 'sharp' ? '♯' : '♭') : '𝄞' }}
             </div>
             <div class="text-left">
@@ -6405,7 +8787,7 @@ const exportPdf = () => {
                 
                 <ul class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <li v-for="item in keyInfoData.accidentalsList" :key="item.note" class="flex items-center gap-2 text-xs text-gray-700 bg-gray-50 rounded-xl px-3 py-2 border border-gray-100">
-                    <span :class="item.type === 'sharp' ? 'text-[#34C759]' : 'text-blue-500'" class="font-black text-sm">
+                    <span :class="item.type === 'sharp' ? 'text-[#6CA600]' : 'text-blue-500'" class="font-black text-sm">
                       {{ item.note.includes('𝄪') ? '𝄪' : (item.note.includes('𝄫') ? '𝄫' : (item.type === 'sharp' ? '♯' : '♭')) }}
                     </span>
                     <span>Nota <strong class="text-gray-900 font-bold">{{ item.note }}</strong> ({{ item.position }} nota)</span>
@@ -6462,9 +8844,12 @@ const exportPdf = () => {
               <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Notas de la Escala</h4>
               <div class="flex flex-wrap gap-1.5">
                 <span v-for="(n, i) in keyInfoData.notesSpanish" :key="i" 
-                  class="px-2.5 py-1.5 bg-gray-50 border border-gray-100 rounded-xl text-xs font-extrabold text-gray-800 flex items-center gap-1">
-                  <span class="text-[10px] text-gray-400 font-bold">{{ i + 1 }}.</span>
+                  class="px-2.5 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1 border transition-all"
+                  :class="isCharacteristicNote(scaleType, i) ? 'bg-amber-100 border-amber-300 text-amber-900 shadow-sm font-black' : 'bg-gray-50 border-gray-100 text-gray-800'"
+                >
+                  <span class="text-[10px] font-bold" :class="isCharacteristicNote(scaleType, i) ? 'text-amber-600' : 'text-gray-400'">{{ i + 1 }}.</span>
                   {{ n }}
+                  <span v-if="isCharacteristicNote(scaleType, i)" class="text-[9px] bg-amber-600 text-white px-1.5 py-0.2 rounded font-black uppercase tracking-wider ml-1">★ Nota Característica</span>
                 </span>
               </div>
             </div>
@@ -6478,11 +8863,17 @@ const exportPdf = () => {
                     {{ i }}
                   </div>
                   <!-- Notas -->
-                  <div v-for="(note, i) in keyInfoData.notesSpanish" :key="'n-'+i" class="text-[11px] font-black text-gray-800 bg-white rounded-lg py-1.5 shadow-sm border border-gray-100">
+                  <div v-for="(note, i) in keyInfoData.notesSpanish" :key="'n-'+i" 
+                    class="text-[11px] font-black rounded-lg py-1.5 shadow-sm border transition-all"
+                    :class="isCharacteristicNote(scaleType, i) ? 'bg-amber-100 text-amber-900 border-amber-300 ring-2 ring-amber-300/30' : 'bg-white text-gray-800 border-gray-100'"
+                  >
                     {{ note }}
                   </div>
                   <!-- Intervalos -->
-                  <div v-for="(inv, i) in keyInfoData.intervalLabels" :key="'inv-'+i" class="text-[9px] font-extrabold text-indigo-600 bg-indigo-50 border border-indigo-100/50 rounded-lg py-1">
+                  <div v-for="(inv, i) in keyInfoData.intervalLabels" :key="'inv-'+i" 
+                    class="text-[9px] font-extrabold rounded-lg py-1 border transition-all"
+                    :class="isCharacteristicNote(scaleType, i) ? 'bg-amber-600 text-white border-transparent' : 'bg-indigo-50 text-indigo-600 border-indigo-100/50'"
+                  >
                     {{ inv }}
                   </div>
                 </div>
@@ -6533,6 +8924,15 @@ const exportPdf = () => {
           </p>
           <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'ritmo_armonico'">
             El Ritmo Armónico con subdivisiones de corcheas, semicorcheas y contratiempos es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para usar alta densidad armónica y cortes de banda</strong>.
+          </p>
+          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'synced_lyrics'">
+            El modo de Letras Sincronizadas te permite enlazar sílabas o palabras de tus letras directamente con acordes específicos.<br><strong class="text-violet-600">🚀 Pásate a PRO para sincronizar tus letras y visualizarlas con conectores interactivos</strong>.
+          </p>
+          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'transpose'">
+            El transporte inteligente de acordes (tonal, modal y funcional) es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para transportar tu partitura de forma inteligente</strong> y aprender cómo cambian los grados y las notas.
+          </p>
+          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'alternativas_secundarias'">
+            El Modo de Alternativas Secundarias es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para insertar dominantes secundarios, sustitutos de tritono, ii relacionados e intercambios modales</strong> directamente en tu partitura.
           </p>
           <p class="text-sm text-gray-600 mb-6" v-else>
             Esta función requiere la versión PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO</strong> para usar casillas avanzadas y expandir tus compases sin límites.
@@ -6689,7 +9089,7 @@ const exportPdf = () => {
               <div class="text-right">
                 <span class="block text-[10px] text-gray-400 uppercase font-black tracking-wider">Nueva Tonalidad</span>
                 <span class="text-sm font-black text-violet-600">
-                  {{ translateNoteToSpanish(activeKeyChangeMeasure.keyChange.key) }} {{ activeKeyChangeMeasure.keyChange.scaleType === 'major' ? 'Mayor' : 'Menor' }}
+                  {{ translateNoteToSpanish(activeKeyChangeMeasure.keyChange.key) }} {{ SCALES[activeKeyChangeMeasure.keyChange.scaleType]?.name || activeKeyChangeMeasure.keyChange.scaleType }}
                 </span>
               </div>
             </div>
@@ -6847,6 +9247,181 @@ const exportPdf = () => {
       </div>
     </transition>
 
+    <!-- ==================== TRANSPOSE MODAL (PRO) ==================== -->
+    <transition name="fade">
+      <div v-if="isTransposeModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+        <div class="absolute inset-0" @click="isTransposeModalOpen = false"></div>
+        
+        <div class="relative bg-white rounded-3xl shadow-2xl p-6 max-w-lg w-full border border-gray-150 text-left animate-scale-up z-10 flex flex-col max-h-[90vh] overflow-y-auto">
+          <!-- Header -->
+          <div class="flex items-center justify-between pb-3 border-b border-gray-100">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">🔄</span>
+              <h3 class="text-lg font-black text-gray-900">Transportar (PRO)</h3>
+            </div>
+            <button @click="isTransposeModalOpen = false" class="text-gray-400 hover:text-gray-600 text-sm font-bold bg-gray-100 w-7 h-7 rounded-full flex items-center justify-center">✕</button>
+          </div>
+          
+          <!-- Content -->
+          <div class="py-4 space-y-4 flex-1">
+            <!-- Tonalidad y Escala Destino -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <!-- Tónica selector -->
+              <div>
+                <label class="block text-[11px] font-black text-gray-400 uppercase tracking-wider mb-2">Tónica Destino</label>
+                <div class="space-y-1.5 bg-gray-50 p-2.5 rounded-2xl border border-gray-100">
+                  <!-- Naturales -->
+                  <div class="flex gap-1 justify-center">
+                    <button v-for="k in keysNatural" :key="k" @click="transposeTargetKey = k" 
+                      :class="transposeTargetKey === k ? 'bg-violet-600 text-white shadow-md shadow-violet-650/20' : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200/50'"
+                      class="w-7 h-7 rounded-lg font-bold text-xs transition-all flex items-center justify-center">
+                      {{ k }}
+                    </button>
+                  </div>
+                  <!-- Sostenidos -->
+                  <div class="flex gap-1 justify-center">
+                    <button v-for="k in keysSharp" :key="k" @click="transposeTargetKey = k" 
+                      :class="transposeTargetKey === k ? 'bg-violet-600 text-white shadow-md shadow-violet-650/20' : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200/50'"
+                      class="w-7 h-7 rounded-lg font-bold text-xs transition-all flex items-center justify-center">
+                      {{ k }}
+                    </button>
+                  </div>
+                  <!-- Bemoles -->
+                  <div class="flex gap-1 justify-center">
+                    <button v-for="k in keysFlat" :key="k" @click="transposeTargetKey = k" 
+                      :class="transposeTargetKey === k ? 'bg-violet-600 text-white shadow-md shadow-violet-650/20' : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200/50'"
+                      class="w-7 h-7 rounded-lg font-bold text-xs transition-all flex items-center justify-center">
+                      {{ k }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Escala Selector -->
+              <div>
+                <label class="block text-[11px] font-black text-gray-400 uppercase tracking-wider mb-2">Escala Destino</label>
+                <div class="bg-gray-50 p-2.5 rounded-2xl border border-gray-100 h-[106px] flex items-center">
+                  <select v-model="transposeTargetScale" class="w-full bg-white border border-gray-200 rounded-xl px-2 py-2 text-xs font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-violet-500/25 focus:border-violet-500 transition-all shadow-sm">
+                    <optgroup v-for="group in groupedScales" :key="group.label" :label="group.label">
+                      <option v-for="scale in group.items" :key="scale.id" :value="scale.id">
+                        {{ scale.name }}
+                      </option>
+                    </optgroup>
+                  </select>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Modo de transporte -->
+            <div>
+              <label class="block text-[11px] font-black text-gray-400 uppercase tracking-wider mb-2">Modo de Transporte</label>
+              <div class="bg-gray-100 p-1 rounded-xl flex gap-1 border border-gray-200/60 shadow-inner">
+                <button @click="transposeMode = 'tonal'" 
+                  :class="transposeMode === 'tonal' ? 'bg-white text-violet-700 shadow-sm' : 'text-gray-500 hover:text-gray-800 hover:bg-white/40'"
+                  class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-center">
+                  Tonal
+                </button>
+                <button @click="transposeMode = 'modal'" 
+                  :class="transposeMode === 'modal' ? 'bg-white text-violet-700 shadow-sm' : 'text-gray-500 hover:text-gray-800 hover:bg-white/40'"
+                  class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-center">
+                  Modal
+                </button>
+                <button @click="transposeMode = 'functional'" 
+                  :class="transposeMode === 'functional' ? 'bg-white text-violet-700 shadow-sm' : 'text-gray-500 hover:text-gray-800 hover:bg-white/40'"
+                  class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-center">
+                  Funcional
+                </button>
+              </div>
+              
+              <!-- Helper Text based on selected mode -->
+              <p class="text-[11px] text-gray-500 mt-2 leading-relaxed bg-gray-50 p-3 rounded-2xl border border-gray-100 font-medium">
+                <span v-if="transposeMode === 'tonal'">
+                  <strong>Modo Tonal:</strong> Mueve todos los acordes preservando exactamente sus cualidades armónicas (ej. mayor, menor, séptima). Ideal para adaptar el tono a la tesitura de un cantante.
+                </span>
+                <span v-else-if="transposeMode === 'modal'">
+                  <strong>Modo Modal:</strong> Cambia la sonoridad de la escala (ej. Mayor a Dórico) manteniendo la tónica. Recalcula las cualidades de los acordes según los nuevos grados diatónicos.
+                </span>
+                <span v-else-if="transposeMode === 'functional'">
+                  <strong>Modo Funcional:</strong> Mapea los acordes de origen según sus funciones armónicas (Tónica, Subdominante, Dominante) a la escala de destino para una reinterpretación armónica avanzada.
+                </span>
+              </p>
+            </div>
+            
+            <!-- Ámbito / Scope -->
+            <div>
+              <label class="block text-[11px] font-black text-gray-400 uppercase tracking-wider mb-2">Ámbito de Aplicación</label>
+              <div class="bg-gray-100 p-1 rounded-xl flex gap-1 border border-gray-200/60 shadow-inner">
+                <button @click="transposeScope = 'all'" 
+                  :class="transposeScope === 'all' ? 'bg-white text-violet-700 shadow-sm' : 'text-gray-500 hover:text-gray-800 hover:bg-white/40'"
+                  class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-center">
+                  Toda la partitura
+                </button>
+                <button @click="transposeScope = 'section'" 
+                  :class="transposeScope === 'section' ? 'bg-white text-violet-700 shadow-sm' : 'text-gray-500 hover:text-gray-800 hover:bg-white/40'"
+                  class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-center">
+                  Solo sección actual
+                </button>
+              </div>
+              <p class="text-[10px] text-gray-400 mt-1.5 px-1 font-medium">
+                <span v-if="transposeScope === 'all'">Afectará a toda la partitura y cambiará la tonalidad global de la canción.</span>
+                <span v-else>Afectará únicamente a la sección con la misma clave y escala. Se insertará un cambio local.</span>
+              </p>
+            </div>
+            
+            <!-- Vista Previa de Acordes -->
+            <div>
+              <label class="block text-[11px] font-black text-gray-400 uppercase tracking-wider mb-2">Vista Previa de Acordes</label>
+              <div class="bg-violet-50/20 border border-violet-100 rounded-2xl p-3 max-h-36 overflow-y-auto">
+                <div v-if="!transposePreview.length" class="text-center py-4 text-xs text-gray-400 font-bold">
+                  No hay acordes en la sección seleccionada para transformar.
+                </div>
+                <div v-else class="grid grid-cols-3 gap-2">
+                  <div v-for="(item, idx) in transposePreview" :key="idx" class="bg-white border border-gray-150 rounded-xl p-2 text-center shadow-sm flex flex-col justify-center items-center">
+                    <span class="text-[10px] text-gray-400 font-bold line-through">{{ item.from }}</span>
+                    <span class="text-xs font-black text-violet-700 mt-0.5">{{ item.to }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Explicación Educativa -->
+            <div v-if="transposeEducationNotes" class="bg-amber-50/60 border border-amber-200/80 rounded-2xl p-4 space-y-3 shadow-sm">
+              <div class="flex items-center gap-1.5">
+                <span class="text-base select-none">💡</span>
+                <h4 class="text-xs font-black text-amber-900 uppercase tracking-wider">Concepto Armónico del Cambio</h4>
+              </div>
+              
+              <p class="text-xs text-amber-950 font-medium leading-relaxed">
+                {{ transposeEducationNotes.scaleDesc }}
+              </p>
+              
+              <div v-if="transposeEducationNotes.changes && transposeEducationNotes.changes.length" class="space-y-2 pt-2 border-t border-amber-250/30">
+                <span class="block text-[10px] font-black text-amber-900 uppercase tracking-wider">Modificaciones de Notas en la Escala:</span>
+                <div class="flex flex-wrap gap-2">
+                  <div v-for="chg in transposeEducationNotes.changes" :key="chg.degree" class="bg-white border border-amber-200/60 rounded-xl px-2.5 py-1 flex items-center gap-1.5 text-xs shadow-xs font-semibold">
+                    <span class="text-amber-900 font-extrabold">{{ chg.degree }}:</span>
+                    <span class="text-gray-400 line-through">{{ chg.from }}</span>
+                    <span class="text-gray-400">➔</span>
+                    <span class="text-amber-700 font-black">{{ chg.to }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Footer Buttons -->
+          <div class="mt-5 pt-4 border-t border-gray-100 flex gap-3">
+            <button @click="isTransposeModalOpen = false" class="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-655 rounded-xl text-xs font-bold text-center active:scale-98 transition-all">
+              Cancelar
+            </button>
+            <button @click="applyTranspose" class="flex-1 py-3 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold text-center active:scale-98 transition-all shadow-md">
+              Aplicar Transporte
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
     <!-- ==================== TOAST NOTIFICATION ==================== -->
     <transition name="toast-fade">
       <div 
@@ -6928,5 +9503,29 @@ html, body { overscroll-behavior-y: none; }
   .system-row {
     gap: 0.75rem !important;
   }
+}
+
+/* Lyrics Textarea & Auto-grow Span */
+.lyric-textarea, .lyric-span {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  padding: 8px 12px;
+  margin: 0;
+  border: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.lyric-textarea {
+  resize: none;
+  background: transparent;
+  outline: none;
+  width: 100%;
+  height: 100%;
+}
+.lyric-span {
+  visibility: hidden;
+  pointer-events: none;
 }
 </style>

@@ -157,7 +157,8 @@ export function generatePDF(project) {
           type: isPrimary ? beat.type : '',
           tensions: isPrimary ? [...(beat.tensions || [])] : [],
           tension: isPrimary ? beat.tension : null,
-          bass: isPrimary ? beat.bass : null
+          bass: isPrimary ? beat.bass : null,
+          isSilence: isPrimary ? (beat.isSilence || !beat.root) : true
         })
       }
     }
@@ -462,7 +463,7 @@ export function generatePDF(project) {
               doc.setTextColor(150, 150, 150)
               doc.text("x", subX, currentY + 12, { align: "center" })
               doc.setTextColor(0, 0, 0)
-            } else if (sub.isSilence) {
+            } else if (sub.isSilence || !sub.root) {
               doc.setFont("helvetica", "normal")
               doc.setFontSize(8)
               doc.setTextColor(150, 150, 150)
