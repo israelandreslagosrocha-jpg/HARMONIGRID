@@ -1174,6 +1174,21 @@ const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
   
   return slots.every(s => areChordsEqual(s, slots[0]))
 }
+const shouldRenderAsSubdivided = (measure, beat, beatIdx) => {
+  if (!measure || !beat) return false
+  if (!measure.showObligado) return false
+  
+  const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+  const sig = getMeasureTimeSignature(measure)
+  const isSub = isSubdividedRhythm(rhythm, sig.unit === 8, beat)
+  if (!isSub) return false
+  
+  if (isSubdivisionCollapsed(measure, beat, beatIdx)) {
+    return false
+  }
+  
+  return true
+}
 const propagateSubdivisionMutation = (measureIndex, beatIndex, subdivisionIndex, oldChord, newChord) => {
   if (!applyToAllSubslots.value) return
   
@@ -2114,7 +2129,7 @@ const getBeatMinWidth = (measure, beat, state) => {
       baseMin = Math.max(baseMin, isSynced ? (isMobile ? 75 : 90) : (isMobile ? 100 : 120))
     }
     
-    if (measure.showObligado && isSubdividedRhythm(rhythm, isDenom8, chordBeat)) {
+    if (shouldRenderAsSubdivided(measure, chordBeat, beatIdx)) {
       const slots = getVisibleSlotsForRender(measure, chordBeat, beatIdx)
       const totalFlexGrow = slots.reduce((sum, s) => sum + (s.flexGrow || 1), 0)
       let subWidthNeeded = 0
@@ -2199,7 +2214,7 @@ const getBeatMinWidth = (measure, beat, state) => {
     const lyricsBeat = measure.lyrics.beats?.[beatIdx]
     if (lyricsBeat) {
       const rhythm = getLyricsEffectiveRhythm(measure, lyricsBeat, beatIdx)
-      const isSub = isSubdividedRhythm(rhythm, isDenom8, lyricsBeat)
+      const isSub = shouldRenderAsSubdivided(measure, measure.beats[beatIdx], beatIdx)
       
       let baseMin = state.durationSlots * (isMobile ? 40 : 50)
       
@@ -2735,8 +2750,9 @@ const getRhythmDisplayIcon = (rhythm, measure) => {
     if (rhythm === 'dotted-quarter') return '\uD834\uDD5F.'
     if (rhythm === 'quarter') return '\uD834\uDD5F'
     if (rhythm === 'eighth' || rhythm === 'auto') return '\uD834\uDD60'
-    if (rhythm === 'sixteenth') return '\uD834\uDD61'
-    if (rhythm === 'triplet') return '3\uFE0F\u20E3'
+    if (rhythm === 'sixteenth') return '♫'
+    if (rhythm === 'triplet') return '♫³'
+    if (rhythm === 'quintuplet') return '♫⁵'
   } else {
     if (rhythm === 'dotted-whole') return '\uD834\uDD5D.'
     if (rhythm === 'whole') return '\uD834\uDD5D'
@@ -2744,9 +2760,10 @@ const getRhythmDisplayIcon = (rhythm, measure) => {
     if (rhythm === 'double') return '\uD834\uDD5E'
     if (rhythm === 'dotted-quarter') return '\uD834\uDD5F.'
     if (rhythm === 'quarter' || rhythm === 'auto') return '\uD834\uDD5F'
-    if (rhythm === 'eighth') return '\uD834\uDD60'
-    if (rhythm === 'sixteenth') return '\uD834\uDD61'
-    if (rhythm === 'triplet') return '3\uFE0F\u20E3'
+    if (rhythm === 'eighth') return '♫'
+    if (rhythm === 'sixteenth') return '♬'
+    if (rhythm === 'triplet') return '♫³'
+    if (rhythm === 'quintuplet') return '♫⁵'
   }
   return ''
 }
@@ -4102,15 +4119,25 @@ const openModal = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIn
   
   const m = measures.value[measureIndex]
   const b = m ? m.beats[beatIndex] : null
+  
+  let resolvedSubIndex = subdivisionIndex
+  if (resolvedSubIndex === undefined && b) {
+    const rhythm = getEffectiveRhythm(m, b, beatIndex)
+    const sig = getMeasureTimeSignature(m)
+    if (isSubdividedRhythm(rhythm, sig.unit === 8, b)) {
+      resolvedSubIndex = 0
+    }
+  }
+  
   applyToAllSubslots.value = b ? isSubdivisionCollapsed(m, b, beatIndex) : false
   
-  selectedBeat.value = { measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex }
+  selectedBeat.value = { measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex: resolvedSubIndex }
   
   let wasSet = false
   if (b) {
     const slots = getBeatSlots(m, b, beatIndex)
-    if (subdivisionIndex !== undefined && slots[subdivisionIndex]) {
-      wasSet = !!slots[subdivisionIndex].root
+    if (resolvedSubIndex !== undefined && slots[resolvedSubIndex]) {
+      wasSet = !!slots[resolvedSubIndex].root
     } else {
       wasSet = !!b.root
     }
@@ -5398,7 +5425,7 @@ const getMeasureBlockCoordinates = (measure) => {
     
     const startX = beatX[bIdx]
     const rhythm = getEffectiveRhythm(measure, state.beat, bIdx)
-    const isSubdivided = measure.showObligado && isSubdividedRhythm(rhythm, sig.unit === 8, state.beat)
+    const isSubdivided = shouldRenderAsSubdivided(measure, state.beat, bIdx)
     
     if (!isSubdivided) {
       coords.push({
@@ -5502,7 +5529,7 @@ const getMeasureLyricsSlotCoordinates = (measure) => {
     if (state.isMerged) return
     const beatWidth = (state.durationSlots / totalWeight) * 1000
     const rhythm = getLyricsEffectiveRhythm(measure, state.beat, state.index)
-    const isSubdivided = isSubdividedRhythm(rhythm, sig.unit === 8, state.beat)
+    const isSubdivided = shouldRenderAsSubdivided(measure, measure.beats[state.index], state.index)
     
     if (!isSubdivided) {
       coords.push({
@@ -6524,7 +6551,7 @@ const getMeasureLyricsRhythmSlots = (measure) => {
     const beat = state.beat
     const bIdx = state.index
     const rhythm = getLyricsEffectiveRhythm(measure, beat, bIdx)
-    const isSubdivided = isSubdividedRhythm(rhythm, sig.unit === 8, beat)
+    const isSubdivided = shouldRenderAsSubdivided(measure, measure.beats[bIdx], bIdx)
     
     const beatStartTick = bIdx * beatTicks
     const slotDurationTicks = beatTicks * state.durationSlots
@@ -6587,7 +6614,7 @@ const getLyricsLinearBlocks = () => {
       const beat = state.beat
       const bIdx = state.index
       const rhythm = getLyricsEffectiveRhythm(measure, beat, bIdx)
-      const isSubdivided = isSubdividedRhythm(rhythm, sig.unit === 8, beat)
+      const isSubdivided = shouldRenderAsSubdivided(measure, measure.beats[bIdx], bIdx)
       
       if (!isSubdivided) {
         list.push({
@@ -8853,7 +8880,7 @@ const confirmExportPdf = () => {
                           </div>
                           <!-- Normal Beat -->
                           <div
-                            v-if="!measure.showObligado || !isSubdividedRhythm(getEffectiveRhythm(measure, state.beat, state.index), getMeasureTimeSignature(measure).unit === 8, state.beat)"
+                            v-if="!shouldRenderAsSubdivided(measure, state.beat, state.index)"
                             @click.stop="clickBeat(measure.originalMeasureIndex, state.index, measure.displayedMeasureIndex)"
                             class="w-full h-full flex flex-col items-center justify-center active:bg-[#8EE000]/10 hover:bg-[#8EE000]/5 relative transition-colors rounded-lg group/beat cursor-pointer"
                           >
@@ -9527,7 +9554,7 @@ const confirmExportPdf = () => {
                                   </template>
                                 </div>
                               </transition>
-                              <template v-if="!isSubdividedRhythm(getLyricsEffectiveRhythm(measure, state.beat, state.index), getMeasureTimeSignature(measure).unit === 8, state.beat)">
+                              <template v-if="!shouldRenderAsSubdivided(measure, state.beat, state.index)">
                                 <div 
                                   class="w-full flex-1 flex flex-col justify-center items-center relative transition-colors border border-transparent"
                                   :class="[

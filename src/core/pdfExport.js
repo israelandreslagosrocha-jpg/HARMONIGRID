@@ -57,6 +57,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       if (base === 'quarter') return prefix + 'Negra'
       if (base === 'eighth' || base === 'auto') return prefix + 'Corchea'
       if (base === 'sixteenth') return prefix + 'Semicorchea'
+      if (base === 'triplet') return prefix + 'Tresillo'
     } else {
       if (base === 'dotted-whole') return prefix + 'Redonda c/punto'
       if (base === 'whole') return prefix + 'Redonda'
@@ -66,6 +67,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       if (base === 'quarter' || base === 'auto') return prefix + 'Negra'
       if (base === 'eighth') return prefix + 'Corchea'
       if (base === 'sixteenth') return prefix + 'Semicorchea'
+      if (base === 'triplet') return prefix + 'Tresillo'
     }
     return ''
   }
@@ -174,6 +176,61 @@ export function generatePDF(project, exportOption = 'chords-only') {
       }
     }
     return slots
+  }
+
+  const areChordsEqual = (c1, c2) => {
+    if (!c1 || !c2) return false
+    if (c1.isSilence !== c2.isSilence) return false
+    if (c1.isSilence) return true
+    
+    if (c1.root !== c2.root) return false
+    if (c1.type !== c2.type) return false
+    if (c1.bass !== c2.bass) return false
+    if (c1.tension !== c2.tension) return false
+    
+    const t1 = c1.tensions || []
+    const t2 = c2.tensions || []
+    if (t1.length !== t2.length) return false
+    
+    const s1 = [...t1].sort()
+    const s2 = [...t2].sort()
+    return s1.every((val, index) => val === s2[index])
+  }
+
+  const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
+    if (!measure || !beat) return false
+    const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+    const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+    const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
+    if (subCount === 1) return false
+    
+    const slots = getBeatSlots(measure, beat, beatIdx)
+    if (slots.length <= 1) return false
+    
+    const hasSilence = slots.some(s => s.isSilence)
+    if (hasSilence) return false
+    
+    const hasAllRoot = slots.every(s => s.root)
+    if (!hasAllRoot) return false
+    
+    return slots.every(s => areChordsEqual(s, slots[0]))
+  }
+
+  const shouldRenderAsSubdivided = (measure, beat, beatIdx) => {
+    if (!measure || !beat) return false
+    if (!measure.showObligado) return false
+    
+    const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+    const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+    const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
+    const isSub = subCount > 1
+    if (!isSub) return false
+    
+    if (isSubdivisionCollapsed(measure, beat, beatIdx)) {
+      return false
+    }
+    
+    return true
   }
 
   const splitChordDisplayPDF = (chordStr) => {
@@ -446,8 +503,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
         if (state.isMerged) return
         
         const rhythm = getEffectiveRhythm(currM, beat, b)
-        const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
-        const hasSubdivisions = subCount > 1
+        const hasSubdivisions = shouldRenderAsSubdivided(currM, beat, b)
         
         if (!hasSubdivisions) {
           slotList.push({
@@ -580,7 +636,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
         if (!beat) continue
         const rhythm = getEffectiveRhythm(measure, beat, b)
         const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
-        const hasSubdivisions = subCount > 1
+        const hasSubdivisions = shouldRenderAsSubdivided(measure, beat, b)
         
         if (!hasSubdivisions) {
           if (getSyllableAtSlotPDF(project, measure, measureIdx, b, null)) {
@@ -688,7 +744,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       
       const rhythm = getEffectiveRhythm(measure, beat, bIdx)
       const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
-      const hasSubdivisions = subCount > 1
+      const hasSubdivisions = shouldRenderAsSubdivided(measure, beat, bIdx)
       
       if (hasSubdivisions) {
         const slots = getBeatSlots(measure, beat, bIdx)
@@ -1074,7 +1130,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
         
         const rhythm = getEffectiveRhythm(measure, beat, bIdx)
         const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
-        const hasSubdivisions = subCount > 1
+        const hasSubdivisions = shouldRenderAsSubdivided(measure, beat, bIdx)
         
         if (hasSubdivisions) {
           const slots = getBeatSlots(measure, beat, bIdx)
@@ -1175,8 +1231,9 @@ export function generatePDF(project, exportOption = 'chords-only') {
           }
           
           // Draw chord above the staff space if it exists!
-          if (beat.root) {
-            const chordStr = formatChord(beat)
+          const targetChord = (beat.subdivisions && beat.subdivisions.length > 0) ? beat.subdivisions[0] : beat
+          if (targetChord && targetChord.root) {
+            const chordStr = formatChord(targetChord)
             const split = splitChordDisplayPDF(chordStr)
             const fontSizes = getChordFontSizes(measure, sig)
 
