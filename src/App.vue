@@ -3265,19 +3265,19 @@ const SIXTEENTH_PATTERNS = {
 }
 const EIGHTH_PATTERNS = {
   '2_notes': {
-    label: '2 Semicorcheas',
+    label: '2 Corcheas',
     slots: ['note', 'note'],
     icon: '♫'
   },
   'silence_note': {
-    label: 'Silencio - Semicorchea',
+    label: 'Silencio de Corchea - Corchea',
     slots: ['silence', 'note'],
-    icon: '𝄾 ♬'
+    icon: '𝄾 ♪'
   },
   'note_silence': {
-    label: 'Semicorchea - Silencio',
+    label: 'Corchea - Silencio de Corchea',
     slots: ['note', 'silence'],
-    icon: '♬ 𝄾'
+    icon: '♪ 𝄾'
   }
 }
 const TRIPLET_PATTERNS = {
@@ -4469,26 +4469,25 @@ const getRhythmIconSVG = (key) => {
   if (key === 'sixteenth') {
     return getRhythmIconSVG('4_semi')
   }
-  // Patrones de 2 notas (Eighths subdivided into Sixteenths)
+  // Patrones de 2 notas (Eighth notes)
   if (key === '2_notes') {
     return `<circle cx="30" cy="17" r="2.2" fill="currentColor"/>
             <circle cx="70" cy="17" r="2.2" fill="currentColor"/>
             <line x1="30" y1="17" x2="30" y2="5" stroke="currentColor" stroke-width="1.3"/>
             <line x1="70" y1="17" x2="70" y2="5" stroke="currentColor" stroke-width="1.3"/>
-            <line x1="30" y1="5" x2="70" y2="5" stroke="currentColor" stroke-width="2"/>
-            <line x1="30" y1="8.5" x2="70" y2="8.5" stroke="currentColor" stroke-width="2"/>`;
+            <line x1="30" y1="5" x2="70" y2="5" stroke="currentColor" stroke-width="2"/>`;
   }
   if (key === 'silence_note') {
-    return getSixteenthRestSVG(20) +
+    return getEighthRestSVG(20) +
            `<circle cx="70" cy="17" r="2.2" fill="currentColor"/>
             <line x1="70" y1="17" x2="70" y2="5" stroke="currentColor" stroke-width="1.3"/>` +
-            getSixteenthDoubleFlagSVG(70);
+            getEighthSingleFlagSVG(70);
   }
   if (key === 'note_silence') {
     return `<circle cx="30" cy="17" r="2.2" fill="currentColor"/>
             <line x1="30" y1="17" x2="30" y2="5" stroke="currentColor" stroke-width="1.3"/>` +
-            getSixteenthDoubleFlagSVG(30) +
-            getSixteenthRestSVG(60);
+            getEighthSingleFlagSVG(30) +
+            getEighthRestSVG(60);
   }
   // Figuras Básicas
   if (key === 'dotted-whole') {
@@ -4905,18 +4904,25 @@ const changeBeatHarmonicRhythm = (measure, beat, rhythmType) => {
     delete beat.sixteenthPattern;
   } else {
     let subCount = 2;
+    let pat = null;
     if (baseRhythm === 'eighth') {
       subCount = 2;
       if (!isDenom8) {
         beat.eighthPattern = '2_notes';
       }
+      pat = EIGHTH_PATTERNS['2_notes'];
     }
     else if (baseRhythm === 'sixteenth') {
       subCount = 4;
       beat.sixteenthPattern = '4_semi';
+      pat = SIXTEENTH_PATTERNS['4_semi'];
+    }
+    else if (baseRhythm === 'triplet') {
+      subCount = 3;
+      beat.tripletPattern = '3_notes';
+      pat = TRIPLET_PATTERNS['3_notes'];
     }
     else if (baseRhythm === 'offbeat') subCount = 2;
-    else if (baseRhythm === 'triplet') subCount = 3;
     else if (baseRhythm === 'quintuplet') subCount = 5;
     
     const existingSubs = beat.subdivisions || [];
@@ -4925,6 +4931,7 @@ const changeBeatHarmonicRhythm = (measure, beat, rhythmType) => {
     for (let i = 0; i < subCount; i++) {
       if (baseRhythm === 'offbeat' && i === 0) {
         newSubs.push({
+          id: generateUniqueId(),
           root: '',
           type: '',
           tensions: [],
@@ -4934,27 +4941,29 @@ const changeBeatHarmonicRhythm = (measure, beat, rhythmType) => {
         });
       } else {
         let existing = existingSubs[i];
-        if (!existing && i === 0 && beat.root && baseRhythm !== 'offbeat') {
+        
+        let defaultIsNote = true;
+        if (pat && pat.slots) {
+          defaultIsNote = pat.slots[i] === 'note';
+        } else if (baseRhythm === 'offbeat') {
+          defaultIsNote = i === 1;
+        } else {
+          defaultIsNote = i === 0;
+        }
+        
+        if (!existing && beat.root) {
           existing = {
-            root: beat.root,
-            type: beat.type,
-            tensions: [...(beat.tensions || [])],
-            tension: beat.tension,
-            bass: beat.bass,
-            isSilence: beat.isSilence || !beat.root
-          };
-        } else if (!existing && i === 1 && beat.root && baseRhythm === 'offbeat') {
-          existing = {
-            root: beat.root,
-            type: beat.type,
-            tensions: [...(beat.tensions || [])],
-            tension: beat.tension,
-            bass: beat.bass,
-            isSilence: beat.isSilence || !beat.root
+            root: defaultIsNote ? beat.root : '',
+            type: defaultIsNote ? beat.type : '',
+            tensions: defaultIsNote ? [...(beat.tensions || [])] : [],
+            tension: defaultIsNote ? beat.tension : null,
+            bass: defaultIsNote ? beat.bass : null,
+            isSilence: defaultIsNote ? (beat.isSilence || !beat.root) : true
           };
         }
         
         newSubs.push({
+          id: existing?.id || generateUniqueId(),
           root: existing?.root || '',
           type: existing?.type || '',
           tensions: existing?.tensions ? [...existing.tensions] : [],
@@ -5693,8 +5702,13 @@ const getBeatSlots = (measure, beat, beatIdx) => {
   
   if (!beat.subdivisions || beat.subdivisions.length !== subCount) {
     const slots = []
-    const patKey = rhythm === 'triplet' ? (beat.tripletPattern || '3_notes') : null
-    const pat = patKey ? TRIPLET_PATTERNS[patKey] : null
+    const patKey = rhythm === 'triplet' ? (beat.tripletPattern || '3_notes') : 
+                   (rhythm === 'eighth' ? (beat.eighthPattern || '2_notes') :
+                   (rhythm === 'sixteenth' ? (beat.sixteenthPattern || '4_semi') : null))
+    
+    const pat = patKey ? (rhythm === 'triplet' ? TRIPLET_PATTERNS[patKey] :
+                          (rhythm === 'eighth' ? EIGHTH_PATTERNS[patKey] :
+                           (rhythm === 'sixteenth' ? SIXTEENTH_PATTERNS[patKey] : null))) : null
     
     for (let i = 0; i < subCount; i++) {
       if (pat) {
@@ -6336,8 +6350,13 @@ const getLyricsBeatSlots = (measure, beat, beatIdx) => {
   
   if (!beat.subdivisions || beat.subdivisions.length !== subCount) {
     const slots = []
-    const patKey = rhythm === 'triplet' ? (beat.tripletPattern || '3_notes') : null
-    const pat = patKey ? TRIPLET_PATTERNS[patKey] : null
+    const patKey = rhythm === 'triplet' ? (beat.tripletPattern || '3_notes') : 
+                   (rhythm === 'eighth' ? (beat.eighthPattern || '2_notes') :
+                   (rhythm === 'sixteenth' ? (beat.sixteenthPattern || '4_semi') : null))
+    
+    const pat = patKey ? (rhythm === 'triplet' ? TRIPLET_PATTERNS[patKey] :
+                          (rhythm === 'eighth' ? EIGHTH_PATTERNS[patKey] :
+                           (rhythm === 'sixteenth' ? SIXTEENTH_PATTERNS[patKey] : null))) : null
     
     for (let i = 0; i < subCount; i++) {
       if (pat) {
