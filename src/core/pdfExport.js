@@ -207,13 +207,13 @@ export function generatePDF(project, exportOption = 'chords-only') {
     const slots = getBeatSlots(measure, beat, beatIdx)
     if (slots.length <= 1) return false
     
-    const hasSilence = slots.some(s => s.isSilence)
-    if (hasSilence) return false
+    const activeSlots = slots.filter(s => !s.isSilence && !s.isMerged)
+    if (activeSlots.length === 0) return true
     
-    const hasAllRoot = slots.every(s => s.root)
+    const hasAllRoot = activeSlots.every(s => s.root)
     if (!hasAllRoot) return false
     
-    return slots.every(s => areChordsEqual(s, slots[0]))
+    return activeSlots.every(s => areChordsEqual(s, activeSlots[0]))
   }
 
   const shouldRenderAsSubdivided = (measure, beat, beatIdx) => {

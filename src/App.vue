@@ -1166,13 +1166,13 @@ const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
   const slots = getBeatSlots(measure, beat, beatIdx)
   if (slots.length <= 1) return false
   
-  const hasSilence = slots.some(s => s.isSilence)
-  if (hasSilence) return false
+  const activeSlots = slots.filter(s => !s.isSilence && !s.isMerged)
+  if (activeSlots.length === 0) return true
   
-  const hasAllRoot = slots.every(s => s.root)
+  const hasAllRoot = activeSlots.every(s => s.root)
   if (!hasAllRoot) return false
   
-  return slots.every(s => areChordsEqual(s, slots[0]))
+  return activeSlots.every(s => areChordsEqual(s, activeSlots[0]))
 }
 const shouldRenderAsSubdivided = (measure, beat, beatIdx) => {
   if (!measure || !beat) return false
@@ -4125,7 +4125,9 @@ const openModal = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIn
     const rhythm = getEffectiveRhythm(m, b, beatIndex)
     const sig = getMeasureTimeSignature(m)
     if (isSubdividedRhythm(rhythm, sig.unit === 8, b)) {
-      resolvedSubIndex = 0
+      const slots = getBeatSlots(m, b, beatIndex)
+      const active = slots.find(s => !s.isSilence && !s.isMerged)
+      resolvedSubIndex = active ? slots.indexOf(active) : 0
     }
   }
   
@@ -7832,6 +7834,14 @@ function splitChordDisplay(beat) {
     bass: parts[1] ? `/${parts[1]}` : ''
   }
 }
+function getBeatDisplayChord(beat) {
+  if (!beat) return { main: '-', bass: '' }
+  if (beat.subdivisions && beat.subdivisions.length > 0) {
+    const active = beat.subdivisions.find(s => !s.isSilence && !s.isMerged && s.root)
+    if (active) return splitChordDisplay(active)
+  }
+  return splitChordDisplay(beat)
+}
 const openTransposeModal = () => {
   const activeM = selectedMeasureIndex.value !== -1 ? measuresWithKey.value[selectedMeasureIndex.value] : null
   transposeTargetKey.value = activeM ? activeM.activeKey : key.value
@@ -8886,7 +8896,7 @@ const confirmExportPdf = () => {
                           >
                             <!-- Chord name wrapped in white badge for clean margins and readability -->
                             <div 
-                              v-if="state.beat.root"
+                              v-if="state.beat.root || (state.beat.subdivisions && state.beat.subdivisions.some(s => s.root))"
                               :id="'chord-card-' + state.beat.id"
                               @mouseenter="hoveredChordId = state.beat.id"
                               @mouseleave="hoveredChordId = null"
@@ -8895,10 +8905,10 @@ const confirmExportPdf = () => {
                             >
                               <div class="flex flex-col items-center justify-center">
                                 <span :class="[getMeasureFontSizeClass(measure), 'text-gray-800 font-black leading-none']">
-                                  {{ splitChordDisplay(state.beat).main }}
+                                  {{ getBeatDisplayChord(state.beat).main }}
                                 </span>
-                                <span v-if="splitChordDisplay(state.beat).bass" class="text-xs text-gray-500 font-bold leading-none mt-0.5">
-                                  {{ splitChordDisplay(state.beat).bass }}
+                                <span v-if="getBeatDisplayChord(state.beat).bass" class="text-xs text-gray-500 font-bold leading-none mt-0.5">
+                                  {{ getBeatDisplayChord(state.beat).bass }}
                                 </span>
                               </div>
                               <!-- Obligado symbol display -->
@@ -8907,18 +8917,18 @@ const confirmExportPdf = () => {
                                 class="text-xs text-violet-600 font-mono leading-none mt-0.5"
                                 title="Obligado Rítmico"
                               >
-                                {{ getRhythmDisplayIcon(state.beat.harmonicRhythm || 'auto', measure) }}
+                                {{ getRhythmDisplayIcon(state.beat.harmonicRhythm || 'auto', measure, state.beat) }}
                               </span>
                             </div>
                             <!-- Rest Badge / Slash line -->
-                            <template v-if="!state.beat.root">
+                            <template v-else>
                               <div 
                                 v-if="measure.showObligado && state.beat.harmonicRhythm"
                                 class="bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 opacity-60 hover:scale-105 transition-transform"
                               >
                                 <span class="text-gray-400 font-bold leading-none text-[11px]">𝄾</span>
                                 <span class="text-[8px] text-gray-400 font-mono leading-none mt-0.5" title="Silencio de ritmo armónico">
-                                  {{ getRhythmDisplayIcon(state.beat.harmonicRhythm, measure) }}
+                                  {{ getRhythmDisplayIcon(state.beat.harmonicRhythm, measure, state.beat) }}
                                 </span>
                               </div>
                               <div 
