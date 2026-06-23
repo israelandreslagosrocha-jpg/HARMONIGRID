@@ -22,6 +22,27 @@ const transposeTargetKey = ref('C')
 const transposeTargetScale = ref('major')
 const transposeMode = ref('tonal') // 'tonal', 'modal', 'functional'
 const transposeScope = ref('all') // 'all', 'section'
+// --- PDF EXPORT STATE ---
+const isPdfExportModalOpen = ref(false)
+const selectedPdfExportOption = ref('chords-only')
+
+const isProOptionSelected = computed(() => {
+  return ['chords-only-expanded', 'chords-and-lyrics-rhythm', 'chords-and-lyrics-synced'].includes(selectedPdfExportOption.value)
+})
+
+const triggerProUpgradeForExport = () => {
+  isPdfExportModalOpen.value = false
+  if (selectedPdfExportOption.value === 'chords-only-expanded') {
+    upgradeReason.value = 'expanded_pdf'
+  } else if (selectedPdfExportOption.value === 'chords-and-lyrics-rhythm') {
+    upgradeReason.value = 'rhythm_lyrics'
+  } else if (selectedPdfExportOption.value === 'chords-and-lyrics-synced') {
+    upgradeReason.value = 'synced_lyrics'
+  } else {
+    upgradeReason.value = 'default'
+  }
+  isUpgradeModalOpen.value = true
+}
 // --- LYRICS STATE ---
 const showLyricsGlobal = ref(false)
 const hoveredMeasureIndex = ref(null)
@@ -1444,22 +1465,35 @@ const resolveRomanNumeralToChord = (numeral, keyRoot, scaleType) => {
   }
 }
 const getGenericSuggestions = () => {
-  const isMinor = scaleType.value === 'minor' || scaleType.value.includes('minor')
   const k = key.value
+  const st = scaleType.value
+  const spanishKey = translateNoteToSpanish(k)
+  const scaleName = SCALES[st]?.name || st
   
+  const getProgressionExample = (prog) => {
+    return prog.map(num => {
+      const resolved = resolveRomanNumeralToChord(num, k, st)
+      let labelType = resolved.type
+      if (labelType === 'maj') labelType = ''
+      else if (labelType === 'min') labelType = 'm'
+      return `${resolved.root}${labelType}`
+    }).join(' - ')
+  }
+
   const list = []
-  if (!isMinor) {
+
+  if (st === 'major') {
     list.push({
       title: 'Progresión Pop Clásica',
-      description: `Escribe la progresión más exitosa del pop mundial: **I - V - vi - IV** en ${translateNoteToSpanish(k)} Mayor. Aporta balance y estabilidad.`,
+      description: `Escribe la progresión más exitosa del pop mundial: **I - V - vi - IV** en ${spanishKey} ${scaleName}. Aporta balance y estabilidad (ej: ${getProgressionExample(['I', 'V', 'vi', 'IV'])}).`,
       payload: {
         type: 'replace_progression',
         progression: ['I', 'V', 'vi', 'IV']
       }
     })
     list.push({
-      title: 'Cadencia Lidia Brillante',
-      description: `Añade un color brillante y cinematográfico usando el intercambio modal del IV grado mayor: **I - II - IV - I** (ej. en ${translateNoteToSpanish(k)}: ${k} - ${transposeNote(k, 2, k)} - ${transposeNote(k, 5, k)} - ${k}).`,
+      title: 'Cadencia Lidia Brillante (Intercambio)',
+      description: `Añade un color brillante y cinematográfico usando el intercambio modal del IV grado mayor: **I - II - IV - I** (ej: ${getProgressionExample(['I', 'II', 'IV', 'I'])}).`,
       payload: {
         type: 'replace_progression',
         progression: ['I', 'II', 'IV', 'I']
@@ -1467,7 +1501,7 @@ const getGenericSuggestions = () => {
     })
     list.push({
       title: 'Cadencia Plagal de Jazz',
-      description: `Progresión sofisticada ideal para puentes o coros: **ii7 - V7 - Imaj7**. Conecta la subdominante menor y el dominante con resolución de tónica.`,
+      description: `Progresión sofisticada ideal para puentes o coros: **ii7 - V7 - Imaj7**. Conecta la subdominante menor y el dominante con resolución de tónica (ej: ${getProgressionExample(['ii7', 'V7', 'Imaj7', 'Imaj7'])}).`,
       payload: {
         type: 'replace_progression',
         progression: ['ii7', 'V7', 'Imaj7', 'Imaj7']
@@ -1475,16 +1509,16 @@ const getGenericSuggestions = () => {
     })
     list.push({
       title: 'Intercambio Modal Mixolidio',
-      description: `Aporta una vibración rockera y abierta a tu progresión usando el acorde de bemol siete: **I - ♭VII - IV - I** (ej: ${k} - ${transposeNote(k, 10, k)} - ${transposeNote(k, 5, k)} - ${k}).`,
+      description: `Aporta una vibración rockera y abierta a tu progresión usando el acorde de bemol siete: **I - ♭VII - IV - I** (ej: ${getProgressionExample(['I', '♭VII', 'IV', 'I'])}).`,
       payload: {
         type: 'replace_progression',
         progression: ['I', '♭VII', 'IV', 'I']
       }
     })
-  } else {
+  } else if (st === 'minor') {
     list.push({
       title: 'Progresión Menor Clásica',
-      description: `Escribe una progresión base menor sumamente expresiva: **i - ♭VI - ♭III - ♭VII** en ${translateNoteToSpanish(k)} menor. Estándar de baladas.`,
+      description: `Escribe una progresión base menor sumamente expresiva: **i - ♭VI - ♭III - ♭VII** en ${spanishKey} ${scaleName}. Estándar de baladas (ej: ${getProgressionExample(['i', '♭VI', '♭III', '♭VII'])}).`,
       payload: {
         type: 'replace_progression',
         progression: ['i', '♭VI', '♭III', '♭VII']
@@ -1492,7 +1526,7 @@ const getGenericSuggestions = () => {
     })
     list.push({
       title: 'Cadencia Frigia Española',
-      description: `Color oscuro y flamenco: **i - ♭II - ♭III - ♭II** (ej. en ${translateNoteToSpanish(k)} menor: ${k}m - ${transposeNote(k, 1, k)} - ${transposeNote(k, 3, k)}m - ${transposeNote(k, 1, k)}).`,
+      description: `Color oscuro y flamenco: **i - ♭II - ♭III - ♭II** (ej: ${getProgressionExample(['i', '♭II', '♭III', '♭II'])}).`,
       payload: {
         type: 'replace_progression',
         progression: ['i', '♭II', '♭III', '♭II']
@@ -1500,7 +1534,7 @@ const getGenericSuggestions = () => {
     })
     list.push({
       title: 'Cadencia Menor Armónica',
-      description: `Drama y fuerza dramática: **i - iv - V7 - i**. El V grado con tercera mayor proporciona resolución contundente.`,
+      description: `Drama y fuerza dramática: **i - iv - V7 - i**. El V grado con tercera mayor proporciona resolución contundente (ej: ${getProgressionExample(['i', 'iv', 'V7', 'i'])}).`,
       payload: {
         type: 'replace_progression',
         progression: ['i', 'iv', 'V7', 'i']
@@ -1508,13 +1542,321 @@ const getGenericSuggestions = () => {
     })
     list.push({
       title: 'Movimiento Dórico Elegante',
-      description: `Elegancia y toque jazz-fusión: **i7 - IV7 - i7**. El acorde IV mayor en escala menor introduce una sexta mayor brillante.`,
+      description: `Elegancia y toque jazz-fusión: **i7 - IV7 - i7**. El IV mayor en escala menor introduce una sexta mayor brillante (ej: ${getProgressionExample(['i7', 'IV7', 'i7', 'i7'])}).`,
       payload: {
         type: 'replace_progression',
         progression: ['i7', 'IV7', 'i7', 'i7']
       }
     })
+  } else if (st === 'dorian') {
+    list.push({
+      title: 'Progresión Dórica Clásica',
+      description: `La progresión dórica por excelencia: **i - IV - ♭VII - i**. El IV grado mayor introduce la sexta mayor característica, aportando brillo (ej: ${getProgressionExample(['i', 'IV', '♭VII', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', 'IV', '♭VII', 'i']
+      }
+    })
+    list.push({
+      title: 'Groove Dórico Funk/Jazz',
+      description: `Ideal para ritmos y vamps estáticos: **i7 - IV7 - i7 - IV7** (ej: ${getProgressionExample(['i7', 'IV7', 'i7', 'IV7'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i7', 'IV7', 'i7', 'IV7']
+      }
+    })
+    list.push({
+      title: 'Movimiento Épico Dórico',
+      description: `Progresión majestuosa y folk: **i - ♭VII - v - IV**, recurrente en bandas sonoras épicas y rock clásico (ej: ${getProgressionExample(['i', '♭VII', 'v', 'IV'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭VII', 'v', 'IV']
+      }
+    })
+    list.push({
+      title: 'Cadencia Dórica Extendida',
+      description: `Movimiento ascendente y abierto: **i - ♭III - IV - ♭VII**, perfecto para secciones de transición (ej: ${getProgressionExample(['i', '♭III', 'IV', '♭VII'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭III', 'IV', '♭VII']
+      }
+    })
+  } else if (st === 'phrygian') {
+    list.push({
+      title: 'Cadencia Frigia Típica',
+      description: `Establece el carácter oscuro y místico del modo Frigio: **i - ♭II - ♭III - i**. Destaca el contraste inmediato con el segundo grado bemol (♭II) (ej: ${getProgressionExample(['i', '♭II', '♭III', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭II', '♭III', 'i']
+      }
+    })
+    list.push({
+      title: 'Cadencia Flamenca',
+      description: `Movimiento tenso y folclórico: **i - ♭II - ♭VII - i**, recurrente en la música española y el metal (ej: ${getProgressionExample(['i', '♭II', '♭VII', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭II', '♭VII', 'i']
+      }
+    })
+    list.push({
+      title: 'Tensión Frigia Suspendida',
+      description: `Resolución melancólica y misteriosa: **i - ♭II - iv - i** (ej: ${getProgressionExample(['i', '♭II', 'iv', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭II', 'iv', 'i']
+      }
+    })
+    list.push({
+      title: 'Oscilación Frigia con Séptimas',
+      description: `Añade extensiones jazzeras sobre la base frigia: **i7 - ♭IImaj7 - ♭VII7 - i7** (ej: ${getProgressionExample(['i7', '♭IImaj7', '♭VII7', 'i7'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i7', '♭IImaj7', '♭VII7', 'i7']
+      }
+    })
+  } else if (st === 'lydian') {
+    list.push({
+      title: 'Oscilación Lidia Espacial',
+      description: `Progresión etérea y cinematográfica típica del modo Lidio: **I - II**. El segundo grado mayor (II) destaca la cuarta aumentada (#4) de la escala (ej: ${getProgressionExample(['I', 'II', 'I', 'II'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', 'II', 'I', 'II']
+      }
+    })
+    list.push({
+      title: 'Resolución Lidia Soñadora',
+      description: `Sonoridad de ensueño y jazz: **Imaj7 - II7 - iii7 - Imaj7** (ej: ${getProgressionExample(['Imaj7', 'II7', 'iii7', 'Imaj7'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['Imaj7', 'II7', 'iii7', 'Imaj7']
+      }
+    })
+    list.push({
+      title: 'Viaje Lidio Épico',
+      description: `Progresión con resolución abierta y brillante: **I - II - V - I** (ej: ${getProgressionExample(['I', 'II', 'V', 'I'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', 'II', 'V', 'I']
+      }
+    })
+    list.push({
+      title: 'Cadencia Lidia a Menor',
+      description: `Color interestelar con toque melancólico: **I - II - vi - I** (ej: ${getProgressionExample(['I', 'II', 'vi', 'I'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', 'II', 'vi', 'I']
+      }
+    })
+  } else if (st === 'mixolydian') {
+    list.push({
+      title: 'Cadencia Mixolidia Clásica',
+      description: `El sonido definitivo del rock clásico, blues y folk: **I - ♭VII - IV - I**. La presencia de ♭VII mayor reduce la tensión de dominante clásica (ej: ${getProgressionExample(['I', '♭VII', 'IV', 'I'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', '♭VII', 'IV', 'I']
+      }
+    })
+    list.push({
+      title: 'Groove Mixolidio Moderno',
+      description: `Progresión abierta y flotante: **I - v - ♭VII - IV**, con el quinto grado menor (v) suavizando la armonía (ej: ${getProgressionExample(['I', 'v', '♭VII', 'IV'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', 'v', '♭VII', 'IV']
+      }
+    })
+    list.push({
+      title: 'Oscilación Mixolidia',
+      description: `Sonoridad relajada y psicodélica: **I7 - ♭VIImaj7 - IV - I** (ej: ${getProgressionExample(['I7', '♭VIImaj7', 'IV', 'I'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I7', '♭VIImaj7', 'IV', 'I']
+      }
+    })
+    list.push({
+      title: 'Tensión Mixolidia Directa',
+      description: `Movimiento directo y enérgico: **I - ii - ♭VII - I** (ej: ${getProgressionExample(['I', 'ii', '♭VII', 'I'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', 'ii', '♭VII', 'I']
+      }
+    })
+  } else if (st === 'locrian') {
+    list.push({
+      title: 'Resolución Locria Estable',
+      description: `Armoniza la inestabilidad locria usando grados mayores de apoyo: **i° - ♭II - ♭iii - i°**. Mitiga la tensión de la quinta disminuida (ej: ${getProgressionExample(['i°', '♭II', '♭iii', 'i°'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i°', '♭II', '♭iii', 'i°']
+      }
+    })
+    list.push({
+      title: 'Oscilación Locria de Tensión',
+      description: `Sonoridad oscura, tensa e industrial: **i° - ♭II - i° - ♭II** (ej: ${getProgressionExample(['i°', '♭II', 'i°', '♭II'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i°', '♭II', 'i°', '♭II']
+      }
+    })
+    list.push({
+      title: 'Progresión Locria Misteriosa',
+      description: `Camino armónico tenso pero resolutivo: **i° - iv - ♭VI - ♭II** (ej: ${getProgressionExample(['i°', 'iv', '♭VI', '♭II'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i°', 'iv', '♭VI', '♭II']
+      }
+    })
+    list.push({
+      title: 'Cadencia Locria Pesada',
+      description: `Movimiento característico de metal extremo: **i° - ♭V - ♭VI - ♭II** (ej: ${getProgressionExample(['i°', '♭V', '♭VI', '♭II'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i°', '♭V', '♭VI', '♭II']
+      }
+    })
+  } else if (st === 'harmonic_minor') {
+    list.push({
+      title: 'Drama Menor Armónico',
+      description: `Fuerza y resolución dramática clásica: **i - iv - V7 - i**. El V grado mayor/dominante crea la tensión clásica para resolver a tónica (ej: ${getProgressionExample(['i', 'iv', 'V7', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', 'iv', 'V7', 'i']
+      }
+    })
+    list.push({
+      title: 'Ciclo Armónico Tenso',
+      description: `Cadencia académica e intensa: **i - ii° - V7 - i** (ej: ${getProgressionExample(['i', 'ii°', 'V7', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', 'ii°', 'V7', 'i']
+      }
+    })
+    list.push({
+      title: 'Progresión Neoclásica',
+      description: `Inspirada en el barroco y el metal neoclásico: **i - ♭VI - V7 - i** (ej: ${getProgressionExample(['i', '♭VI', 'V7', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭VI', 'V7', 'i']
+      }
+    })
+    list.push({
+      title: 'Camino Exótico Menor',
+      description: `Resolución retardada con gran carga emotiva: **i - iv - ♭VI - V7** (ej: ${getProgressionExample(['i', 'iv', '♭VI', 'V7'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', 'iv', '♭VI', 'V7']
+      }
+    })
+  } else if (st === 'melodic_minor') {
+    list.push({
+      title: 'Resolución Melódica Jazz',
+      description: `Sonido melódico clásico: **i - IV - V7 - i**. Combina el cuarto grado mayor (IV) con el quinto grado mayor/dominante (V7) (ej: ${getProgressionExample(['i', 'IV', 'V7', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', 'IV', 'V7', 'i']
+      }
+    })
+    list.push({
+      title: 'Cadencia Jazz Melódica',
+      description: `Movimiento jazzy y lineal: **i - ii - V7 - i** (ej: ${getProgressionExample(['i', 'ii', 'V7', 'i'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', 'ii', 'V7', 'i']
+      }
+    })
+    list.push({
+      title: 'Oscilación Melódica Elegante',
+      description: `Ambiente flotante y sofisticado: **i - IV - i - IV** (ej: ${getProgressionExample(['i', 'IV', 'i', 'IV'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', 'IV', 'i', 'IV']
+      }
+    })
+    list.push({
+      title: 'Ascenso Melódico',
+      description: `Movimiento cromático y melódico ascendente: **i - ♭III - IV - V** (ej: ${getProgressionExample(['i', '♭III', 'IV', 'V'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['i', '♭III', 'IV', 'V']
+      }
+    })
+  } else if (st === 'phrygian_dominant') {
+    list.push({
+      title: 'Cadencia Flamenca Dominante',
+      description: `La cadencia andaluza y flamenca más tradicional: **I - ♭II - ♭III - ♭II**. Aporta un sonido exótico de raíz española (ej: ${getProgressionExample(['I', '♭II', '♭III', '♭II'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', '♭II', '♭III', '♭II']
+      }
+    })
+    list.push({
+      title: 'Tensión Árabe',
+      description: `Carácter oriental y místico: **I - iv - ♭II - I**, resolviendo firmemente sobre la tónica mayor (ej: ${getProgressionExample(['I', 'iv', '♭II', 'I'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', 'iv', '♭II', 'I']
+      }
+    })
+    list.push({
+      title: 'Oscilación Frigia Dominante',
+      description: `Enfoque de máxima tensión y resolución inmediata: **I - ♭II - I - ♭II** (ej: ${getProgressionExample(['I', '♭II', 'I', '♭II'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', '♭II', 'I', '♭II']
+      }
+    })
+    list.push({
+      title: 'Progresión Dominante Extendida',
+      description: `Sonoridad profunda y pesada: **I - ♭vii - ♭II - I** (ej: ${getProgressionExample(['I', '♭vii', '♭II', 'I'])}).`,
+      payload: {
+        type: 'replace_progression',
+        progression: ['I', '♭vii', '♭II', 'I']
+      }
+    })
+  } else {
+    const degs = SCALES[st]?.degrees || []
+    if (degs.length > 0) {
+      const p1 = [degs[0].numeral, degs[Math.min(3, degs.length - 1)].numeral, degs[Math.min(4, degs.length - 1)].numeral, degs[0].numeral]
+      list.push({
+        title: 'Progresión Diatónica Base',
+        description: `Explora la sonoridad fundamental de esta escala con una cadencia base: **${p1.join(' - ')}** en ${spanishKey} ${scaleName} (ej: ${getProgressionExample(p1)}).`,
+        payload: {
+          type: 'replace_progression',
+          progression: p1
+        }
+      })
+
+      const p2 = [degs[0].numeral, degs[Math.min(5, degs.length - 1)].numeral, degs[Math.min(3, degs.length - 1)].numeral, degs[Math.min(4, degs.length - 1)].numeral]
+      list.push({
+        title: 'Viaje Diatónico Completo',
+        description: `Disfruta del recorrido armónico expandido de esta escala: **${p2.join(' - ')}** en ${spanishKey} ${scaleName} (ej: ${getProgressionExample(p2)}).`,
+        payload: {
+          type: 'replace_progression',
+          progression: p2
+        }
+      })
+
+      const p3 = [degs[0].numeral, degs[Math.min(1, degs.length - 1)].numeral, degs[Math.min(4, degs.length - 1)].numeral, degs[0].numeral]
+      list.push({
+        title: 'Cadencia de Paso Suave',
+        description: `Suave tensión a través del segundo grado de la escala: **${p3.join(' - ')}** en ${spanishKey} ${scaleName} (ej: ${getProgressionExample(p3)}).`,
+        payload: {
+          type: 'replace_progression',
+          progression: p3
+        }
+      })
+
+      const p4 = [degs[0].numeral, degs[Math.min(1, degs.length - 1)].numeral, degs[0].numeral, degs[Math.min(1, degs.length - 1)].numeral]
+      list.push({
+        title: 'Oscilación Característica',
+        description: `Efecto hipnótico de balance entre el primer y segundo grado: **${p4.join(' - ')}** en ${spanishKey} ${scaleName} (ej: ${getProgressionExample(p4)}).`,
+        payload: {
+          type: 'replace_progression',
+          progression: p4
+        }
+      })
+    }
   }
+
   return list
 }
 const updateSuggestionsPool = () => {
@@ -7525,7 +7867,13 @@ const applyTranspose = () => {
   syncMeasuresBeats()
 }
 const exportPdf = () => {
-  if (currentPlan.value === 'PRO' && viewMode.value === 'expanded') {
+  isPdfExportModalOpen.value = true
+}
+const confirmExportPdf = () => {
+  isPdfExportModalOpen.value = false
+  const option = selectedPdfExportOption.value
+  
+  if (option === 'chords-only-expanded') {
     generatePDF({
       title: title.value,
       key: key.value,
@@ -7536,8 +7884,10 @@ const exportPdf = () => {
       repeats: [],
       keySignatureStr: keySignatureStr.value,
       viewMode: 'expanded',
-      globalGroove: globalGroove.value
-    })
+      globalGroove: globalGroove.value,
+      lyricsTiedSlots: Array.from(lyricsTiedSlots.value),
+      tiedSlots: Array.from(tiedSlots.value)
+    }, option)
   } else {
     generatePDF({
       title: title.value,
@@ -7549,8 +7899,10 @@ const exportPdf = () => {
       repeats: repeats.value,
       keySignatureStr: keySignatureStr.value,
       viewMode: 'compact',
-      globalGroove: globalGroove.value
-    })
+      globalGroove: globalGroove.value,
+      lyricsTiedSlots: Array.from(lyricsTiedSlots.value),
+      tiedSlots: Array.from(tiedSlots.value)
+    }, option)
   }
 }
 </script>
@@ -8167,7 +8519,7 @@ const exportPdf = () => {
                         <h3 class="text-xs font-black text-amber-950 uppercase tracking-wider">Asistente de Sugerencias Inteligentes (PRO)</h3>
                         <p class="text-[10px] text-amber-800/80 font-medium">
                           <span v-if="allSuggestionsPool.length > 0">Se detectaron {{ allSuggestionsPool.length }} consejos específicos para tu progresión</span>
-                          <span v-else>Plantillas educativas e ideas de progresión listas para usar</span>
+                          <span v-else>Sugerencias adaptadas a {{ translateNoteToSpanish(key) }} {{ SCALES[scaleType]?.name || scaleType }}</span>
                         </p>
                       </div>
                     </div>
@@ -10848,6 +11200,9 @@ const exportPdf = () => {
           <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'alternativas_secundarias'">
             El Modo de Alternativas Secundarias es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para insertar dominantes secundarios, sustitutos de tritono, ii relacionados e intercambios modales</strong> directamente en tu partitura.
           </p>
+          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'expanded_pdf'">
+            La exportación de partituras extendidas de acordes de forma lineal y desglosada (sin repeticiones) es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para exportar flujos de compases extendidos</strong>.
+          </p>
           <p class="text-sm text-gray-600 mb-6" v-else>
             Esta función requiere la versión PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO</strong> para usar casillas avanzadas y expandir tus compases sin límites.
           </p>
@@ -11327,6 +11682,104 @@ const exportPdf = () => {
             </button>
             <button @click="applyTranspose" class="flex-1 py-3 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold text-center active:scale-98 transition-all shadow-md">
               Aplicar Transporte
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+    <!-- ==================== PDF EXPORT MODAL ==================== -->
+    <transition name="fade">
+      <div v-if="isPdfExportModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+        <div class="absolute inset-0" @click="isPdfExportModalOpen = false"></div>
+        
+        <div class="relative bg-white rounded-3xl shadow-2xl p-6 max-w-lg w-full border border-gray-150 text-left animate-scale-up z-10 flex flex-col max-h-[90vh] overflow-y-auto">
+          <!-- Header -->
+          <div class="flex items-center justify-between pb-3 border-b border-gray-100">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">📄</span>
+              <h3 class="text-lg font-black text-gray-900">Exportar Partitura a PDF</h3>
+            </div>
+            <button @click="isPdfExportModalOpen = false" class="text-gray-400 hover:text-gray-600 text-sm font-bold bg-gray-100 w-7 h-7 rounded-full flex items-center justify-center">✕</button>
+          </div>
+          
+          <!-- Content -->
+          <div class="py-4 space-y-3.5 flex-1">
+            <p class="text-xs text-gray-500 leading-relaxed">Selecciona el formato de exportación preferido para tu partitura PDF:</p>
+            
+            <div class="space-y-2">
+              <!-- Opción 1: Sólo acordes -->
+              <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
+                :class="selectedPdfExportOption === 'chords-only' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
+                <input type="radio" v-model="selectedPdfExportOption" value="chords-only" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <div class="flex-1">
+                  <div class="text-xs font-bold text-gray-900">Opción 1: Sólo acordes (Compacto)</div>
+                  <div class="text-[11px] text-gray-500 mt-0.5">Muestra métricas, secciones, compases y acordes. Excluye cualquier letra. Consigue la máxima compacidad.</div>
+                </div>
+              </label>
+
+              <!-- Opción 2: Sólo acordes extendidos -->
+              <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
+                :class="selectedPdfExportOption === 'chords-only-expanded' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
+                <input type="radio" v-model="selectedPdfExportOption" value="chords-only-expanded" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <div class="flex-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-gray-900">Opción 2: Sólo acordes (Lineal sin repeticiones)</span>
+                    <span v-if="currentPlan === 'FREE'" class="text-[9px] font-black px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded-md flex items-center gap-0.5">👑 PRO</span>
+                  </div>
+                  <div class="text-[11px] text-gray-500 mt-0.5">Expande y desglosa todas las repeticiones y casillas de forma lineal. No muestra barras de repetición.</div>
+                </div>
+              </label>
+
+              <!-- Opción 3: Acordes y letra simple -->
+              <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
+                :class="selectedPdfExportOption === 'chords-and-lyrics-free' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
+                <input type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-free" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <div class="flex-1">
+                  <div class="text-xs font-bold text-gray-900">Opción 3: Acordes y letra libre/simple</div>
+                  <div class="text-[11px] text-gray-500 mt-0.5">Coloca las letras en formato libre directamente debajo de los compases, ajustadas al ancho del compás y apiladas verticalmente.</div>
+                </div>
+              </label>
+
+              <!-- Opción 4: Acordes y letra asociada a la subdivisión -->
+              <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
+                :class="selectedPdfExportOption === 'chords-and-lyrics-rhythm' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
+                <input type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-rhythm" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <div class="flex-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-gray-900">Opción 4: Acordes y letra asociada por tiempo/subdivisión</span>
+                    <span v-if="currentPlan === 'FREE'" class="text-[9px] font-black px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded-md flex items-center gap-0.5">👑 PRO</span>
+                  </div>
+                  <div class="text-[11px] text-gray-500 mt-0.5">Coloca las sílabas exactamente alineadas bajo los pulsos o subdivisiones en los que fueron asociadas.</div>
+                </div>
+              </label>
+
+              <!-- Opción 5: Acordes y letra sincronizada Pro -->
+              <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
+                :class="selectedPdfExportOption === 'chords-and-lyrics-synced' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
+                <input type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-synced" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <div class="flex-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-gray-900">Opción 5: Acordes y letra sincronizada Pro</span>
+                    <span v-if="currentPlan === 'FREE'" class="text-[9px] font-black px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded-md flex items-center gap-0.5">👑 PRO</span>
+                  </div>
+                  <div class="text-[11px] text-gray-500 mt-0.5">Alineación silábica profesional. Las sílabas asociadas se centran bajo el acorde, mientras que los prefijos y sufijos de palabra fluyen ordenadamente a los lados.</div>
+                </div>
+              </label>
+            </div>
+          </div>
+          
+          <!-- Footer Buttons -->
+          <div class="mt-4 pt-4 border-t border-gray-100 flex gap-3">
+            <button @click="isPdfExportModalOpen = false" class="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl text-xs font-bold text-center active:scale-98 transition-all">
+              Cancelar
+            </button>
+            <button v-if="currentPlan === 'FREE' && isProOptionSelected" @click="triggerProUpgradeForExport" class="flex-1 py-3 bg-gradient-to-r from-amber-500 to-violet-650 hover:from-amber-600 hover:to-violet-750 text-white rounded-xl text-xs font-bold text-center active:scale-98 transition-all shadow-md flex items-center justify-center gap-1.5">
+              <span>Pasar a PRO para Exportar</span>
+              <span>👑</span>
+            </button>
+            <button v-else @click="confirmExportPdf" class="flex-1 py-3 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold text-center active:scale-98 transition-all shadow-md flex items-center justify-center gap-1.5">
+              <span>Descargar PDF</span>
+              <span>⬇️</span>
             </button>
           </div>
         </div>

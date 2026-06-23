@@ -1,7 +1,7 @@
 import { jsPDF } from "jspdf"
 import { formatChord } from "./chords.js"
 
-export function generatePDF(project) {
+export function generatePDF(project, exportOption = 'chords-only') {
   const GROOVE_PATTERNS = {
     Ninguno: ['quarter', 'quarter', 'quarter', 'quarter'],
     Pop: ['quarter', 'quarter', 'quarter', 'eighth'],
@@ -185,6 +185,629 @@ export function generatePDF(project) {
     }
   }
 
+  // --- LYRICS HELPERS ---
+
+  const tokenizeText = (text) => {
+    if (!text) return []
+    const regex = /(\s+)|([^\s]+(?:\s+|$))/g
+    return text.match(regex) || []
+  }
+
+  const distributeTokens = (tokens, P) => {
+    const result = Array.from({ length: P }, () => '')
+    if (tokens.length === 0) return result
+    
+    if (tokens.length <= P) {
+      tokens.forEach((tok, idx) => {
+        result[idx] = tok
+      })
+      return result
+    }
+    
+    const tokensPerSlot = tokens.length / P
+    let tokenIdx = 0
+    for (let i = 0; i < P; i++) {
+      const nextTokenIdx = Math.round((i + 1) * tokensPerSlot)
+      result[i] = tokens.slice(tokenIdx, nextTokenIdx).join('')
+      tokenIdx = nextTokenIdx
+    }
+    return result
+  }
+
+  const getAllMeasureSlotsPDF = (measure, sig) => {
+    const slots = []
+    const mergeStates = getBeatMergeState(measure, sig)
+    measure.beats.slice(0, sig.beats).forEach((beat, bIdx) => {
+      const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+      if (state.isMerged) return
+      slots.push({
+        id: beat.id,
+        beat: beat,
+        state: state,
+        index: bIdx
+      })
+    })
+    return slots
+  }
+
+  const getMeasureLyricsLayoutPDF = (measure, sig) => {
+    const rawText = measure.lyrics?.rawText || ''
+    const anchors = measure.lyrics?.anchors || []
+    
+    const allSlots = getAllMeasureSlotsPDF(measure, sig)
+    const slotCount = allSlots.length
+    
+    const result = {}
+    allSlots.forEach(s => {
+      result[s.id] = {
+        slotId: s.id,
+        hasLyrics: false,
+        hasAssociated: false,
+        preText: '',
+        associatedText: '',
+        postText: '',
+        normalText: '',
+        preStart: 0, preEnd: 0,
+        assocStart: 0, assocEnd: 0,
+        postStart: 0, postEnd: 0,
+        normalStart: 0, normalEnd: 0
+      }
+    })
+    
+    if (slotCount === 0 || !rawText) {
+      return result
+    }
+    
+    const activeAnchors = []
+    anchors.forEach(anchor => {
+      const slotIdx = allSlots.findIndex(s => s.id === anchor.chordId)
+      if (slotIdx !== -1) {
+        activeAnchors.push({
+          anchor,
+          slotIdx,
+          start: anchor.start,
+          end: anchor.end
+        })
+      }
+    })
+    
+    activeAnchors.sort((a, b) => a.slotIdx - b.slotIdx)
+    
+    if (activeAnchors.length === 0) {
+      const tokens = tokenizeText(rawText)
+      const distributed = distributeTokens(tokens, slotCount)
+      
+      let currentCharIdx = 0
+      allSlots.forEach((s, idx) => {
+        const text = distributed[idx] || ''
+        result[s.id] = {
+          slotId: s.id,
+          hasLyrics: text.length > 0,
+          hasAssociated: false,
+          normalText: text,
+          normalStart: currentCharIdx,
+          normalEnd: currentCharIdx + text.length
+        }
+        currentCharIdx += text.length
+      })
+      
+      return result
+    }
+    
+    const K = activeAnchors.length
+    
+    const anchorWords = activeAnchors.map((aa, idx) => {
+      let wordStart = aa.start
+      const prevEnd = idx > 0 ? activeAnchors[idx - 1].end : 0
+      while (wordStart > prevEnd && !/\s/.test(rawText[wordStart - 1])) {
+        wordStart--
+      }
+      
+      let wordEnd = aa.end
+      const nextStart = idx < K - 1 ? activeAnchors[idx + 1].start : rawText.length
+      while (wordEnd < nextStart && !/\s/.test(rawText[wordEnd])) {
+        wordEnd++
+      }
+      
+      return {
+        wordStart,
+        wordEnd,
+        prefixStart: wordStart,
+        prefixEnd: aa.start,
+        suffixStart: aa.end,
+        suffixEnd: wordEnd
+      }
+    })
+    
+    const distributeRange = (startChar, endChar, targets) => {
+      if (startChar >= endChar) return
+      const text = rawText.substring(startChar, endChar)
+      const tokens = tokenizeText(text)
+      const distributed = distributeTokens(tokens, targets.length)
+      
+      let currentCharIdx = startChar
+      targets.forEach((target, idx) => {
+        const part = distributed[idx] || ''
+        const partLen = part.length
+        const start = currentCharIdx
+        const end = currentCharIdx + partLen
+        currentCharIdx = end
+        
+        if (partLen === 0) return
+        
+        const slotRes = result[target.slotId]
+        if (!slotRes) return
+        slotRes.hasLyrics = true
+        
+        if (target.type === 'pre') {
+          slotRes.preText = slotRes.preText ? (part + slotRes.preText) : part
+          slotRes.preStart = start
+          slotRes.preEnd = end + (slotRes.preEnd - slotRes.preStart)
+        } else if (target.type === 'post') {
+          slotRes.postText = slotRes.postText ? (slotRes.postText + part) : part
+          slotRes.postStart = slotRes.postStart || start
+          slotRes.postEnd = end
+        } else {
+          slotRes.normalText = part
+          slotRes.normalStart = start
+          slotRes.normalEnd = end
+        }
+      })
+    }
+    
+    activeAnchors.forEach((aa, idx) => {
+      const word = anchorWords[idx]
+      const slotRes = result[aa.anchor.chordId]
+      if (!slotRes) return
+      slotRes.hasLyrics = true
+      slotRes.hasAssociated = true
+      slotRes.associatedText = rawText.substring(aa.start, aa.end)
+      slotRes.assocStart = aa.start
+      slotRes.assocEnd = aa.end
+      slotRes.anchor = aa.anchor
+      
+      const suffixText = rawText.substring(word.suffixStart, word.suffixEnd)
+      if (suffixText) {
+        slotRes.postText = suffixText
+        slotRes.postStart = word.suffixStart
+        slotRes.postEnd = word.suffixEnd
+      }
+      
+      const prefixText = rawText.substring(word.prefixStart, word.prefixEnd)
+      if (prefixText) {
+        slotRes.preText = prefixText
+        slotRes.preStart = word.prefixStart
+        slotRes.preEnd = word.prefixEnd
+      }
+    })
+    
+    const reg0Targets = []
+    const firstAnchorIdx = activeAnchors[0].slotIdx
+    for (let i = 0; i < firstAnchorIdx; i++) {
+      reg0Targets.push({ slotId: allSlots[i].id, type: 'normal' })
+    }
+    reg0Targets.push({ slotId: allSlots[firstAnchorIdx].id, type: 'pre' })
+    distributeRange(0, anchorWords[0].wordStart, reg0Targets)
+    
+    for (let k = 0; k < K - 1; k++) {
+      const curr = activeAnchors[k]
+      const next = activeAnchors[k + 1]
+      const currWord = anchorWords[k]
+      const nextWord = anchorWords[k + 1]
+      
+      const regKTargets = []
+      regKTargets.push({ slotId: allSlots[curr.slotIdx].id, type: 'post' })
+      for (let i = curr.slotIdx + 1; i < next.slotIdx; i++) {
+        regKTargets.push({ slotId: allSlots[i].id, type: 'normal' })
+      }
+      regKTargets.push({ slotId: allSlots[next.slotIdx].id, type: 'pre' })
+      distributeRange(currWord.wordEnd, nextWord.wordStart, regKTargets)
+    }
+    
+    const last = activeAnchors[K - 1]
+    const lastWord = anchorWords[K - 1]
+    const regKLastTargets = []
+    regKLastTargets.push({ slotId: allSlots[last.slotIdx].id, type: 'post' })
+    for (let i = last.slotIdx + 1; i < slotCount; i++) {
+      regKLastTargets.push({ slotId: allSlots[i].id, type: 'normal' })
+    }
+    distributeRange(lastWord.wordEnd, rawText.length, regKLastTargets)
+    
+    return result
+  }
+
+  const getSyllableAtSlotPDF = (project, measure, measureIdx, beatIdx, subIdx) => {
+    if (!measure.lyrics || !measure.lyrics.syllables) return null
+    
+    const slotId = subIdx !== null && subIdx !== undefined
+      ? `lyrics_${measureIdx}_${beatIdx}_${subIdx}`
+      : `lyrics_${measureIdx}_${beatIdx}`
+      
+    const matched = measure.lyrics.syllables.filter(s => s.rhythmEventId === slotId)
+    if (matched.length > 0) {
+      const joinedText = matched.map(s => s.text).join('')
+      const hasTied = matched.some(s => s.tied)
+      return { text: joinedText, isRoot: true, tied: hasTied }
+    }
+    
+    const lyricsTiedSlots = project.lyricsTiedSlots ? new Set(project.lyricsTiedSlots) : new Set()
+    if (!lyricsTiedSlots.has(slotId)) return null
+    
+    const slotList = []
+    for (let m = 0; m <= measureIdx; m++) {
+      const currM = project.measures[m]
+      if (!currM) continue
+      const sig = currM.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      const isDenom8 = sig.unit === 8
+      const mergeStates = getBeatMergeState(currM, sig)
+      
+      currM.beats.slice(0, sig.beats).forEach((beat, b) => {
+        const state = mergeStates[b] || { isMerged: false, flexGrow: 1 }
+        if (state.isMerged) return
+        
+        const rhythm = getEffectiveRhythm(currM, beat, b)
+        const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
+        const hasSubdivisions = subCount > 1
+        
+        if (!hasSubdivisions) {
+          slotList.push({
+            id: `lyrics_${m}_${b}`,
+            measureIdx: m,
+            beatIdx: b,
+            subIdx: null,
+            isSilence: beat.isSilence || !beat.root
+          })
+        } else {
+          const slots = getBeatSlots(currM, beat, b)
+          slots.forEach((sub, s) => {
+            slotList.push({
+              id: `lyrics_${m}_${b}_${s}`,
+              measureIdx: m,
+              beatIdx: b,
+              subIdx: s,
+              isSilence: sub.isSilence || !sub.root
+            })
+          })
+        }
+      })
+    }
+    
+    const curIdx = slotList.findIndex(b => b.id === slotId)
+    if (curIdx === -1 || slotList[curIdx].isSilence) return null
+    
+    let scanIdx = curIdx
+    while (scanIdx > 0 && lyricsTiedSlots.has(slotList[scanIdx].id)) {
+      scanIdx--
+      const prevBlock = slotList[scanIdx]
+      if (prevBlock.isSilence) break
+      const prevMeasure = project.measures[prevBlock.measureIdx]
+      if (prevMeasure && prevMeasure.lyrics && prevMeasure.lyrics.syllables) {
+        const prevSlotId = prevBlock.id
+        const prevSyllable = prevMeasure.lyrics.syllables.find(s => s.rhythmEventId === prevSlotId)
+        if (prevSyllable) {
+          return { text: '~', isRoot: false, tied: true }
+        }
+      }
+    }
+    
+    return null
+  }
+
+  const getChordFontSizes = (measure, sig) => {
+    let chordCount = 0
+    let maxLength = 0
+    const numBeats = sig.beats
+    const isDenom8 = sig.unit === 8
+    
+    const checkChord = (chordObj) => {
+      if (chordObj.root) {
+        chordCount++
+        const chordStr = formatChord(chordObj)
+        if (chordStr.length > maxLength) {
+          maxLength = chordStr.length
+        }
+      }
+    }
+    
+    for (let i = 0; i < numBeats; i++) {
+      const beat = measure.beats[i]
+      if (!beat) continue
+      const rhythm = getEffectiveRhythm(measure, beat, i)
+      const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
+      
+      if (subCount > 1) {
+        const slots = getBeatSlots(measure, beat, i)
+        slots.forEach(slot => {
+          checkChord(slot)
+        })
+      } else {
+        checkChord(beat)
+      }
+    }
+    
+    // Base font size depends on chord count
+    let mainSize = 11.5
+    let bassSize = 8.5
+    
+    if (chordCount === 2) {
+      mainSize = 9.5
+      bassSize = 7.5
+    } else if (chordCount === 3) {
+      mainSize = 8.5
+      bassSize = 6.5
+    } else if (chordCount >= 4) {
+      mainSize = 7.5
+      bassSize = 5.5
+    }
+    
+    // Further scale down if chord names are very long
+    if (maxLength > 7) {
+      mainSize -= 1.0
+      bassSize -= 0.5
+    }
+    if (maxLength > 10) {
+      mainSize -= 1.0
+      bassSize -= 0.5
+    }
+    
+    // Bounds check
+    mainSize = Math.max(6.0, mainSize)
+    bassSize = Math.max(4.5, bassSize)
+    
+    return { main: mainSize, bass: bassSize }
+  }
+
+  const getMeasureLyricsHeight = (doc, measure, option, measureWidth, sig) => {
+    if (!measure.lyrics) return 0
+    if (option === 'chords-only' || option === 'chords-only-expanded') {
+      return 0
+    }
+    if (option === 'chords-and-lyrics-free') {
+      const text = measure.lyrics.rawText || ""
+      if (!text.trim()) return 0
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(8)
+      const lines = doc.splitTextToSize(text, measureWidth - 4)
+      return lines.length * 3.5 + 2
+    }
+    if (option === 'chords-and-lyrics-rhythm') {
+      let hasAny = false
+      const numBeats = sig.beats
+      const measureIdx = measure.originalMeasureIndex !== undefined ? measure.originalMeasureIndex : project.measures.indexOf(measure)
+      
+      for (let b = 0; b < numBeats; b++) {
+        const beat = measure.beats[b]
+        if (!beat) continue
+        const rhythm = getEffectiveRhythm(measure, beat, b)
+        const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
+        const hasSubdivisions = subCount > 1
+        
+        if (!hasSubdivisions) {
+          if (getSyllableAtSlotPDF(project, measure, measureIdx, b, null)) {
+            hasAny = true
+            break
+          }
+        } else {
+          for (let s = 0; s < subCount; s++) {
+            if (getSyllableAtSlotPDF(project, measure, measureIdx, b, s)) {
+              hasAny = true
+              break
+            }
+          }
+        }
+      }
+      return hasAny ? 6 : 0
+    }
+    if (option === 'chords-and-lyrics-synced') {
+      const rawText = measure.lyrics.rawText || ""
+      return rawText.trim() ? 6 : 0
+    }
+    return 0
+  }
+
+  const drawFooter = (doc, pageHeight, pageWidth) => {
+    doc.setLineWidth(0.2)
+    doc.setDrawColor(210, 210, 210)
+    doc.line(marginX, pageHeight - 20, pageWidth - 15, pageHeight - 20)
+    
+    const textWidth = doc.getTextWidth("HarmoniGrid by TeoMusicRecords")
+    const circleRadius = 3
+    const gap = 2
+    const totalWidth = (circleRadius * 2) + gap + textWidth
+    const circleX = (pageWidth / 2) - (totalWidth / 2) + circleRadius
+    const circleY = pageHeight - 14
+    
+    doc.setFillColor(109, 40, 217) // #6d28d9 violet circle
+    doc.circle(circleX, circleY, circleRadius, "F")
+    
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(8.5)
+    doc.setTextColor(255, 255, 255)
+    doc.text("H", circleX, circleY + 0.9, { align: "center" })
+    
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(9)
+    doc.setTextColor(80, 80, 80)
+    doc.text("HarmoniGrid by TeoMusicRecords", circleX + circleRadius + gap, circleY + 1)
+    
+    doc.setTextColor(0, 0, 0)
+    doc.setDrawColor(0, 0, 0)
+  }
+
+  const drawFreeLyrics = (doc, measure, mStartX, currentY, measureWidth) => {
+    const text = measure.lyrics?.rawText || ""
+    if (!text.trim()) return
+    
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(8)
+    doc.setTextColor(60, 60, 60)
+    
+    const lines = doc.splitTextToSize(text, measureWidth - 4)
+    let ly = currentY + 22
+    lines.forEach((line) => {
+      doc.text(line, mStartX + 2, ly)
+      ly += 3.5
+    })
+    
+    doc.setTextColor(0, 0, 0)
+  }
+
+  const drawSyllableLyrics = (doc, project, measure, globalMeasureIndex, mStartX, currentY, currentMeasureWidth, sig) => {
+    const isDenom8 = sig.unit === 8
+    let timeSigOffsetLocal = 0
+    if (measure.timeSignature && globalMeasureIndex > 0) {
+      const prevMeasure = project.measures[globalMeasureIndex - 1]
+      const prevSig = prevMeasure 
+        ? (prevMeasure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 })
+        : { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      if (measure.timeSignature.beats !== prevSig.beats || measure.timeSignature.unit !== prevSig.unit) {
+        timeSigOffsetLocal = 8
+      }
+    }
+    const effectiveMeasureWidth = currentMeasureWidth - timeSigOffsetLocal
+    
+    const mergeStates = getBeatMergeState(measure, sig)
+    const beatGrows = measure.beats.slice(0, sig.beats).map((b, bIdx) => {
+      const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+      if (state.isMerged) return 0
+      return state.flexGrow
+    })
+    const totalGrow = beatGrows.reduce((sum, g) => sum + g, 0)
+    
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(8)
+    doc.setTextColor(60, 60, 60)
+    
+    let currentXOffset = 0
+    measure.beats.slice(0, sig.beats).forEach((beat, bIdx) => {
+      const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+      if (state.isMerged) return
+      
+      const currentBeatWidth = (state.flexGrow / totalGrow) * effectiveMeasureWidth
+      const startXForBeats = mStartX + timeSigOffsetLocal + currentXOffset
+      
+      const rhythm = getEffectiveRhythm(measure, beat, bIdx)
+      const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
+      const hasSubdivisions = subCount > 1
+      
+      if (hasSubdivisions) {
+        const slots = getBeatSlots(measure, beat, bIdx)
+        const visibleSlots = []
+        if (rhythm !== 'sixteenth') {
+          slots.forEach((s, idx) => {
+            visibleSlots.push({ ...s, originalIndex: idx, flexGrow: 1 })
+          })
+        } else {
+          for (let i = 0; i < slots.length; i++) {
+            if (slots[i].isMerged) continue
+            let flexGrow = 1
+            let j = i + 1
+            while (j < slots.length && slots[j].isMerged) {
+              flexGrow++
+              j++
+            }
+            visibleSlots.push({ ...slots[i], originalIndex: i, flexGrow })
+          }
+        }
+        
+        const subWidth = currentBeatWidth / subCount
+        visibleSlots.forEach((sub) => {
+          const subX = startXForBeats + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
+          const sylData = getSyllableAtSlotPDF(project, measure, globalMeasureIndex, bIdx, sub.originalIndex)
+          if (sylData) {
+            let textToDraw = sylData.text
+            if (sylData.tied) {
+              textToDraw += "~"
+            }
+            doc.text(textToDraw, subX, currentY + 23, { align: "center" })
+          }
+        })
+      } else {
+        const beatX = startXForBeats + (currentBeatWidth / 2)
+        const sylData = getSyllableAtSlotPDF(project, measure, globalMeasureIndex, bIdx, null)
+        if (sylData) {
+          let textToDraw = sylData.text
+          if (sylData.tied) {
+            textToDraw += "~"
+          }
+          doc.text(textToDraw, beatX, currentY + 23, { align: "center" })
+        }
+      }
+      currentXOffset += currentBeatWidth
+    })
+    
+    doc.setTextColor(0, 0, 0)
+  }
+
+  const drawSyncedLyricsForMeasure = (doc, measure, layout, mStartX, currentY, currentMeasureWidth, sig, globalMeasureIndex) => {
+    let timeSigOffsetLocal = 0
+    if (measure.timeSignature && globalMeasureIndex > 0) {
+      const prevMeasure = project.measures[globalMeasureIndex - 1]
+      const prevSig = prevMeasure 
+        ? (prevMeasure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 })
+        : { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      if (measure.timeSignature.beats !== prevSig.beats || measure.timeSignature.unit !== prevSig.unit) {
+        timeSigOffsetLocal = 8
+      }
+    }
+    const effectiveMeasureWidth = currentMeasureWidth - timeSigOffsetLocal
+    const mergeStates = getBeatMergeState(measure, sig)
+    const beatGrows = measure.beats.slice(0, sig.beats).map((b, bIdx) => {
+      const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+      if (state.isMerged) return 0
+      return state.flexGrow
+    })
+    const totalGrow = beatGrows.reduce((sum, g) => sum + g, 0)
+    
+    let currentXOffset = 0
+    measure.beats.slice(0, sig.beats).forEach((beat, bIdx) => {
+      const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+      if (state.isMerged) return
+      
+      const currentBeatWidth = (state.flexGrow / totalGrow) * effectiveMeasureWidth
+      const startXForBeats = mStartX + timeSigOffsetLocal + currentXOffset
+      const beatX = startXForBeats + (currentBeatWidth / 2)
+      
+      const slotRes = layout[beat.id]
+      if (slotRes && slotRes.hasLyrics) {
+        if (slotRes.hasAssociated) {
+          doc.setFont("helvetica", "bold")
+          doc.setFontSize(8.5)
+          doc.setTextColor(109, 40, 217) // #6d28d9 violet accent
+          
+          const assocText = slotRes.associatedText || ""
+          const assocWidth = doc.getTextWidth(assocText)
+          doc.text(assocText, beatX, currentY + 23, { align: "center" })
+          
+          const preText = slotRes.preText || ""
+          if (preText) {
+            doc.setFont("helvetica", "normal")
+            doc.setFontSize(8)
+            doc.setTextColor(80, 80, 80)
+            doc.text(preText, beatX - (assocWidth / 2) - 0.3, currentY + 23, { align: "right" })
+          }
+          
+          const postText = slotRes.postText || ""
+          if (postText) {
+            doc.setFont("helvetica", "normal")
+            doc.setFontSize(8)
+            doc.setTextColor(80, 80, 80)
+            doc.text(postText, beatX + (assocWidth / 2) + 0.3, currentY + 23, { align: "left" })
+          }
+        } else {
+          doc.setFont("helvetica", "normal")
+          doc.setFontSize(8)
+          doc.setTextColor(80, 80, 80)
+          const normalText = slotRes.normalText || ""
+          doc.text(normalText, beatX, currentY + 23, { align: "center" })
+        }
+      }
+      currentXOffset += currentBeatWidth
+    })
+    
+    doc.setTextColor(0, 0, 0)
+  }
+
   // project: { title, key, scaleType, timeSignature, measures, repeats, keySignatureStr }
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -201,7 +824,6 @@ export function generatePDF(project) {
   const usableWidth = pageWidth - marginX - 15 // Margen derecho de 15
   const measuresPerRow = 4
   const measureWidth = usableWidth / measuresPerRow
-  const rowHeight = 25 // Espacio total vertical por sistema
   const lineYOffset = 15 // Dónde se dibuja la línea base del sistema respecto al inicio de la fila
 
   let currentY = marginY + 20
@@ -222,14 +844,14 @@ export function generatePDF(project) {
   }
 
   // --- PIE DE PÁGINA ---
-  doc.setFontSize(9)
-  doc.setFont("helvetica", "normal")
-  doc.text("HarmoniGrid By TeomusicRecords", pageWidth / 2, pageHeight - 15, { align: "center" })
+  drawFooter(doc, pageHeight, pageWidth)
 
   // --- DIBUJO DE SISTEMAS (FILAS) ---
-  const rows = []
-  for (let i = 0; i < project.measures.length; i += measuresPerRow) {
-    rows.push(project.measures.slice(i, i + measuresPerRow))
+  const rows = project.systems || []
+  if (rows.length === 0) {
+    for (let i = 0; i < project.measures.length; i += measuresPerRow) {
+      rows.push(project.measures.slice(i, i + measuresPerRow))
+    }
   }
 
   doc.setLineWidth(0.5)
@@ -272,18 +894,29 @@ export function generatePDF(project) {
 
   rows.forEach((rowMeasures, rowIdx) => {
     // Si nos pasamos del alto de página, creamos una nueva
-    if (currentY + rowHeight > pageHeight - 30) {
+    const actualMeasureWidth = usableWidth / rowMeasures.length
+    let maxLyricsHeight = 0
+    rowMeasures.forEach((measure) => {
+      const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      const h = getMeasureLyricsHeight(doc, measure, exportOption, actualMeasureWidth, sig)
+      if (h > maxLyricsHeight) maxLyricsHeight = h
+    })
+    const currentRowHeight = 25 + maxLyricsHeight
+
+    if (currentY + currentRowHeight > pageHeight - 30) {
       doc.addPage()
       currentY = marginY + 10
-      doc.setFontSize(9)
-      doc.setFont("helvetica", "normal")
-      doc.text("HarmoniGrid By TeomusicRecords", pageWidth / 2, pageHeight - 15, { align: "center" })
+      drawFooter(doc, pageHeight, pageWidth)
       doc.setLineWidth(0.5)
     }
 
     const startX = marginX
     const lineY = currentY + lineYOffset
-    const absoluteRowStartIndex = rowIdx * measuresPerRow
+    // Since rows might not be equal width if systems have variable measure count, absoluteRowStartIndex is computed by summing previous measures
+    let absoluteRowStartIndex = 0
+    for (let prevIdx = 0; prevIdx < rowIdx; prevIdx++) {
+      absoluteRowStartIndex += rows[prevIdx].length
+    }
 
     // Información de Cifra indicadora y Tonalidad (Solo en la primera fila, dibujada ANTES del sistema)
     if (rowIdx === 0) {
@@ -291,8 +924,8 @@ export function generatePDF(project) {
       if (project.keySignatureStr) {
         doc.setFont("helvetica", "bold")
         doc.setFontSize(14)
-        // Dibujamos la armadura un poco más arriba y a la izquierda
-        doc.text(project.keySignatureStr, marginX - 16, lineY - 6)
+        // Draw right-aligned to prevent overlapping the time signature
+        doc.text(project.keySignatureStr, marginX - 14, lineY - 6, { align: "right" })
       }
       
       doc.setFont("times", "bold")
@@ -311,7 +944,7 @@ export function generatePDF(project) {
       currentAccumulatedX += measureWidths[colIdx]
     }
 
-    // 1. Acordes y Secciones
+    // 1. Acordes, Secciones y Letras
     rowMeasures.forEach((measure, colIdx) => {
       const globalMeasureIndex = absoluteRowStartIndex + colIdx
       const currentMeasureWidth = measureWidths[colIdx]
@@ -440,7 +1073,7 @@ export function generatePDF(project) {
         const startXForBeats = mStartX + timeSigOffset + currentXOffset
         
         const rhythm = getEffectiveRhythm(measure, beat, bIdx)
-        const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
+        const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
         const hasSubdivisions = subCount > 1
         
         if (hasSubdivisions) {
@@ -469,101 +1102,110 @@ export function generatePDF(project) {
           visibleSlots.forEach((sub) => {
             const subX = startXForBeats + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
             
+            // Draw subdivisions line indicators at the center of the visible slot inside the staff
+            if (measure.showSubdivisions !== false) {
+              const subSlashX = subX
+              doc.setLineWidth(0.15)
+              doc.line(subSlashX - 1, lineY + 2, subSlashX + 1, lineY - 2)
+            }
+
             if (rhythm === 'offbeat' && sub.originalIndex === 0) {
               doc.setFont("helvetica", "normal")
               doc.setFontSize(8)
               doc.setTextColor(150, 150, 150)
-              doc.text("x", subX, currentY + 12, { align: "center" })
+              doc.text("x", subX, currentY + 15, { align: "center" })
               doc.setTextColor(0, 0, 0)
             } else if (sub.isSilence || !sub.root) {
               doc.setFont("helvetica", "normal")
               doc.setFontSize(8)
               doc.setTextColor(150, 150, 150)
-              doc.text("𝄾", subX, currentY + 12, { align: "center" })
+              doc.text("𝄾", subX, currentY + 15, { align: "center" })
               doc.setTextColor(0, 0, 0)
-            } else if (sub.root) {
-              const chordStr = formatChord(sub)
-              const split = splitChordDisplayPDF(chordStr)
-              const effSubCount = subCount / sub.flexGrow
-              const fontSize = effSubCount >= 4 ? 7 : (effSubCount >= 3 ? 9 : 10)
-              doc.setFont("helvetica", "bold")
-              doc.setFontSize(fontSize)
-              if (split.bass) {
-                doc.text(split.main, subX, currentY + 10.5, { align: "center" })
-                doc.setFont("helvetica", "medium")
-                doc.setFontSize(Math.max(6, fontSize - 2))
-                doc.text(split.bass, subX, currentY + 14, { align: "center" })
-              } else {
-                doc.text(split.main, subX, currentY + 12, { align: "center" })
-              }
             }
             
-            if (measure.showSubdivisions !== false) {
-              // Draw subdivisions line indicators at the center of the visible slot
-              const subSlashX = startXForBeats + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
-              doc.setLineWidth(0.15)
-              doc.line(subSlashX - 1, lineY + 2, subSlashX + 1, lineY - 2)
+            if (sub.root) {
+              const chordStr = formatChord(sub)
+              const split = splitChordDisplayPDF(chordStr)
+              const fontSizes = getChordFontSizes(measure, sig)
+              
+              doc.setFont("helvetica", "bold")
+              doc.setFontSize(fontSizes.main)
+              if (split.bass) {
+                doc.text(split.main, subX, currentY + 5.5, { align: "center" })
+                doc.setFont("helvetica", "medium")
+                doc.setFontSize(fontSizes.bass)
+                doc.text(split.bass, subX, currentY + 9, { align: "center" })
+              } else {
+                doc.text(split.main, subX, currentY + 7, { align: "center" })
+              }
             }
           })
         } else {
-          if (beat.root) {
-            const chordStr = formatChord(beat)
-            const split = splitChordDisplayPDF(chordStr)
-
-            doc.setFont("helvetica", "bold")
-            doc.setFontSize(12)
-            if (split.bass) {
-              doc.text(split.main, startXForBeats + (currentBeatWidth / 2), currentY + 11, { align: "center" })
-              doc.setFont("helvetica", "medium")
-              doc.setFontSize(9)
-              doc.text(split.bass, startXForBeats + (currentBeatWidth / 2), currentY + 15, { align: "center" })
-            } else {
-              doc.text(split.main, startXForBeats + (currentBeatWidth / 2), currentY + 12, { align: "center" })
+          // Draw slash or silence indicator inside staff space first!
+          const beatX = startXForBeats + (currentBeatWidth / 2)
+          if (measure.showObligado && beat.harmonicRhythm && !beat.root) {
+            // It's a rest/silence!
+            doc.setFont("helvetica", "normal")
+            doc.setFontSize(10)
+            doc.setTextColor(150, 150, 150)
+            doc.text("𝄾", beatX, currentY + 15, { align: "center" })
+            
+            const figName = getRhythmDisplayIconPDF(beat.harmonicRhythm, sig.unit === 8)
+            if (figName) {
+              doc.setFont("helvetica", "italic")
+              doc.setFontSize(6.5)
+              doc.text(figName, beatX, currentY + 19, { align: "center" })
             }
-
-            if (measure.showObligado) {
-              const figName = getRhythmDisplayIconPDF(beat.harmonicRhythm || 'quarter', sig.unit === 8)
-              if (figName) {
-                doc.setFont("helvetica", "italic")
-                doc.setFontSize(7)
-                doc.setTextColor(120, 120, 120)
-                const figY = split.bass ? currentY + 18.5 : currentY + 16.5
-                doc.text(figName, startXForBeats + (currentBeatWidth / 2), figY, { align: "center" })
-                doc.setTextColor(0, 0, 0)
-              }
-            }
-
-            // Slashes rítmicos for chord
-            const slashX = startXForBeats + (currentBeatWidth / 2)
-            doc.setLineWidth(0.3)
-            doc.line(slashX - 2, lineY + 3, slashX + 2, lineY - 3)
+            doc.setTextColor(0, 0, 0)
           } else {
+            // Normal beat: draw slash on the horizontal line
+            doc.setLineWidth(0.3)
+            doc.line(beatX - 2, lineY + 3, beatX + 2, lineY - 3)
+            
             if (measure.showObligado && beat.harmonicRhythm) {
-              // It's a rest/silence!
-              doc.setFont("helvetica", "normal")
-              doc.setFontSize(10)
-              doc.setTextColor(150, 150, 150)
-              doc.text("𝄾", startXForBeats + (currentBeatWidth / 2), currentY + 12, { align: "center" })
-              
               const figName = getRhythmDisplayIconPDF(beat.harmonicRhythm, sig.unit === 8)
               if (figName) {
                 doc.setFont("helvetica", "italic")
                 doc.setFontSize(6.5)
-                doc.text(figName, startXForBeats + (currentBeatWidth / 2), currentY + 16, { align: "center" })
+                doc.setTextColor(120, 120, 120)
+                doc.text(figName, beatX, currentY + 19, { align: "center" })
+                doc.setTextColor(0, 0, 0)
               }
-              doc.setTextColor(0, 0, 0)
+            }
+          }
+          
+          // Draw chord above the staff space if it exists!
+          if (beat.root) {
+            const chordStr = formatChord(beat)
+            const split = splitChordDisplayPDF(chordStr)
+            const fontSizes = getChordFontSizes(measure, sig)
+
+            doc.setFont("helvetica", "bold")
+            doc.setFontSize(fontSizes.main)
+            if (split.bass) {
+              doc.text(split.main, beatX, currentY + 5.5, { align: "center" })
+              doc.setFont("helvetica", "medium")
+              doc.setFontSize(fontSizes.bass)
+              doc.text(split.bass, beatX, currentY + 9, { align: "center" })
             } else {
-              // Slashes rítmicos for empty beat
-              const slashX = startXForBeats + (currentBeatWidth / 2)
-              doc.setLineWidth(0.3)
-              doc.line(slashX - 2, lineY + 3, slashX + 2, lineY - 3)
+              doc.text(split.main, beatX, currentY + 7, { align: "center" })
             }
           }
         }
         currentXOffset += currentBeatWidth
       })
 
-      // 3. Barras de compás y repeticiones
+      // 3. Renderizar letra de este compás según la opción de exportación
+      if (exportOption === 'chords-and-lyrics-free') {
+        drawFreeLyrics(doc, measure, mStartX, currentY, currentMeasureWidth)
+      } else if (exportOption === 'chords-and-lyrics-rhythm') {
+        drawSyllableLyrics(doc, project, measure, globalMeasureIndex, mStartX, currentY, currentMeasureWidth, sig)
+      } else if (exportOption === 'chords-and-lyrics-synced') {
+        const layout = getMeasureLyricsLayoutPDF(measure, sig)
+        drawSyncedLyricsForMeasure(doc, measure, layout, mStartX, currentY, currentMeasureWidth, sig, globalMeasureIndex)
+      }
+
+      // 4. Barras de compás y repeticiones
       doc.setLineWidth(0.5)
       
       const repStart = isRepeatStart(globalMeasureIndex)
@@ -610,7 +1252,7 @@ export function generatePDF(project) {
     doc.setLineWidth(0.5)
     doc.line(startX, lineY, endX, lineY)
 
-    currentY += rowHeight
+    currentY += currentRowHeight
   })
 
   // Guardar PDF
