@@ -45,40 +45,51 @@ export function generatePDF(project) {
   }
 
   const getRhythmDisplayIconPDF = (rhythm, isDenom8) => {
+    const isRest = rhythm && rhythm.startsWith('rest-')
+    const base = isRest ? rhythm.substring(5) : rhythm
+    const prefix = isRest ? 'Silencio de ' : ''
     if (isDenom8) {
-      if (rhythm === 'whole') return 'Redonda'
-      if (rhythm === 'dotted-half') return 'Blanca c/punto'
-      if (rhythm === 'double') return 'Blanca'
-      if (rhythm === 'dotted-quarter') return 'Negra c/punto'
-      if (rhythm === 'quarter') return 'Negra'
-      if (rhythm === 'eighth' || rhythm === 'auto') return 'Corchea'
-      if (rhythm === 'sixteenth') return 'Semicorchea'
+      if (base === 'dotted-whole') return prefix + 'Redonda c/punto'
+      if (base === 'whole') return prefix + 'Redonda'
+      if (base === 'dotted-half') return prefix + 'Blanca c/punto'
+      if (base === 'double') return prefix + 'Blanca'
+      if (base === 'dotted-quarter') return prefix + 'Negra c/punto'
+      if (base === 'quarter') return prefix + 'Negra'
+      if (base === 'eighth' || base === 'auto') return prefix + 'Corchea'
+      if (base === 'sixteenth') return prefix + 'Semicorchea'
     } else {
-      if (rhythm === 'whole') return 'Redonda'
-      if (rhythm === 'dotted-half') return 'Blanca c/punto'
-      if (rhythm === 'double') return 'Blanca'
-      if (rhythm === 'quarter' || rhythm === 'auto') return 'Negra'
-      if (rhythm === 'eighth') return 'Corchea'
-      if (rhythm === 'sixteenth') return 'Semicorchea'
+      if (base === 'dotted-whole') return prefix + 'Redonda c/punto'
+      if (base === 'whole') return prefix + 'Redonda'
+      if (base === 'dotted-half') return prefix + 'Blanca c/punto'
+      if (base === 'double') return prefix + 'Blanca'
+      if (base === 'dotted-quarter') return prefix + 'Negra c/punto'
+      if (base === 'quarter' || base === 'auto') return prefix + 'Negra'
+      if (base === 'eighth') return prefix + 'Corchea'
+      if (base === 'sixteenth') return prefix + 'Semicorchea'
     }
     return ''
   }
 
   const getBeatSlotDurationPDF = (measure, beat, isDenom8) => {
     const rhythm = beat.harmonicRhythm || 'auto'
+    const isRest = rhythm.startsWith('rest-')
+    const base = isRest ? rhythm.substring(5) : rhythm
     if (isDenom8) {
-      if (rhythm === 'whole') return 8
-      if (rhythm === 'dotted-half') return 6
-      if (rhythm === 'double') return 4
-      if (rhythm === 'dotted-quarter') return 3
-      if (rhythm === 'quarter') return 2
-      if (rhythm === 'eighth') return 1
+      if (base === 'dotted-whole') return 12
+      if (base === 'whole') return 8
+      if (base === 'dotted-half') return 6
+      if (base === 'double') return 4
+      if (base === 'dotted-quarter') return 3
+      if (base === 'quarter') return 2
+      if (base === 'eighth') return 1
       return 1
     } else {
-      if (rhythm === 'whole') return 4
-      if (rhythm === 'dotted-half') return 3
-      if (rhythm === 'double') return 2
-      if (rhythm === 'quarter') return 1
+      if (base === 'dotted-whole') return 6
+      if (base === 'whole') return 4
+      if (base === 'dotted-half') return 3
+      if (base === 'double') return 2
+      if (base === 'dotted-quarter') return 1.5
+      if (base === 'quarter') return 1
       return 1
     }
   }
@@ -352,11 +363,12 @@ export function generatePDF(project) {
         const isDenom8 = sig.unit === 8
         const overrides = []
         const translateRhythmNameLocal = (rhythm) => {
-          if (rhythm === 'eighth') return isDenom8 ? "Semicorcheas (x2)" : "Corcheas (x2)"
-          if (rhythm === 'sixteenth') return isDenom8 ? "Fusas (x4)" : "Semicorcheas (x4)"
-          if (rhythm === 'offbeat') return isDenom8 ? "Contratiempo de Semicorchea" : "Contratiempo"
-          if (rhythm === 'triplet') return isDenom8 ? "Tresillo de Semicorcheas (x3)" : "Tresillo (x3)"
-          if (rhythm === 'quintuplet') return isDenom8 ? "Quintillo de Semicorcheas (x5)" : "Quintillo (x5)"
+          const base = rhythm && rhythm.startsWith('rest-') ? rhythm.substring(5) : rhythm
+          if (base === 'eighth') return isDenom8 ? "Semicorcheas (x2)" : "Corcheas (x2)"
+          if (base === 'sixteenth') return isDenom8 ? "Fusas (x4)" : "Semicorcheas (x4)"
+          if (base === 'offbeat') return isDenom8 ? "Contratiempo de Semicorchea" : "Contratiempo"
+          if (base === 'triplet') return isDenom8 ? "Tresillo de Semicorcheas (x3)" : "Tresillo (x3)"
+          if (base === 'quintuplet') return isDenom8 ? "Quintillo de Semicorcheas (x5)" : "Quintillo (x5)"
           return ""
         }
         
