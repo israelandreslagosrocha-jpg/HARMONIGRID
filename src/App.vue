@@ -1919,7 +1919,10 @@ const refreshSuggestions = () => {
   suggestionOffset.value = (suggestionOffset.value + 3) % poolSize
   showToast("Sugerencias actualizadas 🔄")
 }
-watch([key, scaleType, measures], () => {
+watch([key, scaleType, measures], (newVal, oldVal) => {
+  if (oldVal && (newVal[0] !== oldVal[0] || newVal[1] !== oldVal[1])) {
+    suggestionOffset.value = 0
+  }
   updateSuggestionsPool()
 }, { deep: true, immediate: true })
 const runSuggestion = (suggestion) => {
