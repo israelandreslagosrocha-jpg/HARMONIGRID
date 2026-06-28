@@ -27,6 +27,162 @@ export function generatePDF(project, exportOption = 'chords-only') {
     return 1
   }
 
+  const EIGHTH_PATTERNS = {
+    '2_notes': { slots: ['note', 'note'] },
+    'silence_note': { slots: ['silence', 'note'] },
+    'note_silence': { slots: ['note', 'silence'] }
+  }
+
+  const TRIPLET_PATTERNS = {
+    '3_notes': { slots: ['note', 'note', 'note'] },
+    'silencia_1': { slots: ['silence', 'note', 'note'] },
+    'silencia_2': { slots: ['note', 'silence', 'note'] },
+    'silencia_3': { slots: ['note', 'note', 'silence'] },
+    'silencia_1_3': { slots: ['silence', 'note', 'silence'] },
+    'silencia_1_2': { slots: ['silence', 'merged', 'note'] },
+    'silencia_2_3': { slots: ['note', 'silence', 'merged'] }
+  }
+
+  const SIXTEENTH_PATTERNS = {
+    '4_semi': { slots: ['note', 'note', 'note', 'note'] },
+    'silencio_3_semi': { slots: ['silence', 'note', 'note', 'note'] },
+    'semi_silencio_2_semi': { slots: ['note', 'silence', 'note', 'note'] },
+    '2_semi_silencio_semi': { slots: ['note', 'note', 'silence', 'note'] },
+    '3_semi_silencio': { slots: ['note', 'note', 'note', 'silence'] },
+    'corchea_2_semi': { slots: ['note', 'merged', 'note', 'note'] },
+    'silencio_corchea_2_semi': { slots: ['silence', 'merged', 'note', 'note'] },
+    'semi_corchea_semi': { slots: ['note', 'note', 'merged', 'note'] },
+    '2_semi_corchea': { slots: ['note', 'note', 'note', 'merged'] },
+    '2_semi_silencio_corchea': { slots: ['note', 'note', 'silence', 'merged'] },
+    'silencio_corchea_semi': { slots: ['silence', 'note', 'merged', 'note'] },
+    'corchea_punto_semi': { slots: ['note', 'merged', 'merged', 'note'] },
+    'semi_corchea_punto': { slots: ['note', 'note', 'merged', 'merged'] },
+    'silencio_semi_silencio_semi': { slots: ['silence', 'note', 'silence', 'note'] },
+    'silencio_corchea_punto_semi': { slots: ['silence', 'merged', 'merged', 'note'] },
+    'silencio_corchea_punto': { slots: ['silence', 'note', 'merged', 'merged'] }
+  }
+
+  const getLyricsEffectiveRhythmPDF = (measure, beat, beatIdx) => {
+    if (!beat) return 'auto'
+    if (beat.syncWithHarmonic) {
+      const mainBeat = measure.beats[beatIdx]
+      if (!mainBeat) return 'auto'
+      return mainBeat.harmonicRhythm || 'auto'
+    }
+    return beat.harmonicRhythm || 'auto'
+  }
+
+  const getLyricsBeatSlotsPDF = (measure, beat, beatIdx, isDenom8) => {
+    if (!beat) return []
+    let rhythm = getLyricsEffectiveRhythmPDF(measure, beat, beatIdx)
+    if (rhythm === 'auto') {
+      rhythm = isDenom8 ? 'eighth' : 'quarter'
+    }
+    const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
+    if (subCount === 1) return []
+
+    if (beat.syncWithHarmonic) {
+      const mainBeat = measure.beats[beatIdx]
+      if (mainBeat) {
+        const mainRhythm = mainBeat.harmonicRhythm || 'auto'
+        const mainResolved = mainRhythm === 'auto' ? (isDenom8 ? 'eighth' : 'quarter') : mainRhythm
+        const mainSubCount = getSubdivisionCount(mainResolved, isDenom8, mainBeat)
+        
+        if (mainSubCount === subCount) {
+          const mainSlots = getBeatSlots(measure, mainBeat, beatIdx)
+          if (mainSlots && mainSlots.length === subCount) {
+            return mainSlots.map(s => ({
+              isSilence: s.isSilence || false
+            }))
+          }
+        }
+      }
+    }
+
+    if (beat.subdivisions && beat.subdivisions.length === subCount) {
+      return beat.subdivisions
+    }
+
+    const slots = []
+    const patKey = rhythm === 'triplet' ? (beat.tripletPattern || '3_notes') : 
+                   (rhythm === 'eighth' ? (beat.eighthPattern || '2_notes') :
+                   (rhythm === 'sixteenth' ? (beat.sixteenthPattern || '4_semi') : null))
+    
+    const pat = patKey ? (rhythm === 'triplet' ? TRIPLET_PATTERNS[patKey] :
+                          (rhythm === 'eighth' ? EIGHTH_PATTERNS[patKey] :
+                           (rhythm === 'sixteenth' ? SIXTEENTH_PATTERNS[patKey] : null))) : null
+
+    for (let i = 0; i < subCount; i++) {
+      if (pat) {
+        const slotType = pat.slots[i]
+        slots.push({
+          isSilence: slotType === 'silence',
+          isMerged: slotType === 'merged'
+        })
+      } else if (rhythm === 'offbeat' && i === 0) {
+        slots.push({ isSilence: true })
+      } else {
+        slots.push({ isSilence: false })
+      }
+    }
+    return slots
+  }
+
+  const getLyricsBeatSlotDurationPDF = (measure, beat, beatIdx, isDenom8) => {
+    const rhythm = beat ? (beat.harmonicRhythm || 'auto') : 'auto'
+    const resolvedRhythm = rhythm === 'auto' ? getLyricsEffectiveRhythmPDF(measure, beat, beatIdx) : rhythm
+    const isRest = resolvedRhythm.startsWith('rest-')
+    const baseRhythm = isRest ? resolvedRhythm.substring(5) : resolvedRhythm
+    
+    if (isDenom8) {
+      if (baseRhythm === 'dotted-whole') return 12
+      if (baseRhythm === 'whole') return 8
+      if (baseRhythm === 'dotted-half') return 6
+      if (baseRhythm === 'double') return 4
+      if (baseRhythm === 'dotted-quarter') return 3
+      if (baseRhythm === 'quarter') return 2
+      if (baseRhythm === 'two-eighths') return 2
+      if (baseRhythm === 'sixteenth') return 2
+      if (baseRhythm === 'eighth') return 1
+      if (baseRhythm === 'triplet') return 2
+      return 1
+    } else {
+      if (baseRhythm === 'dotted-whole') return 6
+      if (baseRhythm === 'whole') return 4
+      if (baseRhythm === 'dotted-half') return 3
+      if (baseRhythm === 'double') return 2
+      if (baseRhythm === 'dotted-quarter') return 1.5
+      if (baseRhythm === 'quarter') return 1
+      return 1
+    }
+  }
+
+  const getLyricsMergedBeatsPDF = (measure, sig, isDenom8) => {
+    if (!measure) return []
+    const numBeats = sig.beats
+    
+    const states = Array.from({ length: numBeats }, (_, i) => ({
+      index: i,
+      beat: measure.lyrics?.beats?.[i] || { subdivisions: [] },
+      isMerged: false,
+      durationSlots: 1
+    }))
+    
+    for (let i = 0; i < numBeats; i++) {
+      if (states[i].isMerged) continue
+      const beat = states[i].beat
+      const dur = getLyricsBeatSlotDurationPDF(measure, beat, i, isDenom8)
+      states[i].durationSlots = dur
+      for (let j = 1; j < dur; j++) {
+        if (i + j < numBeats) {
+          states[i + j].isMerged = true
+        }
+      }
+    }
+    
+    return states
+  }
+
   const getEffectiveRhythm = (measure, beat, beatIdx) => {
     if (!beat) return 'quarter'
     if (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto') {
@@ -44,10 +200,62 @@ export function generatePDF(project, exportOption = 'chords-only') {
     return pattern[beatIdx] || 'quarter'
   }
 
-  const getRhythmDisplayIconPDF = (rhythm, isDenom8) => {
+  const getRhythmDisplayIconPDF = (beat, isDenom8) => {
+    if (!beat) return ''
+    const rhythm = beat.harmonicRhythm || 'auto'
     const isRest = rhythm && rhythm.startsWith('rest-')
     const base = isRest ? rhythm.substring(5) : rhythm
     const prefix = isRest ? 'Silencio de ' : ''
+    
+    // Check for custom patterns if rhythm is eighth, sixteenth, or triplet
+    if (!isRest) {
+      if (base === 'eighth' && beat.eighthPattern) {
+        const labels = isDenom8 ? {
+          '2_notes': '2 Semicorcheas',
+          'silence_note': 'Silencio - Semicorchea',
+          'note_silence': 'Semicorchea - Silencio'
+        } : {
+          '2_notes': '2 Corcheas',
+          'silence_note': 'Silencio - Corchea',
+          'note_silence': 'Corchea - Silencio'
+        }
+        if (labels[beat.eighthPattern]) return labels[beat.eighthPattern]
+      }
+      if (base === 'sixteenth' && beat.sixteenthPattern) {
+        const labels = {
+          '4_semi': '4 Semicorcheas',
+          'silencio_3_semi': 'Silencio - 3 Semicorcheas',
+          'semi_silencio_2_semi': 'Semicorchea - Silencio - 2 Semicorcheas',
+          '2_semi_silencio_semi': '2 Semicorcheas - Silencio - Semicorchea',
+          '3_semi_silencio': '3 Semicorcheas - Silencio',
+          'corchea_2_semi': 'Corchea - 2 Semicorcheas',
+          'silencio_corchea_2_semi': 'Silencio - 2 Semicorcheas',
+          'semi_corchea_semi': 'Semicorchea - Corchea - Semicorchea',
+          '2_semi_corchea': '2 Semicorcheas - Corchea',
+          '2_semi_silencio_corchea': '2 Semicorcheas - Silencio',
+          'silencio_corchea_semi': 'Silencio - Corchea - Semicorchea',
+          'corchea_punto_semi': 'Corchea con punto - Semicorchea',
+          'semi_corchea_punto': 'Semicorchea - Corchea con punto',
+          'silencio_semi_silencio_semi': 'Silencio - Semicorchea - Silencio - Semicorchea',
+          'silencio_corchea_punto_semi': 'Silencio - Semicorchea',
+          'silencio_corchea_punto': 'Silencio - Corchea con punto'
+        }
+        if (labels[beat.sixteenthPattern]) return labels[beat.sixteenthPattern]
+      }
+      if (base === 'triplet' && beat.tripletPattern) {
+        const labels = {
+          '3_notes': 'Tresillo (3 Corcheas)',
+          'silencia_1': 'Silencio - 2 Corcheas',
+          'silencia_2': 'Corchea - Silencio - Corchea',
+          'silencia_3': '2 Corcheas - Silencio',
+          'silencia_1_3': 'Silencio - Corchea - Silencio',
+          'silencia_1_2': 'Silencio - Corchea',
+          'silencia_2_3': 'Corchea - Silencio'
+        }
+        if (labels[beat.tripletPattern]) return labels[beat.tripletPattern]
+      }
+    }
+    
     if (isDenom8) {
       if (base === 'dotted-whole') return prefix + 'Redonda c/punto'
       if (base === 'whole') return prefix + 'Redonda'
@@ -55,6 +263,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       if (base === 'double') return prefix + 'Blanca'
       if (base === 'dotted-quarter') return prefix + 'Negra c/punto'
       if (base === 'quarter') return prefix + 'Negra'
+      if (base === 'two-eighths') return prefix + '2 Corcheas'
       if (base === 'eighth' || base === 'auto') return prefix + 'Corchea'
       if (base === 'sixteenth') return prefix + 'Semicorchea'
       if (base === 'triplet') return prefix + 'Tresillo'
@@ -83,7 +292,9 @@ export function generatePDF(project, exportOption = 'chords-only') {
       if (base === 'double') return 4
       if (base === 'dotted-quarter') return 3
       if (base === 'quarter') return 2
+      if (base === 'sixteenth') return 2
       if (base === 'eighth') return 1
+      if (base === 'triplet') return 2
       return 1
     } else {
       if (base === 'dotted-whole') return 6
@@ -94,6 +305,288 @@ export function generatePDF(project, exportOption = 'chords-only') {
       if (base === 'quarter') return 1
       return 1
     }
+  }
+
+  const getMeasureTimeSignaturePDF = (mIdx) => {
+    if (mIdx < 0 || mIdx >= project.measures.length) {
+      return { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+    }
+    const m = project.measures[mIdx]
+    return m.timeSignature || getMeasureTimeSignaturePDF(mIdx - 1)
+  }
+
+  const getMeasureMinWidthPDF = (measure, sig, exportOption) => {
+    const isDenom8 = sig.unit === 8
+    let totalMinWidth = 0
+    
+    // Check key change spacer width
+    if (measure.keyChange) {
+      totalMinWidth += 120
+    }
+    // Check time signature change spacer width
+    if (measure.timeSignature && measure.originalMeasureIndex > 0) {
+      const prevSig = getMeasureTimeSignaturePDF(measure.originalMeasureIndex - 1)
+      if (measure.timeSignature.beats !== prevSig.beats || measure.timeSignature.unit !== prevSig.unit) {
+        totalMinWidth += 72
+      }
+    }
+
+    const numBeats = sig.beats
+    const measureIdx = measure.originalMeasureIndex !== undefined ? measure.originalMeasureIndex : project.measures.indexOf(measure)
+
+    for (let bIdx = 0; bIdx < numBeats; bIdx++) {
+      let beatMinWidth = 50 // base min-width in pixels
+      
+      // Chords width
+      const chordBeat = measure.beats[bIdx] || { root: '', type: '' }
+      const rhythm = getEffectiveRhythm(measure, chordBeat, bIdx)
+      let chordBaseMin = 50
+      if (rhythm === 'sixteenth') chordBaseMin = 112
+      else if (rhythm === 'triplet') chordBaseMin = 84
+      else if (rhythm === 'quintuplet') chordBaseMin = 120
+      
+      beatMinWidth = Math.max(beatMinWidth, chordBaseMin)
+      
+      // Lyrics width
+      if (exportOption === 'chords-and-lyrics-rhythm' && measure.lyrics?.mode === 'rhythm') {
+        const lyricsBeat = measure.lyrics.beats?.[bIdx]
+        if (lyricsBeat) {
+          const lRhythm = getLyricsEffectiveRhythmPDF(measure, lyricsBeat, bIdx)
+          const lSlots = getLyricsBeatSlotsPDF(measure, lyricsBeat, bIdx, isDenom8)
+          const isSub = lSlots.length > 0
+          
+          let lyrBaseMin = 50
+          if (lRhythm === 'sixteenth') lyrBaseMin = 128
+          else if (lRhythm === 'triplet') lyrBaseMin = 96
+          else if (lRhythm === 'quintuplet') lyrBaseMin = 144
+          
+          let lyrWidthNeeded = lyrBaseMin
+          
+          if (!isSub) {
+            const syl = getSyllableAtSlotPDF(project, measure, measureIdx, bIdx, null)
+            if (syl && syl.text) {
+              const charWidth = 8.5
+              const padding = 16
+              lyrWidthNeeded = Math.max(lyrWidthNeeded, syl.text.length * charWidth + padding)
+            }
+          } else {
+            const totalFlex = lSlots.length
+            let maxSubWidth = 0
+            
+            lSlots.forEach((sub, sIdx) => {
+              const syl = getSyllableAtSlotPDF(project, measure, measureIdx, bIdx, sIdx)
+              if (syl && syl.text) {
+                const charWidth = 8.5
+                const padding = 16
+                const slotTextLen = syl.text.length + (syl.tied ? 1 : 0)
+                let slotMinWidth = slotTextLen * charWidth + padding
+                if (syl.isRoot) {
+                  slotMinWidth += 18
+                }
+                const requiredBeatWidth = slotMinWidth * totalFlex
+                maxSubWidth = Math.max(maxSubWidth, requiredBeatWidth)
+              }
+            })
+            lyrWidthNeeded = Math.max(lyrWidthNeeded, maxSubWidth)
+          }
+          
+          beatMinWidth = Math.max(beatMinWidth, lyrWidthNeeded)
+        }
+      }
+      
+      totalMinWidth += beatMinWidth
+    }
+    
+    // Lyrics width based on text length (for free/synced modes or general text)
+    if (exportOption.includes('lyrics')) {
+      const rawText = measure.lyrics?.rawText || ''
+      if (rawText.trim().length > 0) {
+        const textPxWidth = rawText.trim().length * 6.5 + 24
+        totalMinWidth = Math.max(totalMinWidth, textPxWidth)
+      }
+    }
+    
+    return totalMinWidth
+  }
+
+  const drawPDFSubdivisionPattern = (cx, cy, slots, baseRhythm, isDenom8 = false, stemDirection = 'up') => {
+    doc.saveGraphicsState && doc.saveGraphicsState();
+    doc.setFillColor(80, 80, 80);
+    doc.setDrawColor(80, 80, 80);
+    doc.setLineWidth(0.6);
+
+    const n = slots.length;
+    const width = n === 4 ? 12 : (n === 3 ? 10 : 8);
+    const xs = [];
+    for (let i = 0; i < n; i++) {
+      xs.push(cx - width / 2 + (i * width) / (n - 1));
+    }
+
+    const stems = [];
+    slots.forEach((slot, idx) => {
+      const nx = xs[idx];
+      if (!slot.isSilence) {
+        doc.circle(nx, cy, 1.2, 'F');
+        stems.push({ x: nx, y: cy });
+      } else {
+        // Draw rest
+        if (baseRhythm === 'sixteenth' || (baseRhythm === 'eighth' && isDenom8)) {
+          doc.circle(nx - 1, cy - 6, 0.6, 'F');
+          doc.line(nx - 1, cy - 6, nx + 1, cy - 6);
+          doc.line(nx + 1, cy - 6, nx - 1, cy - 3);
+          doc.circle(nx - 2, cy - 3, 0.6, 'F');
+          doc.line(nx - 2, cy - 3, nx, cy - 3);
+          doc.line(nx, cy - 3, nx - 1.5, cy + 1);
+        } else {
+          doc.circle(nx - 1, cy - 5, 0.6, 'F');
+          doc.line(nx - 1, cy - 5, nx + 1, cy - 5);
+          doc.line(nx + 1, cy - 5, nx - 1, cy - 1);
+        }
+      }
+    });
+
+    const dy = stemDirection === 'down' ? 10 : -10;
+    const dy2 = stemDirection === 'down' ? 7.5 : -7.5;
+
+    stems.forEach(stem => {
+      doc.line(stem.x, stem.y, stem.x, cy + dy);
+    });
+
+    if (stems.length >= 2) {
+      const firstX = stems[0].x;
+      const lastX = stems[stems.length - 1].x;
+      doc.setLineWidth(1.2);
+      doc.line(firstX, cy + dy, lastX, cy + dy);
+
+      if (baseRhythm === 'sixteenth' || (baseRhythm === 'eighth' && isDenom8)) {
+        doc.line(firstX, cy + dy2, lastX, cy + dy2);
+      }
+    } else if (stems.length === 1) {
+      const stem = stems[0];
+      const flagOffset = stemDirection === 'down' ? 3 : -3;
+      doc.line(stem.x, cy + dy, stem.x + 2, cy + dy - flagOffset);
+      if (baseRhythm === 'sixteenth' || (baseRhythm === 'eighth' && isDenom8)) {
+        doc.line(stem.x, cy + dy2, stem.x + 2, cy + dy2 - flagOffset);
+      }
+    }
+
+    if (baseRhythm === 'triplet') {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(6);
+      const tripletY = stemDirection === 'down' ? cy + 13.5 : cy - 11.5;
+      doc.text("3", cx, tripletY, { align: "center" });
+    }
+
+    doc.restoreGraphicsState && doc.restoreGraphicsState();
+  };
+
+  const drawPDFSingleRhythm = (cx, cy, rhythm, isDenom8 = false, stemDirection = 'up') => {
+    doc.saveGraphicsState && doc.saveGraphicsState();
+    doc.setFillColor(80, 80, 80);
+    doc.setDrawColor(80, 80, 80);
+    doc.setLineWidth(0.6);
+
+    const isRest = rhythm.startsWith('rest-');
+    const base = isRest ? rhythm.substring(5) : rhythm;
+
+    const dy = stemDirection === 'down' ? 10 : -10;
+
+    if (isRest) {
+      if (base === 'whole' || base === 'dotted-whole') {
+        doc.rect(cx - 3, cy - 6, 6, 2, 'F');
+        doc.line(cx - 5, cy - 6, cx + 5, cy - 6);
+        if (base === 'dotted-whole') {
+          doc.circle(cx + 4, cy - 5, 0.6, 'F');
+        }
+      } else if (base === 'half' || base === 'dotted-half' || base === 'double') {
+        doc.rect(cx - 3, cy - 8, 6, 2, 'F');
+        doc.line(cx - 5, cy - 6, cx + 5, cy - 6);
+        if (base === 'dotted-half') {
+          doc.circle(cx + 4, cy - 7, 0.6, 'F');
+        }
+      } else if (base === 'quarter' || base === 'dotted-quarter') {
+        doc.setLineWidth(1.0);
+        doc.line(cx - 2, cy - 8, cx + 1, cy - 5);
+        doc.line(cx + 1, cy - 5, cx - 2, cy - 2);
+        doc.line(cx - 2, cy - 2, cx + 1, cy);
+        doc.circle(cx - 0.5, cy + 1, 0.5, 'F');
+        if (base === 'dotted-quarter') {
+          doc.circle(cx + 3, cy - 2, 0.6, 'F');
+        }
+      } else if (base === 'eighth') {
+        doc.circle(cx - 1, cy - 5, 0.6, 'F');
+        doc.line(cx - 1, cy - 5, cx + 1, cy - 5);
+        doc.line(cx + 1, cy - 5, cx - 1, cy - 1);
+      }
+    } else {
+      if (base === 'whole' || base === 'dotted-whole') {
+        doc.ellipse(cx, cy, 2.0, 1.4, 'S');
+        if (base === 'dotted-whole') {
+          doc.circle(cx + 3.5, cy, 0.6, 'F');
+        }
+      } else if (base === 'half' || base === 'dotted-half' || base === 'double') {
+        doc.ellipse(cx, cy, 2.0, 1.4, 'S');
+        doc.line(cx + 1.8, cy, cx + 1.8, cy + dy);
+        if (base === 'dotted-half') {
+          doc.circle(cx + 3.5, cy, 0.6, 'F');
+        }
+      } else if (base === 'quarter' || base === 'dotted-quarter') {
+        doc.circle(cx, cy, 1.3, 'F');
+        doc.line(cx + 1.2, cy, cx + 1.2, cy + dy);
+        if (base === 'dotted-quarter') {
+          doc.circle(cx + 3, cy, 0.6, 'F');
+        }
+      } else if (base === 'two-eighths') {
+        const mockSlots = [{ isSilence: false }, { isSilence: false }]
+        drawPDFSubdivisionPattern(cx, cy, mockSlots, 'eighth', isDenom8, stemDirection)
+      } else if (base === 'eighth') {
+        doc.circle(cx, cy, 1.3, 'F');
+        doc.line(cx + 1.2, cy, cx + 1.2, cy + dy);
+        const flagOffset = stemDirection === 'down' ? 3 : -3;
+        doc.line(cx + 1.2, cy + dy, cx + 3.2, cy + dy - flagOffset); // flag
+      }
+    }
+
+    doc.restoreGraphicsState && doc.restoreGraphicsState();
+  };
+
+  const getDefaultGroupingPDF = (beats, unit) => {
+    if (unit === 8) {
+      if (beats === 6) return [3, 3]
+      if (beats === 9) return [3, 3, 3]
+      if (beats === 12) return [3, 3, 3, 3]
+      if (beats === 5) return [3, 2]
+      if (beats === 7) return [3, 2, 2]
+      if (beats === 11) return [3, 3, 3, 2]
+      if (beats === 13) return [3, 3, 3, 2, 2]
+      if (beats === 15) return [3, 3, 3, 3, 3]
+    }
+    if (unit === 4) {
+      if (beats === 5) return [3, 2]
+      if (beats === 7) return [3, 2, 2]
+    }
+    return Array.from({ length: beats }, () => 1)
+  }
+
+  const getMeasureGroupingPDF = (measure, sig) => {
+    if (!measure) return getDefaultGroupingPDF(sig.beats, sig.unit)
+    if (!project || !project.measures) return getDefaultGroupingPDF(sig.beats, sig.unit)
+    const idx = measure.originalMeasureIndex !== undefined 
+      ? measure.originalMeasureIndex 
+      : project.measures.findIndex(m => m.id === measure.id)
+    if (idx === null || idx === undefined || idx < 0) {
+      return getDefaultGroupingPDF(sig.beats, sig.unit)
+    }
+    for (let i = idx; i >= 0; i--) {
+      const prevM = project.measures[i]
+      if (prevM && prevM.grouping) {
+        const sum = prevM.grouping.reduce((a, b) => a + b, 0)
+        if (sum === sig.beats) {
+          return prevM.grouping
+        }
+      }
+    }
+    return getDefaultGroupingPDF(sig.beats, sig.unit)
   }
 
   const getBeatMergeState = (measure, sig) => {
@@ -121,25 +614,28 @@ export function generatePDF(project, exportOption = 'chords-only') {
           }
         }
       } else {
-        // Normal Mode: auto-extend chords until next chord or end of measure
-        for (let i = 0; i < numBeats; i++) {
-          if (states[i].isMerged) continue
-          const beat = measure.beats[i] || { root: '', type: '' }
-          if (beat.root) {
-            let dur = 1
-            let j = i + 1
-            while (j < numBeats) {
-              const nextBeat = measure.beats[j] || { root: '', type: '' }
-              if (nextBeat.root) break
-              dur++
-              j++
-            }
-            states[i].flexGrow = dur
-            for (let k = 1; k < dur; k++) {
-              if (i + k < numBeats) {
-                states[i + k].isMerged = true
-                states[i + k].flexGrow = 0
-              }
+        // Normal Mode with Subdivisions ON: do NOT merge beats, so that every beat gets drawn
+        // and we can draw vertical subdivision lines at the boundaries!
+      }
+    } else {
+      // Normal Mode with Subdivisions OFF: auto-extend chords until next chord or end of measure
+      for (let i = 0; i < numBeats; i++) {
+        if (states[i].isMerged) continue
+        const beat = measure.beats[i] || { root: '', type: '' }
+        if (beat.root) {
+          let dur = 1
+          let j = i + 1
+          while (j < numBeats) {
+            const nextBeat = measure.beats[j] || { root: '', type: '' }
+            if (nextBeat.root) break
+            dur++
+            j++
+          }
+          states[i].flexGrow = dur
+          for (let k = 1; k < dur; k++) {
+            if (i + k < numBeats) {
+              states[i + k].isMerged = true
+              states[i + k].flexGrow = 0
             }
           }
         }
@@ -149,6 +645,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
   }
 
   const getBeatSlots = (measure, beat, beatIdx) => {
+    if (!beat) return []
     const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
     const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
     const isDenom8 = sig.unit === 8
@@ -199,6 +696,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
 
   const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
     if (!measure || !beat) return false
+    if (beat.forceSeparated) return false
     const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
     const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
     const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
@@ -476,15 +974,16 @@ export function generatePDF(project, exportOption = 'chords-only') {
   const getSyllableAtSlotPDF = (project, measure, measureIdx, beatIdx, subIdx) => {
     if (!measure.lyrics || !measure.lyrics.syllables) return null
     
+    const mIdx = measure.originalMeasureIndex !== undefined ? measure.originalMeasureIndex : measureIdx
     const slotId = subIdx !== null && subIdx !== undefined
-      ? `lyrics_${measureIdx}_${beatIdx}_${subIdx}`
-      : `lyrics_${measureIdx}_${beatIdx}`
+      ? `lyrics_${mIdx}_${beatIdx}_${subIdx}`
+      : `lyrics_${mIdx}_${beatIdx}`
       
     const matched = measure.lyrics.syllables.filter(s => s.rhythmEventId === slotId)
     if (matched.length > 0) {
       const joinedText = matched.map(s => s.text).join('')
       const hasTied = matched.some(s => s.tied)
-      return { text: joinedText, isRoot: true, tied: hasTied }
+      return { text: joinedText, isRoot: true, tied: hasTied, wordId: matched[0].wordId }
     }
     
     const lyricsTiedSlots = project.lyricsTiedSlots ? new Set(project.lyricsTiedSlots) : new Set()
@@ -541,7 +1040,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
         const prevSlotId = prevBlock.id
         const prevSyllable = prevMeasure.lyrics.syllables.find(s => s.rhythmEventId === prevSlotId)
         if (prevSyllable) {
-          return { text: '~', isRoot: false, tied: true }
+          return { text: '~', isRoot: false, tied: true, wordId: prevSyllable.wordId }
         }
       }
     }
@@ -615,6 +1114,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
 
   const getMeasureLyricsHeight = (doc, measure, option, measureWidth, sig) => {
     if (!measure.lyrics) return 0
+    const isDenom8 = sig ? sig.unit === 8 : false
     if (option === 'chords-only' || option === 'chords-only-expanded') {
       return 0
     }
@@ -631,12 +1131,13 @@ export function generatePDF(project, exportOption = 'chords-only') {
       const numBeats = sig.beats
       const measureIdx = measure.originalMeasureIndex !== undefined ? measure.originalMeasureIndex : project.measures.indexOf(measure)
       
+      const states = getLyricsMergedBeatsPDF(measure, sig, isDenom8)
       for (let b = 0; b < numBeats; b++) {
-        const beat = measure.beats[b]
-        if (!beat) continue
-        const rhythm = getEffectiveRhythm(measure, beat, b)
-        const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
-        const hasSubdivisions = shouldRenderAsSubdivided(measure, beat, b)
+        const state = states[b]
+        if (!state || state.isMerged) continue
+        const beat = state.beat
+        const slots = getLyricsBeatSlotsPDF(measure, beat, b, isDenom8)
+        const hasSubdivisions = slots.length > 0
         
         if (!hasSubdivisions) {
           if (getSyllableAtSlotPDF(project, measure, measureIdx, b, null)) {
@@ -644,7 +1145,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
             break
           }
         } else {
-          for (let s = 0; s < subCount; s++) {
+          for (let s = 0; s < slots.length; s++) {
             if (getSyllableAtSlotPDF(project, measure, measureIdx, b, s)) {
               hasAny = true
               break
@@ -652,11 +1153,11 @@ export function generatePDF(project, exportOption = 'chords-only') {
           }
         }
       }
-      return hasAny ? 6 : 0
+      return hasAny ? 14 : 0
     }
     if (option === 'chords-and-lyrics-synced') {
       const rawText = measure.lyrics.rawText || ""
-      return rawText.trim() ? 6 : 0
+      return rawText.trim() ? 14 : 0
     }
     return 0
   }
@@ -722,11 +1223,12 @@ export function generatePDF(project, exportOption = 'chords-only') {
     }
     const effectiveMeasureWidth = currentMeasureWidth - timeSigOffsetLocal
     
-    const mergeStates = getBeatMergeState(measure, sig)
-    const beatGrows = measure.beats.slice(0, sig.beats).map((b, bIdx) => {
-      const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+    const mergeStates = getLyricsMergedBeatsPDF(measure, sig, isDenom8)
+    const numBeats = sig.beats
+    
+    const beatGrows = mergeStates.map(state => {
       if (state.isMerged) return 0
-      return state.flexGrow
+      return state.durationSlots
     })
     const totalGrow = beatGrows.reduce((sum, g) => sum + g, 0)
     
@@ -735,64 +1237,90 @@ export function generatePDF(project, exportOption = 'chords-only') {
     doc.setTextColor(60, 60, 60)
     
     let currentXOffset = 0
-    measure.beats.slice(0, sig.beats).forEach((beat, bIdx) => {
-      const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
+    const itemsToRender = []
+
+    mergeStates.forEach((state) => {
       if (state.isMerged) return
       
-      const currentBeatWidth = (state.flexGrow / totalGrow) * effectiveMeasureWidth
+      const bIdx = state.index
+      const beat = state.beat
+      const currentBeatWidth = (state.durationSlots / totalGrow) * effectiveMeasureWidth
       const startXForBeats = mStartX + timeSigOffsetLocal + currentXOffset
       
-      const rhythm = getEffectiveRhythm(measure, beat, bIdx)
-      const subCount = getSubdivisionCount(rhythm, isDenom8, beat)
-      const hasSubdivisions = shouldRenderAsSubdivided(measure, beat, bIdx)
+      const rhythm = getLyricsEffectiveRhythmPDF(measure, beat, bIdx)
+      const slots = getLyricsBeatSlotsPDF(measure, beat, bIdx, isDenom8)
+      const hasSubdivisions = slots.length > 0
       
       if (hasSubdivisions) {
-        const slots = getBeatSlots(measure, beat, bIdx)
-        const visibleSlots = []
-        if (rhythm !== 'sixteenth') {
-          slots.forEach((s, idx) => {
-            visibleSlots.push({ ...s, originalIndex: idx, flexGrow: 1 })
-          })
-        } else {
-          for (let i = 0; i < slots.length; i++) {
-            if (slots[i].isMerged) continue
-            let flexGrow = 1
-            let j = i + 1
-            while (j < slots.length && slots[j].isMerged) {
-              flexGrow++
-              j++
-            }
-            visibleSlots.push({ ...slots[i], originalIndex: i, flexGrow })
-          }
-        }
+        // Draw subdivision pattern
+        const cx = startXForBeats + (currentBeatWidth / 2)
+        drawPDFSubdivisionPattern(cx, currentY + 25, slots, rhythm, isDenom8)
         
+        // Draw syllables
+        const subCount = slots.length
         const subWidth = currentBeatWidth / subCount
-        visibleSlots.forEach((sub) => {
-          const subX = startXForBeats + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
-          const sylData = getSyllableAtSlotPDF(project, measure, globalMeasureIndex, bIdx, sub.originalIndex)
+        slots.forEach((sub, sIdx) => {
+          const subX = startXForBeats + (sIdx * subWidth) + (subWidth / 2)
+          const sylData = getSyllableAtSlotPDF(project, measure, globalMeasureIndex, bIdx, sIdx)
           if (sylData) {
-            let textToDraw = sylData.text
-            if (sylData.tied) {
-              textToDraw += "~"
-            }
-            doc.text(textToDraw, subX, currentY + 23, { align: "center" })
+            itemsToRender.push({
+              x: subX,
+              y: currentY + 31,
+              text: sylData.text,
+              tied: sylData.tied,
+              isRoot: sylData.isRoot,
+              wordId: sylData.wordId
+            })
           }
         })
       } else {
+        // Draw single note
         const beatX = startXForBeats + (currentBeatWidth / 2)
+        drawPDFSingleRhythm(beatX, currentY + 25, rhythm, isDenom8)
+        
+        // Draw syllable
         const sylData = getSyllableAtSlotPDF(project, measure, globalMeasureIndex, bIdx, null)
         if (sylData) {
-          let textToDraw = sylData.text
-          if (sylData.tied) {
-            textToDraw += "~"
-          }
-          doc.text(textToDraw, beatX, currentY + 23, { align: "center" })
+          itemsToRender.push({
+            x: beatX,
+            y: currentY + 31,
+            text: sylData.text,
+            tied: sylData.tied,
+            isRoot: sylData.isRoot,
+            wordId: sylData.wordId
+          })
         }
       }
       currentXOffset += currentBeatWidth
     })
+
+    // Draw syllables and centered dashes for word segments
+    itemsToRender.sort((a, b) => a.x - b.x)
+    itemsToRender.forEach((item, idx) => {
+      let textToDraw = item.text
+      if (item.tied && item.isRoot) {
+        textToDraw += "~"
+      }
+      
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(8)
+      doc.setTextColor(80, 80, 80)
+      doc.text(textToDraw, item.x, item.y, { align: "center" })
+      
+      // Draw centered dash if the next syllable has the same wordId
+      if (idx < itemsToRender.length - 1) {
+        const nextItem = itemsToRender[idx + 1]
+        if (item.wordId && nextItem.wordId && item.wordId === nextItem.wordId && item.text !== '~' && nextItem.text !== '~') {
+          const midX = (item.x + nextItem.x) / 2
+          doc.text("-", midX, item.y, { align: "center" })
+        }
+      }
+    })
     
     doc.setTextColor(0, 0, 0)
+    doc.setFillColor(0, 0, 0)
+    doc.setDrawColor(0, 0, 0)
+    doc.setLineWidth(0.5)
   }
 
   const drawSyncedLyricsForMeasure = (doc, measure, layout, mStartX, currentY, currentMeasureWidth, sig, globalMeasureIndex) => {
@@ -815,6 +1343,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
     })
     const totalGrow = beatGrows.reduce((sum, g) => sum + g, 0)
     
+    const isDenom8 = sig.unit === 8
     let currentXOffset = 0
     measure.beats.slice(0, sig.beats).forEach((beat, bIdx) => {
       const state = mergeStates[bIdx] || { isMerged: false, flexGrow: 1 }
@@ -823,6 +1352,17 @@ export function generatePDF(project, exportOption = 'chords-only') {
       const currentBeatWidth = (state.flexGrow / totalGrow) * effectiveMeasureWidth
       const startXForBeats = mStartX + timeSigOffsetLocal + currentXOffset
       const beatX = startXForBeats + (currentBeatWidth / 2)
+      
+      // Draw rhythm figure above lyrics
+      const rhythm = getEffectiveRhythm(measure, beat, bIdx)
+      const slots = getBeatSlots(measure, beat, bIdx)
+      const hasSubdivisions = shouldRenderAsSubdivided(measure, beat, bIdx)
+      
+      if (hasSubdivisions) {
+        drawPDFSubdivisionPattern(beatX, currentY + 25, slots, rhythm, isDenom8)
+      } else {
+        drawPDFSingleRhythm(beatX, currentY + 25, rhythm, isDenom8)
+      }
       
       const slotRes = layout[beat.id]
       if (slotRes && slotRes.hasLyrics) {
@@ -833,14 +1373,14 @@ export function generatePDF(project, exportOption = 'chords-only') {
           
           const assocText = slotRes.associatedText || ""
           const assocWidth = doc.getTextWidth(assocText)
-          doc.text(assocText, beatX, currentY + 23, { align: "center" })
+          doc.text(assocText, beatX, currentY + 31, { align: "center" })
           
           const preText = slotRes.preText || ""
           if (preText) {
             doc.setFont("helvetica", "normal")
             doc.setFontSize(8)
             doc.setTextColor(80, 80, 80)
-            doc.text(preText, beatX - (assocWidth / 2) - 0.3, currentY + 23, { align: "right" })
+            doc.text(preText, beatX - (assocWidth / 2) - 0.3, currentY + 31, { align: "right" })
           }
           
           const postText = slotRes.postText || ""
@@ -848,14 +1388,14 @@ export function generatePDF(project, exportOption = 'chords-only') {
             doc.setFont("helvetica", "normal")
             doc.setFontSize(8)
             doc.setTextColor(80, 80, 80)
-            doc.text(postText, beatX + (assocWidth / 2) + 0.3, currentY + 23, { align: "left" })
+            doc.text(postText, beatX + (assocWidth / 2) + 0.3, currentY + 31, { align: "left" })
           }
         } else {
           doc.setFont("helvetica", "normal")
           doc.setFontSize(8)
           doc.setTextColor(80, 80, 80)
           const normalText = slotRes.normalText || ""
-          doc.text(normalText, beatX, currentY + 23, { align: "center" })
+          doc.text(normalText, beatX, currentY + 31, { align: "center" })
         }
       }
       currentXOffset += currentBeatWidth
@@ -903,10 +1443,33 @@ export function generatePDF(project, exportOption = 'chords-only') {
   drawFooter(doc, pageHeight, pageWidth)
 
   // --- DIBUJO DE SISTEMAS (FILAS) ---
-  const rows = project.systems || []
-  if (rows.length === 0) {
-    for (let i = 0; i < project.measures.length; i += measuresPerRow) {
-      rows.push(project.measures.slice(i, i + measuresPerRow))
+  // --- DIBUJO DE SISTEMAS (FILAS) ---
+  const rows = []
+  {
+    let currentSystem = []
+    let currentSystemWidth = 0
+    
+    project.measures.forEach((measure) => {
+      const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      const measurePxWidth = getMeasureMinWidthPDF(measure, sig, exportOption)
+      const measureMmWidth = measurePxWidth * (usableWidth / 800)
+      
+      const wouldExceedWidth = currentSystem.length > 0 && 
+        (currentSystemWidth + measureMmWidth > usableWidth + 0.1)
+        
+      const reachedMax = currentSystem.length >= 4
+      
+      if (wouldExceedWidth || reachedMax) {
+        rows.push(currentSystem)
+        currentSystem = [measure]
+        currentSystemWidth = measureMmWidth
+      } else {
+        currentSystem.push(measure)
+        currentSystemWidth += measureMmWidth
+      }
+    })
+    if (currentSystem.length > 0) {
+      rows.push(currentSystem)
     }
   }
 
@@ -1079,7 +1642,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       }
       
       if (rhythmLabel) {
-        doc.setFont("helvetica", "oblique")
+        doc.setFont("Helvetica", "Oblique")
         doc.setFontSize(7)
         doc.setTextColor(120, 120, 120)
         const rhythmY = measure.sectionLabel ? currentY + 10.5 : currentY + 6.5
@@ -1127,6 +1690,24 @@ export function generatePDF(project, exportOption = 'chords-only') {
         
         const currentBeatWidth = (state.flexGrow / totalGrow) * effectiveMeasureWidth
         const startXForBeats = mStartX + timeSigOffset + currentXOffset
+
+        // Draw vertical subdivision group divider lines if needed
+        if (measure.showSubdivisions !== false && sig.unit === 8 && bIdx > 0) {
+          const grouping = getMeasureGroupingPDF(measure, sig)
+          let accum = 0
+          const boundaryIndices = []
+          for (let g = 0; g < grouping.length - 1; g++) {
+            accum += grouping[g]
+            boundaryIndices.push(accum)
+          }
+          if (boundaryIndices.includes(bIdx)) {
+            doc.saveGraphicsState && doc.saveGraphicsState()
+            doc.setDrawColor(160, 100, 240) // Purple color matching the app
+            doc.setLineWidth(0.4)
+            doc.line(startXForBeats, lineY - 5, startXForBeats, lineY + 5)
+            doc.restoreGraphicsState && doc.restoreGraphicsState()
+          }
+        }
         
         const rhythm = getEffectiveRhythm(measure, beat, bIdx)
         const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
@@ -1134,6 +1715,11 @@ export function generatePDF(project, exportOption = 'chords-only') {
         
         if (hasSubdivisions) {
           const slots = getBeatSlots(measure, beat, bIdx)
+          
+          if (measure.showObligado) {
+            const beatX = startXForBeats + (currentBeatWidth / 2)
+            drawPDFSubdivisionPattern(beatX, lineY, slots, rhythm, sig.unit === 8, 'down')
+          }
           
           // Compute visible slots for PDF layout
           const visibleSlots = []
@@ -1159,24 +1745,28 @@ export function generatePDF(project, exportOption = 'chords-only') {
             const subX = startXForBeats + (sub.originalIndex * subWidth) + ((subWidth * sub.flexGrow) / 2)
             
             // Draw subdivisions line indicators at the center of the visible slot inside the staff
-            if (measure.showSubdivisions !== false) {
+            if (measure.showSubdivisions !== false && !measure.showObligado) {
               const subSlashX = subX
               doc.setLineWidth(0.15)
               doc.line(subSlashX - 1, lineY + 2, subSlashX + 1, lineY - 2)
             }
 
             if (rhythm === 'offbeat' && sub.originalIndex === 0) {
-              doc.setFont("helvetica", "normal")
-              doc.setFontSize(8)
-              doc.setTextColor(150, 150, 150)
-              doc.text("x", subX, currentY + 15, { align: "center" })
-              doc.setTextColor(0, 0, 0)
+              if (!measure.showObligado) {
+                doc.setFont("helvetica", "normal")
+                doc.setFontSize(8)
+                doc.setTextColor(150, 150, 150)
+                doc.text("x", subX, currentY + 15, { align: "center" })
+                doc.setTextColor(0, 0, 0)
+              }
             } else if (sub.isSilence || !sub.root) {
-              doc.setFont("helvetica", "normal")
-              doc.setFontSize(8)
-              doc.setTextColor(150, 150, 150)
-              doc.text("𝄾", subX, currentY + 15, { align: "center" })
-              doc.setTextColor(0, 0, 0)
+              if (!measure.showObligado) {
+                doc.setFont("helvetica", "normal")
+                doc.setFontSize(8)
+                doc.setTextColor(150, 150, 150)
+                doc.text("𝄾", subX, currentY + 15, { align: "center" })
+                doc.setTextColor(0, 0, 0)
+              }
             }
             
             if (sub.root) {
@@ -1188,7 +1778,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
               doc.setFontSize(fontSizes.main)
               if (split.bass) {
                 doc.text(split.main, subX, currentY + 5.5, { align: "center" })
-                doc.setFont("helvetica", "medium")
+                doc.setFont("helvetica", "normal")
                 doc.setFontSize(fontSizes.bass)
                 doc.text(split.bass, subX, currentY + 9, { align: "center" })
               } else {
@@ -1199,33 +1789,37 @@ export function generatePDF(project, exportOption = 'chords-only') {
         } else {
           // Draw slash or silence indicator inside staff space first!
           const beatX = startXForBeats + (currentBeatWidth / 2)
-          if (measure.showObligado && beat.harmonicRhythm && !beat.root) {
-            // It's a rest/silence!
-            doc.setFont("helvetica", "normal")
-            doc.setFontSize(10)
-            doc.setTextColor(150, 150, 150)
-            doc.text("𝄾", beatX, currentY + 15, { align: "center" })
-            
-            const figName = getRhythmDisplayIconPDF(beat.harmonicRhythm, sig.unit === 8)
-            if (figName) {
-              doc.setFont("helvetica", "italic")
-              doc.setFontSize(6.5)
-              doc.text(figName, beatX, currentY + 19, { align: "center" })
-            }
-            doc.setTextColor(0, 0, 0)
+          if (measure.showObligado) {
+            drawPDFSingleRhythm(beatX, lineY, rhythm, sig.unit === 8, 'down')
           } else {
-            // Normal beat: draw slash on the horizontal line
-            doc.setLineWidth(0.3)
-            doc.line(beatX - 2, lineY + 3, beatX + 2, lineY - 3)
-            
-            if (measure.showObligado && beat.harmonicRhythm) {
-              const figName = getRhythmDisplayIconPDF(beat.harmonicRhythm, sig.unit === 8)
+            if (beat.harmonicRhythm && !beat.root) {
+              // It's a rest/silence!
+              doc.setFont("helvetica", "normal")
+              doc.setFontSize(10)
+              doc.setTextColor(150, 150, 150)
+              doc.text("𝄾", beatX, currentY + 15, { align: "center" })
+              
+              const figName = getRhythmDisplayIconPDF(beat, sig.unit === 8)
               if (figName) {
-                doc.setFont("helvetica", "italic")
+                doc.setFont("Helvetica", "Oblique")
                 doc.setFontSize(6.5)
-                doc.setTextColor(120, 120, 120)
                 doc.text(figName, beatX, currentY + 19, { align: "center" })
-                doc.setTextColor(0, 0, 0)
+              }
+              doc.setTextColor(0, 0, 0)
+            } else {
+              // Normal beat: draw slash on the horizontal line
+              doc.setLineWidth(0.3)
+              doc.line(beatX - 2, lineY + 3, beatX + 2, lineY - 3)
+              
+              if (beat.harmonicRhythm) {
+                const figName = getRhythmDisplayIconPDF(beat, sig.unit === 8)
+                if (figName) {
+                  doc.setFont("Helvetica", "Oblique")
+                  doc.setFontSize(6.5)
+                  doc.setTextColor(120, 120, 120)
+                  doc.text(figName, beatX, currentY + 19, { align: "center" })
+                  doc.setTextColor(0, 0, 0)
+                }
               }
             }
           }
@@ -1241,7 +1835,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
             doc.setFontSize(fontSizes.main)
             if (split.bass) {
               doc.text(split.main, beatX, currentY + 5.5, { align: "center" })
-              doc.setFont("helvetica", "medium")
+              doc.setFont("helvetica", "normal")
               doc.setFontSize(fontSizes.bass)
               doc.text(split.bass, beatX, currentY + 9, { align: "center" })
             } else {
@@ -1295,7 +1889,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
         doc.line(mEndX, lineY - 5, mEndX, lineY + 5) // gruesa
         
         // Texto (xN)
-        doc.setFont("helvetica", "italic")
+        doc.setFont("Helvetica", "Oblique")
         doc.setFontSize(9)
         doc.text(`(x${repEndData.times || 2})`, mEndX - 2, currentY + 8, { align: "right" })
       } else {
@@ -1313,6 +1907,6 @@ export function generatePDF(project, exportOption = 'chords-only') {
   })
 
   // Guardar PDF
-  const safeTitle = project.title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'esquema'
+  const safeTitle = (project.title || '').replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'esquema'
   doc.save(`${safeTitle}_harmonigrid.pdf`)
 }

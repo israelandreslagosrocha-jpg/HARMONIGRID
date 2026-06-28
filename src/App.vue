@@ -1158,6 +1158,7 @@ const suggestedBassNotes = computed(() => {
 })
 const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
   if (!measure || !beat) return false
+  if (beat.forceSeparated) return false
   const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
   const sig = getMeasureTimeSignature(measure)
   const isSub = measure.showObligado && isSubdividedRhythm(rhythm, sig.unit === 8, beat)
@@ -2214,16 +2215,16 @@ const getBeatMinWidth = (measure, beat, state) => {
     const lyricsBeat = measure.lyrics.beats?.[beatIdx]
     if (lyricsBeat) {
       const rhythm = getLyricsEffectiveRhythm(measure, lyricsBeat, beatIdx)
-      const isSub = shouldRenderAsSubdivided(measure, measure.beats[beatIdx], beatIdx)
+      const isSub = getLyricsBeatSlots(measure, lyricsBeat, beatIdx).length > 0
       
       let baseMin = state.durationSlots * (isMobile ? 40 : 50)
       
       if (rhythm === 'sixteenth') {
-        baseMin = Math.max(baseMin, isMobile ? 96 : 112)
+        baseMin = Math.max(baseMin, isMobile ? 112 : 128)
       } else if (rhythm === 'triplet') {
-        baseMin = Math.max(baseMin, isMobile ? 72 : 84)
+        baseMin = Math.max(baseMin, isMobile ? 84 : 96)
       } else if (rhythm === 'quintuplet') {
-        baseMin = Math.max(baseMin, isMobile ? 100 : 120)
+        baseMin = Math.max(baseMin, isMobile ? 120 : 144)
       }
       
       let charWidth = isMobile ? 7 : 8.5
@@ -2337,8 +2338,10 @@ const getBeatSlotDuration = (measure, beat, beatIdx) => {
     if (base === 'double') return 4
     if (base === 'dotted-quarter') return 3
     if (base === 'quarter') return 2
+    if (base === 'two-eighths') return 2
     if (base === 'sixteenth') return 2
     if (base === 'eighth') return 1
+    if (base === 'triplet') return 2
     return 1
   } else {
     if (base === 'dotted-whole') return 6
@@ -2357,8 +2360,10 @@ const getRhythmFigureDuration = (rhythmType, isDenom8) => {
     if (rhythmType === 'double') return 4
     if (rhythmType === 'dotted-quarter') return 3
     if (rhythmType === 'quarter') return 2
+    if (rhythmType === 'two-eighths') return 2
     if (rhythmType === 'sixteenth') return 2
     if (rhythmType === 'eighth') return 1
+    if (rhythmType === 'triplet') return 2
     return 1
   } else {
     if (rhythmType === 'whole') return 4
@@ -2693,8 +2698,9 @@ const getAvailableRhythmFigures = (measure) => {
     figures.push({ value: 'dotted-half', label: 'Blanca con Punto (6 Corcheas)', icon: '\uD834\uDD5E.', isPro: true })
     figures.push({ value: 'double', label: 'Blanca (4 Corcheas)', icon: '\uD834\uDD5E', isPro: true })
     figures.push({ value: 'dotted-quarter', label: 'Negra con Punto (3 Corcheas)', icon: '\uD834\uDD5F.', isPro: true })
-    figures.push({ value: 'quarter', label: 'Negra (2 Corcheas)', icon: '\uD834\uDD5F', isPro: false })
-    figures.push({ value: 'eighth', label: 'Corchea (1 Corchea)', icon: '\uD834\uDD60', isPro: false })
+    figures.push({ value: 'quarter', label: 'Negra', icon: '\uD834\uDD5F', isPro: false })
+    figures.push({ value: 'two-eighths', label: '2 Corcheas', icon: '\u266B', isPro: false })
+    figures.push({ value: 'eighth', label: '1 Corchea', icon: '\uD834\uDD60', isPro: false })
     figures.push({ value: 'sixteenth', label: 'Semicorcheas (4x)', icon: '\uD834\uDD61', isPro: true })
     
     if (sig.beats >= 12) {
@@ -2766,6 +2772,34 @@ const getRhythmDisplayIcon = (rhythm, measure) => {
     if (rhythm === 'quintuplet') return '♫⁵'
   }
   return ''
+}
+const getRhythmDisplayIconSVG = (rhythm, measure, beat) => {
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig.unit === 8
+  
+  if (rhythm === 'auto') {
+    return getRhythmIconSVG(isDenom8 ? 'single-eighth' : 'quarter', isDenom8)
+  }
+  
+  let resolvedRhythm = rhythm
+  if (beat) {
+    const isSub = isSubdividedRhythm(resolvedRhythm, isDenom8, beat)
+    if (isSub) {
+      if (resolvedRhythm === 'eighth') return getRhythmIconSVG(beat.eighthPattern || '2_notes', isDenom8)
+      if (resolvedRhythm === 'sixteenth') return getRhythmIconSVG(beat.sixteenthPattern || '4_semi', isDenom8)
+      if (resolvedRhythm === 'triplet') return getRhythmIconSVG(beat.tripletPattern || '3_notes', isDenom8)
+      if (resolvedRhythm === 'quintuplet') return getRhythmIconSVG('quintuplet', isDenom8)
+    }
+  }
+  if (isDenom8) {
+    if (resolvedRhythm === 'two-eighths') {
+      return getRhythmIconSVG('2_notes', false)
+    }
+    if (resolvedRhythm === 'eighth') {
+      return getRhythmIconSVG('single-eighth', isDenom8)
+    }
+  }
+  return getRhythmIconSVG(resolvedRhythm, isDenom8)
 }
 const startKeyChangeSetup = () => {
   if (currentPlan.value !== 'PRO') {
@@ -3038,10 +3072,27 @@ const handleLocalGroupingInput = (event) => {
     localMetricGrouping.value = parsed
   }
 }
-const saveLocalTimeSignature = () => {
+const saveLocalTimeSignature = (onlyThisMeasure = false) => {
   if (selectedMeasureIndex.value !== null) {
-    const m = measures.value[selectedMeasureIndex.value]
+    const idx = selectedMeasureIndex.value
+    const m = measures.value[idx]
     if (!m) return
+    
+    // If only applying to this measure, we must preserve the previous active time signature
+    // for the subsequent measure (if it exists and doesn't have an explicit signature yet).
+    if (onlyThisMeasure && idx < measures.value.length - 1) {
+      const nextM = measures.value[idx + 1]
+      if (nextM && !nextM.timeSignature) {
+        const prevActiveSig = getMeasureTimeSignature(idx)
+        const prevActiveGrouping = getMeasureGrouping(idx)
+        nextM.timeSignature = {
+          beats: prevActiveSig.beats,
+          unit: prevActiveSig.unit
+        }
+        nextM.grouping = [...prevActiveGrouping]
+      }
+    }
+
     m.timeSignature = {
       beats: localMetricBeats.value,
       unit: localMetricUnit.value
@@ -3057,7 +3108,8 @@ const saveLocalTimeSignature = () => {
     
     isLocalMetricSubMenuOpen.value = false
     isMeasureOptionsOpen.value = false
-    showToast(`Métrica local del compás ${selectedMeasureIndex.value + 1} cambiada a ${localMetricBeats.value}/${localMetricUnit.value}`)
+    const scopeMsg = onlyThisMeasure ? "sólo a este compás" : "a partir de este compás"
+    showToast(`Métrica local aplicada ${scopeMsg}: ${localMetricBeats.value}/${localMetricUnit.value}`)
   }
 }
 const removeLocalTimeSignature = () => {
@@ -3264,6 +3316,11 @@ const SIXTEENTH_PATTERNS = {
     slots: ['note', 'merged', 'merged', 'note'],
     icon: '♩. ♬'
   },
+  'semi_corchea_punto': {
+    label: 'Semicorchea - Corchea con punto',
+    slots: ['note', 'note', 'merged', 'merged'],
+    icon: '♬ ♩.'
+  },
   'silencio_semi_silencio_semi': {
     label: 'Silencio - Semicorchea - Silencio - Semicorchea',
     slots: ['silence', 'note', 'silence', 'note'],
@@ -3317,6 +3374,11 @@ const TRIPLET_PATTERNS = {
     label: '2 Corcheas - Silencio',
     slots: ['note', 'note', 'silence'],
     icon: '♫ 𝄾'
+  },
+  'silencia_1_3': {
+    label: 'Silencio - Corchea - Silencio',
+    slots: ['silence', 'note', 'silence'],
+    icon: '𝄾 ♪ 𝄾'
   },
   'silencia_1_2': {
     label: 'Silencio de Negra - Corchea',
@@ -4363,15 +4425,31 @@ const getBeatPatternKey = (beat, rhythm) => {
   if (rhythm === 'triplet') return beat.tripletPattern || '3_notes'
   return ''
 }
-const getLyricsBeatPatternKey = (beat, rhythm) => {
+const getPatternLabel = (key, pat, isDenom8) => {
+  if (isDenom8) {
+    if (key === '2_notes') return '2 Semicorcheas'
+    if (key === 'silence_note') return 'Silencio de Semicorchea - Semicorchea'
+    if (key === 'note_silence') return 'Semicorchea - Silencio de Semicorchea'
+  }
+  return pat.label
+}
+const getLyricsBeatPatternKey = (beat, rhythm, measure = null, beatIdx = null) => {
+  if (beat && beat.syncWithHarmonic && measure && beatIdx !== null) {
+    const mainBeat = measure.beats[beatIdx]
+    return getBeatPatternKey(mainBeat, rhythm)
+  }
   if (!beat) return rhythm === 'triplet' ? '3_notes' : (rhythm === 'sixteenth' ? '4_semi' : (rhythm === 'eighth' ? '2_notes' : ''))
   if (rhythm === 'sixteenth') return beat.sixteenthPattern || '4_semi'
   if (rhythm === 'eighth') return beat.eighthPattern || '2_notes'
   if (rhythm === 'triplet') return beat.tripletPattern || '3_notes'
   return ''
 }
-const getDynamicRhythmSVG = (rhythmType, patternKey, visibleSlots) => {
+const getDynamicRhythmSVG = (rhythmType, patternKey, visibleSlots, isDenom8 = false) => {
   if (!visibleSlots || visibleSlots.length === 0) {
+    if (isDenom8) {
+      if (rhythmType === 'two-eighths') return getRhythmIconSVG('2_notes')
+      if (rhythmType === 'eighth') return getRhythmIconSVG('single-eighth')
+    }
     return getRhythmIconSVG(rhythmType)
   }
   
@@ -4432,7 +4510,11 @@ const getDynamicRhythmSVG = (rhythmType, patternKey, visibleSlots) => {
       if (rhythmType === 'triplet' && point.flexGrow === 2) {
         svg += getQuarterRestPath(point.cx)
       } else if (rhythmType === 'triplet' || rhythmType === 'eighth' || rhythmType === 'offbeat') {
-        svg += getEighthRestPath(point.cx)
+        if (isDenom8 && rhythmType === 'eighth') {
+          svg += getSixteenthRestPath(point.cx)
+        } else {
+          svg += getEighthRestPath(point.cx)
+        }
       } else if (rhythmType === 'sixteenth') {
         svg += getSixteenthRestPath(point.cx)
       }
@@ -4441,7 +4523,7 @@ const getDynamicRhythmSVG = (rhythmType, patternKey, visibleSlots) => {
       let r = 2.5
       let stemW = 1.5
       if (rhythmType === 'triplet') { r = 2.2; stemW = 1.3 }
-      else if (rhythmType === 'sixteenth') { r = 2.0; stemW = 1.2 }
+      else if (rhythmType === 'sixteenth' || (isDenom8 && rhythmType === 'eighth')) { r = 2.0; stemW = 1.2 }
       else if (rhythmType === 'quintuplet') { r = 1.8; stemW = 1.0 }
       
       // Draw note head
@@ -4458,14 +4540,14 @@ const getDynamicRhythmSVG = (rhythmType, patternKey, visibleSlots) => {
     
     let beamW = 2.5
     if (rhythmType === 'triplet') beamW = 2
-    else if (rhythmType === 'sixteenth') beamW = 2
+    else if (rhythmType === 'sixteenth' || (isDenom8 && rhythmType === 'eighth')) beamW = 2
     else if (rhythmType === 'quintuplet') beamW = 1.8
     
     // Primary beam
     svg += `<line x1="${xStart}" y1="${stemTopY}" x2="${xEnd}" y2="${stemTopY}" stroke="currentColor" stroke-width="${beamW}"/>`
     
-    // Secondary beam for sixteenth notes
-    if (rhythmType === 'sixteenth') {
+    // Secondary beam for sixteenth notes or eighths in denominator 8
+    if (rhythmType === 'sixteenth' || (isDenom8 && rhythmType === 'eighth')) {
       svg += `<line x1="${xStart}" y1="${stemTopY + 3.5}" x2="${xEnd}" y2="${stemTopY + 3.5}" stroke="currentColor" stroke-width="${beamW}"/>`
     } else if (rhythmType === 'quintuplet') {
       svg += `<line x1="${xStart}" y1="${stemTopY + 3.0}" x2="${xEnd}" y2="${stemTopY + 3.0}" stroke="currentColor" stroke-width="1.8"/>`
@@ -4473,7 +4555,7 @@ const getDynamicRhythmSVG = (rhythmType, patternKey, visibleSlots) => {
   } else if (activePoints.length === 1) {
     // Single active note -> draw flag
     const cx = activePoints[0].cx
-    if (rhythmType === 'sixteenth') {
+    if (rhythmType === 'sixteenth' || (isDenom8 && rhythmType === 'eighth')) {
       svg += getSixteenthFlagPath(cx)
     } else {
       svg += getEighthFlagPath(cx)
@@ -4494,9 +4576,47 @@ const getDynamicRhythmSVG = (rhythmType, patternKey, visibleSlots) => {
 const getQuarterRestSVG = (x) => {
   return `<path d="M ${x - 2.5} 5.5 L ${x + 1.5} 9.5 L ${x - 2} 13.5 C ${x - 0.5} 15.5, ${x + 2.5} 16.5, ${x + 1} 19.5 C ${x - 1} 22.5, ${x - 3.5} 20, ${x - 2.5} 17.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>`;
 }
-const getRhythmIconSVG = (key) => {
+const getRhythmIconSVG = (key, isDenom8 = false) => {
+  if (isDenom8) {
+    if (key === '2_notes') return getRhythmIconSVG('2_semi')
+    if (key === 'silence_note') return getRhythmIconSVG('silence_semi_note')
+    if (key === 'note_silence') return getRhythmIconSVG('semi_note_silence')
+  }
   if (key === 'sixteenth') {
     return getRhythmIconSVG('4_semi')
+  }
+  if (key === '3_notes') {
+    return getRhythmIconSVG('triplet')
+  }
+  if (key === 'two-eighths') {
+    return getRhythmIconSVG('2_notes')
+  }
+  if (key === '2_semi') {
+    return `<circle cx="30" cy="17" r="2.2" fill="currentColor"/>
+            <circle cx="70" cy="17" r="2.2" fill="currentColor"/>
+            <line x1="30" y1="17" x2="30" y2="5" stroke="currentColor" stroke-width="1.3"/>
+            <line x1="70" y1="17" x2="70" y2="5" stroke="currentColor" stroke-width="1.3"/>
+            <line x1="30" y1="5" x2="70" y2="5" stroke="currentColor" stroke-width="1.8"/>
+            <line x1="30" y1="8" x2="70" y2="8" stroke="currentColor" stroke-width="1.3"/>`;
+  }
+  if (key === 'silence_semi_note') {
+    return getSixteenthRestSVG(30) + 
+           `<circle cx="70" cy="17" r="2.2" fill="currentColor"/>
+            <line x1="70" y1="17" x2="70" y2="5" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M 70 5 Q 75 9 74 14" stroke="currentColor" stroke-width="1.3" fill="none"/>
+            <path d="M 70 8.5 Q 75 12.5 74 17.5" stroke="currentColor" stroke-width="1.3" fill="none"/>`;
+  }
+  if (key === 'semi_note_silence') {
+    return `<circle cx="30" cy="17" r="2.2" fill="currentColor"/>
+            <line x1="30" y1="17" x2="30" y2="5" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M 30 5 Q 35 9 34 14" stroke="currentColor" stroke-width="1.3" fill="none"/>
+            <path d="M 30 8.5 Q 35 12.5 34 17.5" stroke="currentColor" stroke-width="1.3" fill="none"/>` +
+           getSixteenthRestSVG(70);
+  }
+  if (key === 'single-eighth') {
+    return `<circle cx="50" cy="17" r="2.5" fill="currentColor"/>
+            <line x1="50" y1="17" x2="50" y2="5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M 50 5 Q 55 9 54 14" stroke="currentColor" stroke-width="1.5" fill="none"/>`;
   }
   // Patrones de 2 notas (Eighth notes)
   if (key === '2_notes') {
@@ -4607,6 +4727,14 @@ const getRhythmIconSVG = (key) => {
             <line x1="20" y1="17" x2="20" y2="6" stroke="currentColor" stroke-width="1.3"/>
             <line x1="50" y1="17" x2="50" y2="6" stroke="currentColor" stroke-width="1.3"/>
             <line x1="20" y1="6" x2="50" y2="6" stroke="currentColor" stroke-width="2"/>` +
+            getEighthRestSVG(75) +
+           `<text x="50" y="5" font-size="6" font-weight="950" text-anchor="middle" fill="currentColor" class="font-sans">3</text>`;
+  }
+  if (key === 'silencia_1_3') {
+    return getEighthRestSVG(15) +
+           `<circle cx="50" cy="17" r="2.2" fill="currentColor"/>
+            <line x1="50" y1="17" x2="50" y2="6" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M 50 6 Q 57 10 55 16" stroke="currentColor" stroke-width="1.3" fill="none"/>` +
             getEighthRestSVG(75) +
            `<text x="50" y="5" font-size="6" font-weight="950" text-anchor="middle" fill="currentColor" class="font-sans">3</text>`;
   }
@@ -4777,6 +4905,15 @@ const getRhythmIconSVG = (key) => {
             <line x1="12.5" y1="5" x2="87.5" y2="5" stroke="currentColor" stroke-width="2"/>
             <line x1="80" y1="8.5" x2="87.5" y2="8.5" stroke="currentColor" stroke-width="2"/>`;
   }
+  if (key === 'semi_corchea_punto') {
+    return `<circle cx="12.5" cy="17" r="2" fill="currentColor"/>
+            <circle cx="37.5" cy="17" r="2" fill="currentColor"/>
+            <circle cx="44" cy="17" r="0.75" fill="currentColor"/>
+            <line x1="12.5" y1="17" x2="12.5" y2="5" stroke="currentColor" stroke-width="1.2"/>
+            <line x1="37.5" y1="17" x2="37.5" y2="5" stroke="currentColor" stroke-width="1.2"/>
+            <line x1="12.5" y1="5" x2="37.5" y2="5" stroke="currentColor" stroke-width="2"/>
+            <line x1="12.5" y1="8.5" x2="20" y2="8.5" stroke="currentColor" stroke-width="2"/>`;
+  }
   if (key === 'silencio_semi_silencio_semi') {
     return getSixteenthRestSVG(12.5) +
            `<circle cx="37.5" cy="17" r="2" fill="currentColor"/>
@@ -4894,7 +5031,46 @@ const changeBeatHarmonicRhythm = (measure, beat, rhythmType) => {
   const isDenom8 = sig?.unit === 8;
   const defaultRhythm = isDenom8 ? 'eighth' : 'quarter';
   const prevRhythm = beat.harmonicRhythm || defaultRhythm;
-  if (prevRhythm === rhythmType) return;
+  
+  if (prevRhythm === rhythmType) {
+    if (rhythmType === 'eighth' && isDenom8) {
+      if (beat.eighthPattern) {
+        saveHistory();
+        delete beat.eighthPattern;
+        delete beat.subdivisions;
+        measure.groove = 'custom';
+      }
+    } else if (rhythmType === 'sixteenth') {
+      if (beat.sixteenthPattern && beat.sixteenthPattern !== '4_semi') {
+        saveHistory();
+        beat.sixteenthPattern = '4_semi';
+        const pat = SIXTEENTH_PATTERNS['4_semi'];
+        beat.subdivisions = pat.slots.map(() => ({
+          root: beat.root,
+          type: beat.type,
+          tensions: [...(beat.tensions || [])],
+          tension: beat.tension,
+          bass: beat.bass
+        }));
+        measure.groove = 'custom';
+      }
+    } else if (rhythmType === 'triplet') {
+      if (beat.tripletPattern && beat.tripletPattern !== '3_notes') {
+        saveHistory();
+        beat.tripletPattern = '3_notes';
+        const pat = TRIPLET_PATTERNS['3_notes'];
+        beat.subdivisions = pat.slots.map(() => ({
+          root: beat.root,
+          type: beat.type,
+          tensions: [...(beat.tensions || [])],
+          tension: beat.tension,
+          bass: beat.bass
+        }));
+        measure.groove = 'custom';
+      }
+    }
+    return;
+  }
   
   const isRest = rhythmType.startsWith('rest-');
   const baseRhythm = isRest ? rhythmType.substring(5) : rhythmType;
@@ -5531,7 +5707,7 @@ const getMeasureLyricsSlotCoordinates = (measure) => {
     if (state.isMerged) return
     const beatWidth = (state.durationSlots / totalWeight) * 1000
     const rhythm = getLyricsEffectiveRhythm(measure, state.beat, state.index)
-    const isSubdivided = shouldRenderAsSubdivided(measure, measure.beats[state.index], state.index)
+    const isSubdivided = getLyricsBeatSlots(measure, state.beat, state.index).length > 0
     
     if (!isSubdivided) {
       coords.push({
@@ -5846,7 +6022,8 @@ const getRhythmSymbol = (rhythm) => {
   return ''
 }
 const translateRhythmName = (rhythm) => {
-  if (rhythm === 'eighth') return 'Corcheas'
+  if (rhythm === 'two-eighths') return '2 Corcheas'
+  if (rhythm === 'eighth') return 'Corchea'
   if (rhythm === 'sixteenth') return 'Semicorcheas'
   if (rhythm === 'offbeat') return 'Contratiempo'
   if (rhythm === 'triplet') return 'Tresillo'
@@ -6343,23 +6520,81 @@ const isLyricsFigureValid = (rhythmType, measure, beatIdx) => {
 // --- TIMELINE TICK GENERATOR & GRID SYNC (DECOUPLED LYRICS GRIDS) ---
 const getLyricsEffectiveRhythm = (measure, beat, beatIdx) => {
   if (!beat) return 'quarter'
+  if (beat.syncWithHarmonic) {
+    const mainBeat = measure?.beats?.[beatIdx]
+    return getEffectiveRhythm(measure, mainBeat, beatIdx)
+  }
+  
   const rhythm = beat.harmonicRhythm || 'auto'
   if (rhythm !== 'auto') return rhythm
   
+  const sig = getMeasureTimeSignature(measure)
+  const isDenom8 = sig?.unit === 8
+  const defaultRhythm = isDenom8 ? 'eighth' : 'quarter'
+  
   const mGroove = measure?.groove || 'global'
   const activeGrooveName = mGroove === 'global' ? globalGroove.value : mGroove
-  if (activeGrooveName === 'Ninguno' || activeGrooveName === 'neutral') {
-    return 'quarter'
+  if (activeGrooveName === 'Ninguno' || activeGrooveName === 'neutral' || mGroove === 'neutral' || mGroove === 'custom') {
+    return defaultRhythm
   }
   
   const pattern = GROOVE_PATTERNS[activeGrooveName]
   if (pattern && pattern[beatIdx]) {
-    return pattern[beatIdx]
+    const grooveRhythm = pattern[beatIdx]
+    if (isDenom8 && grooveRhythm === 'quarter') {
+      return 'eighth'
+    }
+    return grooveRhythm
   }
   
-  return 'quarter'
+  return defaultRhythm
 }
 const getLyricsBeatSlots = (measure, beat, beatIdx) => {
+  if (beat && beat.syncWithHarmonic) {
+    const mainBeat = measure.beats[beatIdx]
+    if (!mainBeat) return []
+    const rhythm = getEffectiveRhythm(measure, mainBeat, beatIdx)
+    const sig = getMeasureTimeSignature(measure)
+    const subCount = getSubdivisionCount(rhythm, sig?.unit === 8, mainBeat)
+    if (subCount === 1) return []
+    
+    if (!beat.subdivisions || beat.subdivisions.length !== subCount) {
+      const slots = []
+      const patKey = rhythm === 'triplet' ? (mainBeat.tripletPattern || '3_notes') : 
+                     (rhythm === 'eighth' ? (mainBeat.eighthPattern || '2_notes') :
+                     (rhythm === 'sixteenth' ? (mainBeat.sixteenthPattern || '4_semi') : null))
+      
+      const pat = patKey ? (rhythm === 'triplet' ? TRIPLET_PATTERNS[patKey] :
+                            (rhythm === 'eighth' ? EIGHTH_PATTERNS[patKey] :
+                             (rhythm === 'sixteenth' ? SIXTEENTH_PATTERNS[patKey] : null))) : null
+      
+      for (let i = 0; i < subCount; i++) {
+        if (pat) {
+          const slotType = pat.slots[i]
+          slots.push({
+            id: generateUniqueId(),
+            isSilence: slotType === 'silence',
+            isMerged: slotType === 'merged'
+          })
+        } else if (rhythm === 'offbeat' && i === 0) {
+          slots.push({ id: generateUniqueId(), isSilence: true })
+        } else {
+          slots.push({
+            id: generateUniqueId(),
+            isSilence: false
+          })
+        }
+      }
+      beat.subdivisions = slots
+    }
+    
+    beat.subdivisions.forEach(s => {
+      if (!s.id) s.id = generateUniqueId()
+    })
+    
+    return beat.subdivisions
+  }
+  
   if (!beat) {
     const rhythm = getLyricsEffectiveRhythm(measure, beat, beatIdx)
     const sig = getMeasureTimeSignature(measure)
@@ -6415,7 +6650,6 @@ const getLyricsBeatSlots = (measure, beat, beatIdx) => {
 }
 const getLyricsVisibleSlotsForRender = (measure, beat, beatIdx) => {
   const slots = getLyricsBeatSlots(measure, beat, beatIdx)
-  const rhythm = getLyricsEffectiveRhythm(measure, beat, beatIdx)
   const origMIdx = measure.originalMeasureIndex
   
   const states = slots.map((s, idx) => ({
@@ -6425,64 +6659,25 @@ const getLyricsVisibleSlotsForRender = (measure, beat, beatIdx) => {
     isMerged: s.isMerged || false
   }))
   
-  let visible = []
-  if (rhythm === 'sixteenth' || rhythm === 'triplet') {
-    const visibleSub = []
-    for (let i = 0; i < states.length; i++) {
-      if (states[i].isMerged) continue
-      
-      let flexGrow = 1
-      let j = i + 1
-      while (j < states.length && states[j].isMerged) {
-        flexGrow++
+  const fused = []
+  for (let i = 0; i < states.length; i++) {
+    let current = states[i]
+    let j = i + 1
+    while (j < states.length) {
+      const next = states[j]
+      const nextSlotId = `lyrics_${origMIdx}_${beatIdx}_${next.originalIndex}`
+      if (lyricsTiedSlots.value.has(nextSlotId)) {
+        current.flexGrow += next.flexGrow
         j++
+      } else {
+        break
       }
-      
-      states[i].flexGrow = flexGrow
-      visibleSub.push(states[i])
     }
-    
-    // Fuse adjacent identical tied slots
-    const fused = []
-    for (let i = 0; i < visibleSub.length; i++) {
-      let current = visibleSub[i]
-      let j = i + 1
-      while (j < visibleSub.length) {
-        const next = visibleSub[j]
-        const nextSlotId = `lyrics_${origMIdx}_${beatIdx}_${next.originalIndex}`
-        if (lyricsTiedSlots.value.has(nextSlotId)) {
-          current.flexGrow += next.flexGrow
-          j++
-        } else {
-          break
-        }
-      }
-      fused.push(current)
-      i = j - 1
-    }
-    visible = fused
-  } else {
-    const visibleNonSixteenth = []
-    for (let i = 0; i < states.length; i++) {
-      let current = states[i]
-      let j = i + 1
-      while (j < states.length) {
-        const next = states[j]
-        const nextSlotId = `lyrics_${origMIdx}_${beatIdx}_${next.originalIndex}`
-        if (lyricsTiedSlots.value.has(nextSlotId)) {
-          current.flexGrow += next.flexGrow
-          j++
-        } else {
-          break
-        }
-      }
-      visibleNonSixteenth.push(current)
-      i = j - 1
-    }
-    visible = visibleNonSixteenth
+    fused.push(current)
+    i = j - 1
   }
   
-  return visible
+  return fused
 }
 const getLyricsBeatSlotDuration = (measure, beat, beatIdx) => {
   const sig = getMeasureTimeSignature(measure)
@@ -6499,8 +6694,10 @@ const getLyricsBeatSlotDuration = (measure, beat, beatIdx) => {
     if (baseRhythm === 'double') return 4
     if (baseRhythm === 'dotted-quarter') return 3
     if (baseRhythm === 'quarter') return 2
+    if (baseRhythm === 'two-eighths') return 2
     if (baseRhythm === 'sixteenth') return 2
     if (baseRhythm === 'eighth') return 1
+    if (baseRhythm === 'triplet') return 2
     return 1
   } else {
     if (baseRhythm === 'dotted-whole') return 6
@@ -6511,6 +6708,22 @@ const getLyricsBeatSlotDuration = (measure, beat, beatIdx) => {
     if (baseRhythm === 'quarter') return 1
     return 1
   }
+}
+const toggleSyncWithHarmonic = (measure, beat, beatIdx) => {
+  if (!beat) return
+  saveHistory()
+  beat.syncWithHarmonic = !beat.syncWithHarmonic
+  if (beat.syncWithHarmonic) {
+    const mainBeat = measure.beats[beatIdx]
+    if (mainBeat) {
+      beat.sixteenthPattern = mainBeat.sixteenthPattern
+      beat.eighthPattern = mainBeat.eighthPattern
+      beat.tripletPattern = mainBeat.tripletPattern
+    }
+  }
+  beat.subdivisions = []
+  syncRhythmLyricsTimeline(measure)
+  activeLyricsRhythmSelector.value = null
 }
 const getLyricsMergedBeats = (measure) => {
   if (!measure) return []
@@ -6553,7 +6766,7 @@ const getMeasureLyricsRhythmSlots = (measure) => {
     const beat = state.beat
     const bIdx = state.index
     const rhythm = getLyricsEffectiveRhythm(measure, beat, bIdx)
-    const isSubdivided = shouldRenderAsSubdivided(measure, measure.beats[bIdx], bIdx)
+    const isSubdivided = getLyricsBeatSlots(measure, beat, bIdx).length > 0
     
     const beatStartTick = bIdx * beatTicks
     const slotDurationTicks = beatTicks * state.durationSlots
@@ -6616,7 +6829,7 @@ const getLyricsLinearBlocks = () => {
       const beat = state.beat
       const bIdx = state.index
       const rhythm = getLyricsEffectiveRhythm(measure, beat, bIdx)
-      const isSubdivided = shouldRenderAsSubdivided(measure, measure.beats[bIdx], bIdx)
+      const isSubdivided = getLyricsBeatSlots(measure, beat, bIdx).length > 0
       
       if (!isSubdivided) {
         list.push({
@@ -6754,6 +6967,9 @@ const selectLyricsRhythmFigure = (figValue) => {
       beat.harmonicRhythm = figValue
       beat.isSilence = figValue.startsWith('rest-')
       beat.subdivisions = []
+      delete beat.eighthPattern
+      delete beat.sixteenthPattern
+      delete beat.tripletPattern
       syncRhythmLyricsTimeline(m)
     }
   }
@@ -7932,36 +8148,41 @@ const confirmExportPdf = () => {
   isPdfExportModalOpen.value = false
   const option = selectedPdfExportOption.value
   
-  if (option === 'chords-only-expanded') {
-    generatePDF({
-      title: title.value,
-      key: key.value,
-      scaleType: scaleType.value,
-      timeSignature: timeSignature.value,
-      timeSignatureUnit: timeSignatureUnit.value,
-      measures: displayedMeasures.value,
-      repeats: [],
-      keySignatureStr: keySignatureStr.value,
-      viewMode: 'expanded',
-      globalGroove: globalGroove.value,
-      lyricsTiedSlots: Array.from(lyricsTiedSlots.value),
-      tiedSlots: Array.from(tiedSlots.value)
-    }, option)
-  } else {
-    generatePDF({
-      title: title.value,
-      key: key.value,
-      scaleType: scaleType.value,
-      timeSignature: timeSignature.value,
-      timeSignatureUnit: timeSignatureUnit.value,
-      measures: measuresWithKey.value,
-      repeats: repeats.value,
-      keySignatureStr: keySignatureStr.value,
-      viewMode: 'compact',
-      globalGroove: globalGroove.value,
-      lyricsTiedSlots: Array.from(lyricsTiedSlots.value),
-      tiedSlots: Array.from(tiedSlots.value)
-    }, option)
+  try {
+    if (option === 'chords-only-expanded') {
+      generatePDF({
+        title: title.value,
+        key: key.value,
+        scaleType: scaleType.value,
+        timeSignature: timeSignature.value,
+        timeSignatureUnit: timeSignatureUnit.value,
+        measures: displayedMeasures.value,
+        repeats: [],
+        keySignatureStr: keySignatureStr.value,
+        viewMode: 'expanded',
+        globalGroove: globalGroove.value,
+        lyricsTiedSlots: Array.from(lyricsTiedSlots.value),
+        tiedSlots: Array.from(tiedSlots.value)
+      }, option)
+    } else {
+      generatePDF({
+        title: title.value,
+        key: key.value,
+        scaleType: scaleType.value,
+        timeSignature: timeSignature.value,
+        timeSignatureUnit: timeSignatureUnit.value,
+        measures: measuresWithKey.value,
+        repeats: repeats.value,
+        keySignatureStr: keySignatureStr.value,
+        viewMode: 'compact',
+        globalGroove: globalGroove.value,
+        lyricsTiedSlots: Array.from(lyricsTiedSlots.value),
+        tiedSlots: Array.from(tiedSlots.value)
+      }, option)
+    }
+  } catch (err) {
+    console.error("PDF generation failed:", err)
+    alert("Error al generar PDF: " + err.message + "\n" + err.stack)
   }
 }
 </script>
@@ -8004,8 +8225,8 @@ const confirmExportPdf = () => {
             <!-- Bloque 1: General -->
             <div class="bg-white rounded-2xl shadow-sm border border-[#8EE000]/10 overflow-visible">
               <div class="flex items-center justify-between p-4 border-b border-gray-100">
-                <span class="text-[17px] font-semibold text-gray-800">Título de la canción</span>
-                <input v-model="configTitle" type="text" class="text-[17px] text-right text-[#6CA600] font-semibold focus:outline-none w-1/2 bg-transparent" placeholder="Ej: Mi Canción" />
+                <label for="configTitle" class="text-[17px] font-semibold text-gray-800">Título de la canción</label>
+                <input id="configTitle" name="configTitle" v-model="configTitle" type="text" class="text-[17px] text-right text-[#6CA600] font-semibold focus:outline-none w-1/2 bg-transparent" placeholder="Ej: Mi Canción" />
               </div>
               
               <div class="flex items-center justify-between p-4 border-b border-gray-100">
@@ -8013,6 +8234,8 @@ const confirmExportPdf = () => {
                 <div class="flex items-center gap-3">
                   <button @click="configMeasuresCount = Math.max(1, configMeasuresCount - 1)" class="w-8 h-8 rounded-full bg-[#8EE000]/10 text-[#6CA600] flex items-center justify-center active:bg-[#8EE000]/20">-</button>
                   <input 
+                    id="configMeasuresCount"
+                    name="configMeasuresCount"
                     :value="configMeasuresCount" 
                     @input="handleMeasuresInput" 
                     @blur="handleMeasuresBlur" 
@@ -8066,6 +8289,8 @@ const confirmExportPdf = () => {
                       <!-- PRO: editable inputs -->
                       <div v-if="currentPlan === 'PRO'" class="flex items-center gap-1.5 px-2 py-1.5">
                         <input
+                          id="configTimeSignature"
+                          name="configTimeSignature"
                           type="number"
                           min="1" max="32"
                           :value="configTimeSignature"
@@ -8075,6 +8300,8 @@ const confirmExportPdf = () => {
                         />
                         <span class="text-gray-400 font-black text-lg leading-none">/</span>
                         <select
+                          id="configTimeSignatureUnit"
+                          name="configTimeSignatureUnit"
                           :value="configTimeSignatureUnit"
                           @change="configTimeSignatureUnit = parseInt($event.target.value); activeDropdown = null"
                           class="text-sm font-bold border border-gray-300 rounded-lg py-1 px-1.5 focus:border-[#8EE000] focus:outline-none bg-white"
@@ -8164,7 +8391,7 @@ const confirmExportPdf = () => {
           </div>
           
           <div class="flex-1 text-center font-bold text-[14px] sm:text-[18px] text-black truncate px-1 max-w-[100px] sm:max-w-none">
-            <input v-model="title" class="bg-transparent text-center focus:outline-none w-full placeholder-gray-800 font-black text-black" />
+            <input id="songTitle" name="songTitle" v-model="title" class="bg-transparent text-center focus:outline-none w-full placeholder-gray-800 font-black text-black" />
           </div>
           
           <div class="flex items-center gap-1.5 sm:gap-3">
@@ -8503,6 +8730,8 @@ const confirmExportPdf = () => {
                   <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-tight">‖ Sub</span>
                   <div class="relative">
                     <input 
+                      id="globalShowSubdivisions"
+                      name="globalShowSubdivisions"
                       type="checkbox" 
                       :checked="globalShowSubdivisions"
                       @change="toggleAllSubdivisions($event)"
@@ -8521,6 +8750,8 @@ const confirmExportPdf = () => {
                   </div>
                   <div class="relative">
                     <input 
+                      id="globalShowObligado"
+                      name="globalShowObligado"
                       type="checkbox" 
                       :checked="globalShowObligado"
                       @change="toggleGlobalShowObligado($event)"
@@ -8539,6 +8770,8 @@ const confirmExportPdf = () => {
                   </div>
                   <div class="relative">
                     <input 
+                      id="showLyricsGlobal"
+                      name="showLyricsGlobal"
                       type="checkbox" 
                       v-model="showLyricsGlobal"
                       class="sr-only peer"
@@ -8900,7 +9133,7 @@ const confirmExportPdf = () => {
                               :id="'chord-card-' + state.beat.id"
                               @mouseenter="hoveredChordId = state.beat.id"
                               @mouseleave="hoveredChordId = null"
-                              class="bg-white/95 border border-gray-200/80 rounded-xl px-3 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 group-hover/beat:scale-105 transition-transform animate-scale-up"
+                              class="bg-white/95 border border-gray-200/80 rounded-xl px-3 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 group-hover/beat:scale-105 transition-transform animate-scale-up max-w-[calc(100%+16px)]"
                               :class="{ 'border-violet-500 ring-2 ring-violet-100 shadow-md shadow-violet-100': currentPlan === 'PRO' && (hoveredChordId === state.beat.id || (hoveredAnchor && isChordIdRelatedToBeat(hoveredAnchor.chordId, state.beat.id, measure))) }"
                             >
                               <div class="flex flex-col items-center justify-center">
@@ -8912,13 +9145,13 @@ const confirmExportPdf = () => {
                                 </span>
                               </div>
                               <!-- Obligado symbol display -->
-                              <span 
+                              <svg 
                                 v-if="measure.showObligado" 
-                                class="text-xs text-violet-600 font-mono leading-none mt-0.5"
-                                title="Obligado Rítmico"
-                              >
-                                {{ getRhythmDisplayIcon(state.beat.harmonicRhythm || 'auto', measure, state.beat) }}
-                              </span>
+                                class="h-4 w-12 text-violet-600 shrink-0 select-none pointer-events-none mt-0.5" 
+                                viewBox="0 0 100 24" 
+                                preserveAspectRatio="none"
+                                v-html="getRhythmDisplayIconSVG(state.beat.harmonicRhythm || 'auto', measure, state.beat)"
+                              ></svg>
                             </div>
                             <!-- Rest Badge / Slash line -->
                             <template v-else>
@@ -8927,9 +9160,12 @@ const confirmExportPdf = () => {
                                 class="bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 opacity-60 hover:scale-105 transition-transform"
                               >
                                 <span class="text-gray-400 font-bold leading-none text-[11px]">𝄾</span>
-                                <span class="text-[8px] text-gray-400 font-mono leading-none mt-0.5" title="Silencio de ritmo armónico">
-                                  {{ getRhythmDisplayIcon(state.beat.harmonicRhythm, measure, state.beat) }}
-                                </span>
+                                <svg 
+                                  class="h-4 w-12 text-gray-400 shrink-0 select-none pointer-events-none mt-0.5" 
+                                  viewBox="0 0 100 24" 
+                                  preserveAspectRatio="none"
+                                  v-html="getRhythmDisplayIconSVG(state.beat.harmonicRhythm, measure, state.beat)"
+                                ></svg>
                               </div>
                               <div 
                                 v-else
@@ -8977,37 +9213,54 @@ const confirmExportPdf = () => {
                                         : ''
                                     ]"
                                   >
-                                    <div class="flex items-center gap-1.5">
-                                      <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value)"></svg>
-                                      <span v-if="fig.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black shrink-0">PRO</span>
-                                    </div>
-                                    <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
-                                  </button>
-                                </div>
-                                
-                                <template v-if="['eighth', 'sixteenth', 'triplet'].includes(getEffectiveRhythm(measure, state.beat, state.index))">
-                                  <div class="border-t border-slate-800/80 my-1"></div>
-                                  
-                                  <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
-                                    <span>♬</span> <span>{{ getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Semicorcheas') }}</span>
-                                    <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black uppercase tracking-wide">PRO</span>
-                                  </div>
-                                  <div class="flex flex-col gap-1">
-                                    <button 
-                                      v-for="(pat, key) in (getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? TRIPLET_PATTERNS : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS))" 
-                                      :key="key"
-                                      @click.stop="selectSixteenthPatternWrapper(measure, state.beat, key)"
-                                      class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
-                                      :class="isPatternActive(measure, state.beat, state.index, key)
-                                        ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
-                                        : 'text-slate-200 bg-slate-850/30 border border-transparent'"
-                                    >
-                                      <div class="flex-1 min-w-0 flex flex-col justify-center">
-                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
-                                        <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ pat.label }}</span>
+                                      <div class="flex items-center gap-1.5">
+                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value, getMeasureTimeSignature(measure).unit === 8)"></svg>
+                                        <span v-if="fig.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black shrink-0">PRO</span>
                                       </div>
-                                      <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
+                                      <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
                                     </button>
+                                  </div>
+                                  
+                                  <template v-if="['eighth', 'sixteenth', 'triplet'].includes(getEffectiveRhythm(measure, state.beat, state.index))">
+                                    <div class="border-t border-slate-800/80 my-1"></div>
+                                    
+                                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
+                                      <span>♬</span> <span>{{ getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? (getMeasureTimeSignature(measure).unit === 8 ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Corcheas (2 Notas)') : 'Familia de Semicorcheas') }}</span>
+                                      <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black uppercase tracking-wide">PRO</span>
+                                    </div>
+                                    <div class="flex flex-col gap-1">
+                                      <button 
+                                        v-for="(pat, key) in (getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? TRIPLET_PATTERNS : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS))" 
+                                        :key="key"
+                                        @click.stop="selectSixteenthPatternWrapper(measure, state.beat, key)"
+                                        class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
+                                        :class="isPatternActive(measure, state.beat, state.index, key)
+                                          ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
+                                          : 'text-slate-200 bg-slate-850/30 border border-transparent'"
+                                      >
+                                        <div class="flex-1 min-w-0 flex flex-col justify-center">
+                                          <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key, getMeasureTimeSignature(measure).unit === 8)"></svg>
+                                          <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ getPatternLabel(key, pat, getMeasureTimeSignature(measure).unit === 8) }}</span>
+                                        </div>
+                                        <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
+                                      </button>
+                                    </div>
+                                  
+                                  <div class="border-t border-slate-800/80 my-1.5"></div>
+                                  <div class="bg-slate-850 p-2.5 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+                                    <div class="flex items-center justify-between">
+                                      <span class="text-[10px] font-black text-violet-400 uppercase tracking-wider">Vista de figuras separadas</span>
+                                      <button 
+                                        @click.stop="state.beat.forceSeparated = !state.beat.forceSeparated"
+                                        class="px-2 py-1 rounded text-[10px] font-black transition-all"
+                                        :class="state.beat.forceSeparated ? 'bg-[#8EE000]/20 text-[#8EE000] border border-[#8EE000]/40' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'"
+                                      >
+                                        {{ state.beat.forceSeparated ? 'ACTIVADA' : 'DESACTIVADA' }}
+                                      </button>
+                                    </div>
+                                    <p class="text-[9px] text-slate-400 leading-normal font-medium select-none">
+                                      Usa esta vista para separar las figuras en tarjetas individuales y poder elegir acordes asociados a cada figura que se está mostrando de forma independiente.
+                                    </p>
                                   </div>
                                 </template>
                               </div>
@@ -9031,7 +9284,7 @@ const confirmExportPdf = () => {
                                 viewBox="0 0 100 24" 
                                 preserveAspectRatio="none"
                               >
-                                <g v-html="getDynamicRhythmSVG(getEffectiveRhythm(measure, state.beat, state.index), getBeatPatternKey(state.beat, getEffectiveRhythm(measure, state.beat, state.index)), getVisibleSlotsForRender(measure, state.beat, state.index))"></g>
+                                <g v-html="getDynamicRhythmSVG(getEffectiveRhythm(measure, state.beat, state.index), getBeatPatternKey(state.beat, getEffectiveRhythm(measure, state.beat, state.index)), getVisibleSlotsForRender(measure, state.beat, state.index), getMeasureTimeSignature(measure).unit === 8)"></g>
                               </svg>
                               <span class="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-[#6CA600]/75 group-hover/rhythm:text-[#6CA600] group-hover/rhythm:scale-110 transition-all font-bold">✏️</span>
                               
@@ -9059,7 +9312,7 @@ const confirmExportPdf = () => {
                                       ]"
                                     >
                                       <div class="flex items-center gap-1.5">
-                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value)"></svg>
+                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value, getMeasureTimeSignature(measure).unit === 8)"></svg>
                                         <span v-if="fig.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black shrink-0">PRO</span>
                                       </div>
                                       <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
@@ -9070,7 +9323,7 @@ const confirmExportPdf = () => {
                                     <div class="border-t border-slate-800/80 my-1"></div>
                                     
                                     <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
-                                      <span>♬</span> <span>{{ getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Semicorcheas') }}</span>
+                                      <span>♬</span> <span>{{ getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? (getMeasureTimeSignature(measure).unit === 8 ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Corcheas (2 Notas)') : 'Familia de Semicorcheas') }}</span>
                                       <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.2 rounded font-black uppercase tracking-wide">PRO</span>
                                     </div>
                                     <div class="flex flex-col gap-1">
@@ -9084,11 +9337,28 @@ const confirmExportPdf = () => {
                                           : 'text-slate-200 bg-slate-850/30 border border-transparent'"
                                       >
                                         <div class="flex-1 min-w-0 flex flex-col justify-center">
-                                          <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
-                                          <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ pat.label }}</span>
+                                          <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key, getMeasureTimeSignature(measure).unit === 8)"></svg>
+                                          <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ getPatternLabel(key, pat, getMeasureTimeSignature(measure).unit === 8) }}</span>
                                         </div>
                                         <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
                                       </button>
+                                    </div>
+                                    
+                                    <div class="border-t border-slate-800/80 my-1.5"></div>
+                                    <div class="bg-slate-850 p-2.5 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+                                      <div class="flex items-center justify-between">
+                                        <span class="text-[10px] font-black text-violet-400 uppercase tracking-wider">Vista de figuras separadas</span>
+                                        <button 
+                                          @click.stop="state.beat.forceSeparated = !state.beat.forceSeparated"
+                                          class="px-2 py-1 rounded text-[10px] font-black transition-all"
+                                          :class="state.beat.forceSeparated ? 'bg-[#8EE000]/20 text-[#8EE000] border border-[#8EE000]/40' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'"
+                                        >
+                                          {{ state.beat.forceSeparated ? 'ACTIVADA' : 'DESACTIVADA' }}
+                                        </button>
+                                      </div>
+                                      <p class="text-[9px] text-slate-400 leading-normal font-medium select-none">
+                                        Usa esta vista para separar las figuras en tarjetas individuales y poder elegir acordes asociados a cada figura que se está mostrando de forma independiente.
+                                      </p>
                                     </div>
                                   </template>
                                 </div>
@@ -9341,6 +9611,7 @@ const confirmExportPdf = () => {
                         <!-- Actual Textarea -->
                         <textarea 
                           :id="'lyrics-textarea-' + measure.originalMeasureIndex"
+                          :name="'lyrics-textarea-' + measure.originalMeasureIndex"
                           v-model="measure.lyrics.rawText"
                           placeholder="Escribe..."
                           class="lyric-textarea col-start-1 row-start-1 w-full h-full resize-none bg-transparent outline-none leading-relaxed text-gray-800 font-sans border-0 shadow-none focus:ring-0 focus:outline-none text-[13px]"
@@ -9501,7 +9772,7 @@ const confirmExportPdf = () => {
                                   viewBox="0 0 100 24" 
                                   preserveAspectRatio="none"
                                 >
-                                  <g v-html="getDynamicRhythmSVG(getLyricsEffectiveRhythm(measure, state.beat, state.index), getLyricsBeatPatternKey(state.beat, getLyricsEffectiveRhythm(measure, state.beat, state.index)), getLyricsVisibleSlotsForRender(measure, state.beat, state.index))"></g>
+                                  <g v-html="getDynamicRhythmSVG(getLyricsEffectiveRhythm(measure, state.beat, state.index), getLyricsBeatPatternKey(state.beat, getLyricsEffectiveRhythm(measure, state.beat, state.index), measure, state.index), getLyricsVisibleSlotsForRender(measure, state.beat, state.index), getMeasureTimeSignature(measure).unit === 8)"></g>
                                 </svg>
                                 <span class="absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-violet-500/70 group-hover/rhythm:text-violet-750 font-bold">✏️</span>
                               </div>
@@ -9514,22 +9785,40 @@ const confirmExportPdf = () => {
                                   @click.stop
                                 >
                                   <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none">Figuras para Letra</div>
+                                  
+                                  <!-- Mismo ritmo armónico toggle -->
+                                  <div class="bg-slate-850 p-2.5 rounded-xl border border-slate-800 flex flex-col gap-1.5 mb-1.5">
+                                    <div class="flex items-center justify-between">
+                                      <span class="text-[10px] font-black text-violet-400 uppercase tracking-wider select-none">Mismo ritmo armónico</span>
+                                      <button 
+                                        @click.stop="toggleSyncWithHarmonic(measure, state.beat, state.index)"
+                                        class="px-2 py-1 rounded text-[10px] font-black transition-all"
+                                        :class="state.beat.syncWithHarmonic ? 'bg-[#8EE000]/20 text-[#8EE000] border border-[#8EE000]/40' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'"
+                                      >
+                                        {{ state.beat.syncWithHarmonic ? 'ACTIVADA' : 'DESACTIVADA' }}
+                                      </button>
+                                    </div>
+                                    <p class="text-[9px] text-slate-400 leading-normal font-medium select-none">
+                                      Activa esta opción para que el ritmo de la letra siga exactamente al ritmo armónico del acorde.
+                                    </p>
+                                  </div>
+
                                   <div class="grid grid-cols-2 gap-1.5">
                                     <button 
                                       v-for="fig in getAvailableRhythmFigures(measure)" 
                                       :key="fig.value"
-                                      :disabled="!isLyricsFigureValid(fig.value, measure, state.index)"
+                                      :disabled="state.beat.syncWithHarmonic || !isLyricsFigureValid(fig.value, measure, state.index)"
                                       @click.stop="selectLyricsRhythmFigure(fig.value)"
                                       class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
                                       :class="[
                                         getLyricsEffectiveRhythm(measure, state.beat, state.index) === fig.value 
                                           ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
                                           : 'text-slate-200 bg-slate-850/50 border border-transparent',
-                                        !isLyricsFigureValid(fig.value, measure, state.index) ? 'opacity-40 cursor-not-allowed' : ''
+                                        (state.beat.syncWithHarmonic || !isLyricsFigureValid(fig.value, measure, state.index)) ? 'opacity-40 cursor-not-allowed' : ''
                                       ]"
                                     >
                                       <div class="flex items-center gap-1.5">
-                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value)"></svg>
+                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value, getMeasureTimeSignature(measure).unit === 8)"></svg>
                                       </div>
                                       <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
                                     </button>
@@ -9539,13 +9828,13 @@ const confirmExportPdf = () => {
                                     <div class="border-t border-slate-800/80 my-1"></div>
                                     
                                     <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
-                                      <span>♬</span> <span>{{ getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Semicorcheas') }}</span>
+                                      <span>♬</span> <span>{{ getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? (getMeasureTimeSignature(measure).unit === 8 ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Corcheas (2 Notas)') : 'Familia de Semicorcheas') }}</span>
                                     </div>
                                     <div class="flex flex-col gap-1">
                                       <button 
                                         v-for="(pat, key) in (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? TRIPLET_PATTERNS : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS))" 
                                         :key="key"
-                                        :disabled="!isLyricsFigureValid(getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'eighth' : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'triplet' : 'sixteenth'), measure, state.index)"
+                                        :disabled="state.beat.syncWithHarmonic || !isLyricsFigureValid(getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'eighth' : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'triplet' : 'sixteenth'), measure, state.index)"
                                         @click.stop="selectLyricsSixteenthPatternWrapper(measure, state.beat, key)"
                                         :class="[
                                           isLyricsPatternActive(measure, state.beat, state.index, key)
@@ -9555,8 +9844,8 @@ const confirmExportPdf = () => {
                                         ]"
                                       >
                                         <div class="flex-1 min-w-0 flex flex-col justify-center">
-                                          <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
-                                          <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ pat.label }}</span>
+                                          <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key, getMeasureTimeSignature(measure).unit === 8)"></svg>
+                                          <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ getPatternLabel(key, pat, getMeasureTimeSignature(measure).unit === 8) }}</span>
                                         </div>
                                         <span v-if="isLyricsPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
                                       </button>
@@ -9564,9 +9853,9 @@ const confirmExportPdf = () => {
                                   </template>
                                 </div>
                               </transition>
-                              <template v-if="!shouldRenderAsSubdivided(measure, state.beat, state.index)">
+                              <template v-if="getLyricsBeatSlots(measure, state.beat, state.index).length === 0">
                                 <div 
-                                  class="w-full flex-1 flex flex-col justify-center items-center relative transition-colors border border-transparent"
+                                  class="w-full flex-1 flex flex-col justify-center items-center relative transition-colors border border-transparent group/sub"
                                   :class="[
                                     isLyricsSlotSilence(measure, state.index, null) 
                                       ? 'cursor-default opacity-40 bg-gray-100/50' 
@@ -9588,12 +9877,12 @@ const confirmExportPdf = () => {
                                     <span v-else-if="isLyricsSlotSilence(measure, state.index, null)" class="text-[10px] text-gray-400 font-mono">𝄾</span>
                                     <span v-else class="text-[9px] text-gray-300 opacity-20">.</span>
                                     
-                                    <!-- Tie toggle button -->
+                                    <!-- Tie toggle button (Absolutely positioned on top-right, visible on hover or when tied) -->
                                     <button 
                                       v-if="!isLyricsSlotSilence(measure, state.index, null) && getSyllableAtSlot(measure, state.index, null) && getSyllableAtSlot(measure, state.index, null).isRoot"
                                       @click.stop="toggleLyricsTieSlot(`lyrics_${measure.originalMeasureIndex}_${state.index}`)"
-                                      class="text-[9px] w-3.5 h-3.5 flex items-center justify-center rounded bg-gray-100 hover:bg-violet-200 text-gray-400 hover:text-violet-750 transition-colors ml-0.5 font-bold"
-                                      :class="{ 'bg-violet-100 text-violet-750': isLyricsNextSlotTied(`lyrics_${measure.originalMeasureIndex}_${state.index}`) }"
+                                      class="absolute top-0.5 right-0.5 text-[8px] w-3 h-3 flex items-center justify-center rounded bg-gray-100 hover:bg-violet-200 text-gray-400 hover:text-violet-750 transition-all font-bold opacity-0 group-hover/sub:opacity-100 z-10"
+                                      :class="{ 'bg-violet-100 text-violet-750 !opacity-100 border border-violet-200': isLyricsNextSlotTied(`lyrics_${measure.originalMeasureIndex}_${state.index}`) }"
                                       title="Ligar a la siguiente figura"
                                     >
                                       ~
@@ -9608,7 +9897,7 @@ const confirmExportPdf = () => {
                                     v-for="sub in getLyricsVisibleSlotsForRender(measure, state.beat, state.index)"
                                     :key="sub.originalIndex"
                                     :style="{ flexGrow: sub.flexGrow }"
-                                    class="h-full flex flex-col items-center justify-center relative transition-colors"
+                                    class="h-full flex flex-col items-center justify-center relative transition-colors group/sub"
                                     :class="[
                                       isLyricsSlotSilence(measure, state.index, sub.originalIndex) 
                                         ? 'cursor-default opacity-40 bg-gray-100/30' 
@@ -9630,12 +9919,12 @@ const confirmExportPdf = () => {
                                       <span v-else-if="isLyricsSlotSilence(measure, state.index, sub.originalIndex)" class="text-[9px] text-gray-400 font-mono">𝄾</span>
                                       <span v-else class="text-[9px] text-gray-300 opacity-20">.</span>
                                       
-                                      <!-- Tie toggle button -->
+                                      <!-- Tie toggle button (Absolutely positioned on top-right, visible on hover or when tied) -->
                                       <button 
                                         v-if="!isLyricsSlotSilence(measure, state.index, sub.originalIndex) && getSyllableAtSlot(measure, state.index, sub.originalIndex) && getSyllableAtSlot(measure, state.index, sub.originalIndex).isRoot"
                                         @click.stop="toggleLyricsTieSlot(`lyrics_${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`)"
-                                        class="text-[9px] w-3.5 h-3.5 flex items-center justify-center rounded bg-gray-100 hover:bg-violet-200 text-gray-400 hover:text-violet-750 transition-colors ml-0.5 font-bold"
-                                        :class="{ 'bg-violet-100 text-violet-750': isLyricsNextSlotTied(`lyrics_${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`) }"
+                                        class="absolute top-0.5 right-0.5 text-[8px] w-3 h-3 flex items-center justify-center rounded bg-gray-100 hover:bg-violet-200 text-gray-400 hover:text-violet-750 transition-all font-bold opacity-0 group-hover/sub:opacity-100 z-10"
+                                        :class="{ 'bg-violet-100 text-violet-750 !opacity-100 border border-violet-200': isLyricsNextSlotTied(`lyrics_${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`) }"
                                         title="Ligar a la siguiente figura"
                                       >
                                         ~
@@ -9956,6 +10245,8 @@ const confirmExportPdf = () => {
                     class="w-8 h-8 rounded-full bg-white shadow-sm border border-gray-200 flex items-center justify-center font-bold active:bg-gray-50"
                   >-</button>
                   <input 
+                    id="customTimes"
+                    name="customTimes"
                     type="number" 
                     v-model.number="customTimes" 
                     min="2" 
@@ -10130,6 +10421,8 @@ const confirmExportPdf = () => {
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer select-none">
                       <input 
+                        id="tempShowSubdivisions"
+                        name="tempShowSubdivisions"
                         type="checkbox" 
                         v-model="tempShowSubdivisions" 
                         class="sr-only peer"
@@ -10146,6 +10439,8 @@ const confirmExportPdf = () => {
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer select-none">
                       <input 
+                        id="tempShowObligado"
+                        name="tempShowObligado"
                         type="checkbox" 
                         v-model="tempShowObligado" 
                         class="sr-only peer"
@@ -10298,7 +10593,7 @@ const confirmExportPdf = () => {
             <div class="bg-white px-4 py-4 flex items-center justify-between border-b border-gray-200 rounded-t-[16px] shrink-0">
               <button @click="isLocalMetricSubMenuOpen = false" class="text-gray-500 text-[17px] font-medium bg-gray-50 hover:bg-gray-100 px-3 py-1 rounded-full transition-colors">Atrás</button>
               <h3 class="text-[17px] font-bold text-gray-900 pointer-events-none">Métrica Local</h3>
-              <button @click="saveLocalTimeSignature" class="text-violet-650 text-[17px] font-bold">Aplicar</button>
+              <div class="w-12"></div>
             </div>
             
             <div class="p-6 overflow-y-auto space-y-6">
@@ -10335,6 +10630,8 @@ const confirmExportPdf = () => {
                   <div class="flex-1">
                     <label class="block text-[10px] text-gray-400 font-bold uppercase mb-1">Numerador</label>
                     <input 
+                      id="localMetricBeats"
+                      name="localMetricBeats"
                       type="number" 
                       v-model.number="localMetricBeats" 
                       @change="onLocalMetricCustomChange" 
@@ -10347,6 +10644,8 @@ const confirmExportPdf = () => {
                   <div class="flex-1">
                     <label class="block text-[10px] text-gray-400 font-bold uppercase mb-1">Denominador</label>
                     <select 
+                      id="localMetricUnit"
+                      name="localMetricUnit"
                       v-model.number="localMetricUnit" 
                       @change="onLocalMetricCustomChange" 
                       class="w-full px-3 py-2 border border-gray-200 rounded-xl text-center text-sm font-bold text-gray-800 focus:outline-none focus:border-violet-500 bg-white"
@@ -10379,6 +10678,8 @@ const confirmExportPdf = () => {
                 <div class="mt-3">
                   <label class="block text-[10px] text-gray-400 font-bold uppercase mb-1">Subdivisión Personalizada (ej: 5+3+3)</label>
                   <input 
+                    id="tempLocalGroupingStr"
+                    name="tempLocalGroupingStr"
                     type="text" 
                     :value="tempLocalGroupingStr"
                     @input="handleLocalGroupingInput"
@@ -10395,6 +10696,22 @@ const confirmExportPdf = () => {
                   </p>
                 </div>
               </div>
+              <!-- Botones de Acción / Aplicar -->
+              <div class="pt-4 border-t border-gray-200 flex flex-col gap-2">
+                <button 
+                  @click="saveLocalTimeSignature(true)"
+                  class="w-full py-3 bg-violet-600 hover:bg-violet-700 text-white font-extrabold rounded-xl transition-all active:scale-98 text-sm shadow-sm"
+                >
+                  Aplicar sólo a este compás
+                </button>
+                <button 
+                  @click="saveLocalTimeSignature(false)"
+                  class="w-full py-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-750 font-bold rounded-xl transition-all active:scale-98 text-sm"
+                >
+                  Aplicar a todos a partir de este compás
+                </button>
+              </div>
+              
               <!-- Remove local time signature override if present -->
               <div v-if="measures[selectedMeasureIndex] && measures[selectedMeasureIndex].timeSignature" class="pt-4 border-t border-gray-200">
                 <button 
@@ -10451,6 +10768,7 @@ const confirmExportPdf = () => {
                 <input 
                   type="checkbox" 
                   id="applyAllSub" 
+                  name="applyAllSub"
                   v-model="applyToAllSubslots" 
                   class="rounded border-gray-300 text-violet-600 focus:ring-violet-500 w-4.5 h-4.5 cursor-pointer" 
                 />
@@ -10805,7 +11123,7 @@ const confirmExportPdf = () => {
                 </div>
                 <!-- Eighth pattern sub-selector -->
                 <div v-if="activeEditingBeat.harmonicRhythm === 'eighth'" class="mt-3 p-3 bg-violet-50/50 rounded-xl border border-violet-100 space-y-2 text-left">
-                  <span class="block text-[11px] font-black text-violet-750 uppercase tracking-wider">Patrón de la Familia de Semicorcheas (2 Notas)</span>
+                  <span class="block text-[11px] font-black text-violet-750 uppercase tracking-wider">{{ getMeasureTimeSignature(measures[selectedBeat.measureIndex]).unit === 8 ? 'Patrón de la Familia de Semicorcheas (2 Notas)' : 'Patrón de la Familia de Corcheas (2 Notas)' }}</span>
                   <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <button 
                       v-for="(pat, key) in EIGHTH_PATTERNS" 
@@ -10817,10 +11135,10 @@ const confirmExportPdf = () => {
                         : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-550 border-gray-200'"
                     >
                       <div class="flex-1 min-w-0 flex flex-col justify-center">
-                        <svg class="h-4 w-12 text-current shrink-0 select-none mb-0.5" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key)"></svg>
+                        <svg class="h-4 w-12 text-current shrink-0 select-none mb-0.5" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key, getMeasureTimeSignature(measures[selectedBeat.measureIndex]).unit === 8)"></svg>
                         <span class="text-[9px] font-bold truncate block mt-0.5 select-none"
                               :class="activeEditingBeat.eighthPattern === key || (!activeEditingBeat.eighthPattern && key === '2_notes' && getMeasureTimeSignature(measures[selectedBeat.measureIndex]).unit !== 8) ? 'text-white/70' : 'text-gray-400'">
-                          {{ pat.label }}
+                          {{ getPatternLabel(key, pat, getMeasureTimeSignature(measures[selectedBeat.measureIndex]).unit === 8) }}
                         </span>
                       </div>
                       <span v-if="activeEditingBeat.eighthPattern === key || (!activeEditingBeat.eighthPattern && key === '2_notes' && getMeasureTimeSignature(measures[selectedBeat.measureIndex]).unit !== 8)" class="text-white text-xs font-black shrink-0 ml-2">✓</span>
@@ -11769,7 +12087,7 @@ const confirmExportPdf = () => {
               <!-- Opción 1: Sólo acordes -->
               <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
                 :class="selectedPdfExportOption === 'chords-only' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
-                <input type="radio" v-model="selectedPdfExportOption" value="chords-only" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <input id="pdf-chords-only" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-only" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
                   <div class="text-xs font-bold text-gray-900">Opción 1: Sólo acordes (Compacto)</div>
                   <div class="text-[11px] text-gray-500 mt-0.5">Muestra métricas, secciones, compases y acordes. Excluye cualquier letra. Consigue la máxima compacidad.</div>
@@ -11779,43 +12097,43 @@ const confirmExportPdf = () => {
               <!-- Opción 2: Sólo acordes extendidos -->
               <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
                 :class="selectedPdfExportOption === 'chords-only-expanded' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
-                <input type="radio" v-model="selectedPdfExportOption" value="chords-only-expanded" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <input id="pdf-chords-only-expanded" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-only-expanded" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
                   <div class="flex items-center justify-between">
                     <span class="text-xs font-bold text-gray-900">Opción 2: Sólo acordes (Lineal sin repeticiones)</span>
                     <span v-if="currentPlan === 'FREE'" class="text-[9px] font-black px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded-md flex items-center gap-0.5">👑 PRO</span>
                   </div>
-                  <div class="text-[11px] text-gray-500 mt-0.5">Expande y desglosa todas las repeticiones y casillas de forma lineal. No muestra barras de repetición.</div>
+                  <div class="text-[11px] text-gray-555 mt-0.5">Expande y desglosa todas las repeticiones y casillas de forma lineal. No muestra barras de repetición.</div>
                 </div>
               </label>
 
               <!-- Opción 3: Acordes y letra simple -->
               <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
                 :class="selectedPdfExportOption === 'chords-and-lyrics-free' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
-                <input type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-free" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <input id="pdf-chords-and-lyrics-free" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-free" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
                   <div class="text-xs font-bold text-gray-900">Opción 3: Acordes y letra libre/simple</div>
-                  <div class="text-[11px] text-gray-500 mt-0.5">Coloca las letras en formato libre directamente debajo de los compases, ajustadas al ancho del compás y apiladas verticalmente.</div>
+                  <div class="text-[11px] text-gray-555 mt-0.5">Coloca las letras en formato libre directamente debajo de los compases, ajustadas al ancho del compás y apiladas verticalmente.</div>
                 </div>
               </label>
 
               <!-- Opción 4: Acordes y letra asociada a la subdivisión -->
               <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
                 :class="selectedPdfExportOption === 'chords-and-lyrics-rhythm' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
-                <input type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-rhythm" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <input id="pdf-chords-and-lyrics-rhythm" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-rhythm" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
                   <div class="flex items-center justify-between">
                     <span class="text-xs font-bold text-gray-900">Opción 4: Acordes y letra asociada por tiempo/subdivisión</span>
                     <span v-if="currentPlan === 'FREE'" class="text-[9px] font-black px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded-md flex items-center gap-0.5">👑 PRO</span>
                   </div>
-                  <div class="text-[11px] text-gray-500 mt-0.5">Coloca las sílabas exactamente alineadas bajo los pulsos o subdivisiones en los que fueron asociadas.</div>
+                  <div class="text-[11px] text-gray-555 mt-0.5">Coloca las sílabas exactamente alineadas bajo los pulsos o subdivisiones en los que fueron asociadas.</div>
                 </div>
               </label>
 
               <!-- Opción 5: Acordes y letra sincronizada Pro -->
               <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
                 :class="selectedPdfExportOption === 'chords-and-lyrics-synced' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
-                <input type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-synced" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
+                <input id="pdf-chords-and-lyrics-synced" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-synced" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
                   <div class="flex items-center justify-between">
                     <span class="text-xs font-bold text-gray-900">Opción 5: Acordes y letra sincronizada Pro</span>
