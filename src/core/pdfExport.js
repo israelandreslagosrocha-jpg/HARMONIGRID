@@ -188,16 +188,25 @@ export function generatePDF(project, exportOption = 'chords-only') {
     if (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto') {
       return beat.harmonicRhythm
     }
+    const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+    const isDenom8 = sig.unit === 8
+    const defaultRhythm = isDenom8 ? 'eighth' : 'quarter'
+
     const mGroove = measure.groove || 'global'
-    if (mGroove === 'neutral') {
-      return 'quarter'
+    const activeGrooveName = mGroove === 'global' ? (project.globalGroove || 'Ninguno') : mGroove
+    if (activeGrooveName === 'Ninguno' || activeGrooveName === 'neutral' || mGroove === 'neutral' || mGroove === 'custom') {
+      return defaultRhythm
     }
-    if (mGroove === 'custom') {
-      return 'quarter'
+
+    const pattern = GROOVE_PATTERNS[activeGrooveName] || GROOVE_PATTERNS.Ninguno
+    if (pattern && pattern[beatIdx]) {
+      const grooveRhythm = pattern[beatIdx]
+      if (isDenom8 && grooveRhythm === 'quarter') {
+        return 'eighth'
+      }
+      return grooveRhythm
     }
-    const globalGroove = project.globalGroove || 'Ninguno'
-    const pattern = GROOVE_PATTERNS[globalGroove] || GROOVE_PATTERNS.Ninguno
-    return pattern[beatIdx] || 'quarter'
+    return defaultRhythm
   }
 
   const getRhythmDisplayIconPDF = (beat, isDenom8) => {
@@ -289,7 +298,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       if (base === 'dotted-whole') return 12
       if (base === 'whole') return 8
       if (base === 'dotted-half') return 6
-      if (base === 'double') return 4
+      if (base === 'double' || base === 'half') return 4
       if (base === 'dotted-quarter') return 3
       if (base === 'quarter') return 2
       if (base === 'sixteenth') return 2
@@ -300,7 +309,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       if (base === 'dotted-whole') return 6
       if (base === 'whole') return 4
       if (base === 'dotted-half') return 3
-      if (base === 'double') return 2
+      if (base === 'double' || base === 'half') return 2
       if (base === 'dotted-quarter') return 1.5
       if (base === 'quarter') return 1
       return 1
@@ -513,10 +522,26 @@ export function generatePDF(project, exportOption = 'chords-only') {
         if (base === 'dotted-quarter') {
           doc.circle(cx + 3, cy - 2, 0.6, 'F');
         }
-      } else if (base === 'eighth') {
+      } else if (base === 'eighth' || base === 'dotted-eighth') {
         doc.circle(cx - 1, cy - 5, 0.6, 'F');
         doc.line(cx - 1, cy - 5, cx + 1, cy - 5);
         doc.line(cx + 1, cy - 5, cx - 1, cy - 1);
+        if (base === 'dotted-eighth') {
+          doc.circle(cx + 3, cy - 3, 0.6, 'F');
+        }
+      } else if (base === 'sixteenth' || base === 'dotted-sixteenth') {
+        doc.circle(cx - 1, cy - 6, 0.6, 'F');
+        doc.line(cx - 1, cy - 6, cx + 1, cy - 6);
+        doc.line(cx + 1, cy - 6, cx - 1, cy - 3);
+        doc.circle(cx - 2, cy - 3, 0.6, 'F');
+        doc.line(cx - 2, cy - 3, cx, cy - 3);
+        doc.line(cx, cy - 3, cx - 1.5, cy + 1);
+        if (base === 'dotted-sixteenth') {
+          doc.circle(cx + 3, cy - 1, 0.6, 'F');
+        }
+      } else if (base === 'triplet') {
+        const mockSlots = [{ isSilence: true }, { isSilence: true }, { isSilence: true }]
+        drawPDFSubdivisionPattern(cx, cy, mockSlots, 'triplet', isDenom8, stemDirection)
       }
     } else {
       if (base === 'whole' || base === 'dotted-whole') {
@@ -539,11 +564,27 @@ export function generatePDF(project, exportOption = 'chords-only') {
       } else if (base === 'two-eighths') {
         const mockSlots = [{ isSilence: false }, { isSilence: false }]
         drawPDFSubdivisionPattern(cx, cy, mockSlots, 'eighth', isDenom8, stemDirection)
-      } else if (base === 'eighth') {
+      } else if (base === 'eighth' || base === 'dotted-eighth') {
         doc.circle(cx, cy, 1.3, 'F');
         doc.line(cx + 1.2, cy, cx + 1.2, cy + dy);
         const flagOffset = stemDirection === 'down' ? 3 : -3;
         doc.line(cx + 1.2, cy + dy, cx + 3.2, cy + dy - flagOffset); // flag
+        if (base === 'dotted-eighth') {
+          doc.circle(cx + 3, cy, 0.6, 'F'); // dot
+        }
+      } else if (base === 'sixteenth' || base === 'dotted-sixteenth') {
+        doc.circle(cx, cy, 1.3, 'F');
+        doc.line(cx + 1.2, cy, cx + 1.2, cy + dy);
+        const flagOffset = stemDirection === 'down' ? 3 : -3;
+        doc.line(cx + 1.2, cy + dy, cx + 3.2, cy + dy - flagOffset); // flag 1
+        const dy2 = stemDirection === 'down' ? 7.5 : -7.5;
+        doc.line(cx + 1.2, cy + dy2, cx + 3.2, cy + dy2 - flagOffset); // flag 2
+        if (base === 'dotted-sixteenth') {
+          doc.circle(cx + 3.5, cy, 0.6, 'F'); // dot
+        }
+      } else if (base === 'triplet') {
+        const mockSlots = [{ isSilence: false }, { isSilence: false }, { isSilence: false }]
+        drawPDFSubdivisionPattern(cx, cy, mockSlots, 'triplet', isDenom8, stemDirection)
       }
     }
 
@@ -598,48 +639,43 @@ export function generatePDF(project, exportOption = 'chords-only') {
     
     if (subdivisionsOn) {
       if (measure.showObligado) {
-        // Strict Mode: merge based on explicit figures duration
-        for (let i = 0; i < numBeats; i++) {
-          if (states[i].isMerged) continue
-          const beat = measure.beats[i] || { root: '', type: '' }
-          if (beat.root || beat.harmonicRhythm) {
-            const dur = getBeatSlotDurationPDF(measure, beat, isDenom8)
-            states[i].flexGrow = dur
-            for (let j = 1; j < dur; j++) {
-              if (i + j < numBeats) {
-                states[i + j].isMerged = true
-                states[i + j].flexGrow = 0
+        // Merge beats based strictly on the measure's custom subdivision grouping
+        const grouping = getMeasureGroupingPDF(measure, sig)
+        let accum = 0
+        grouping.forEach(g => {
+          const limit = Math.min(numBeats, accum + g)
+          let i = accum
+          while (i < limit) {
+            if (states[i].isMerged) {
+              i++
+              continue
+            }
+            const beat = measure.beats[i] || { root: '', type: '' }
+            if (beat.root) {
+              const dur = getBeatSlotDurationPDF(measure, beat, isDenom8)
+              // Solo fusionamos hasta la duración real de la figura seleccionada dentro del grupo
+              const mergeLen = Math.min(limit - i, dur)
+              states[i].flexGrow = mergeLen
+              for (let j = 1; j < mergeLen; j++) {
+                if (i + j < numBeats) {
+                  states[i + j].isMerged = true
+                  states[i + j].flexGrow = 0
+                }
               }
+              i += mergeLen
+            } else {
+              // Pulso vacío dentro de la subdivisión: no se fusiona, se mantiene independiente para dibujar un slash
+              i++
             }
           }
-        }
+          accum += g
+        })
       } else {
         // Normal Mode with Subdivisions ON: do NOT merge beats, so that every beat gets drawn
         // and we can draw vertical subdivision lines at the boundaries!
       }
     } else {
-      // Normal Mode with Subdivisions OFF: auto-extend chords until next chord or end of measure
-      for (let i = 0; i < numBeats; i++) {
-        if (states[i].isMerged) continue
-        const beat = measure.beats[i] || { root: '', type: '' }
-        if (beat.root) {
-          let dur = 1
-          let j = i + 1
-          while (j < numBeats) {
-            const nextBeat = measure.beats[j] || { root: '', type: '' }
-            if (nextBeat.root) break
-            dur++
-            j++
-          }
-          states[i].flexGrow = dur
-          for (let k = 1; k < dur; k++) {
-            if (i + k < numBeats) {
-              states[i + k].isMerged = true
-              states[i + k].flexGrow = 0
-            }
-          }
-        }
-      }
+      // Normal Mode with Subdivisions OFF: do not merge beats so every beat is drawn individually as a slash
     }
     return states
   }
@@ -1790,7 +1826,13 @@ export function generatePDF(project, exportOption = 'chords-only') {
           // Draw slash or silence indicator inside staff space first!
           const beatX = startXForBeats + (currentBeatWidth / 2)
           if (measure.showObligado) {
-            drawPDFSingleRhythm(beatX, lineY, rhythm, sig.unit === 8, 'down')
+            if (measure.showSubdivisions !== false && !beat.root) {
+              // Draw normal slash for empty subdivision slots
+              doc.setLineWidth(0.3)
+              doc.line(beatX - 2, lineY + 3, beatX + 2, lineY - 3)
+            } else {
+              drawPDFSingleRhythm(beatX, lineY, rhythm, sig.unit === 8, 'down')
+            }
           } else {
             if (beat.harmonicRhythm && !beat.root) {
               // It's a rest/silence!
