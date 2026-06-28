@@ -3205,6 +3205,105 @@ const clearSelection = () => {
   selectedRangeEnd.value = null
   isSelectionDragging.value = false
 }
+
+const copiedMeasures = ref(null)
+
+const copySelectedMeasures = () => {
+  if (selectedRangeStart.value === null || selectedRangeEnd.value === null) return
+  const start = minSelectedMeasure.value - 1
+  const end = maxSelectedMeasure.value - 1
+  
+  const range = []
+  for (let i = start; i <= end; i++) {
+    const m = measures.value[i]
+    if (m) {
+      // Deep copy all content-related properties of the measure
+      range.push({
+        beats: JSON.parse(JSON.stringify(m.beats)),
+        sectionLabel: m.sectionLabel || null,
+        showObligado: m.showObligado !== false,
+        showSubdivisions: m.showSubdivisions !== false,
+        lyrics: JSON.parse(JSON.stringify(m.lyrics || { rawText: '', mode: 'free' })),
+        timeSignature: m.timeSignature ? JSON.parse(JSON.stringify(m.timeSignature)) : null,
+        grouping: m.grouping ? JSON.parse(JSON.stringify(m.grouping)) : null,
+        keyChange: m.keyChange ? JSON.parse(JSON.stringify(m.keyChange)) : null
+      })
+    }
+  }
+  
+  copiedMeasures.value = range
+  showToast(`${range.length} ${range.length === 1 ? 'compás copiado' : 'compases copiados'}`)
+}
+
+const pasteCopiedMeasures = () => {
+  if (!copiedMeasures.value || copiedMeasures.value.length === 0) return
+  if (selectedRangeStart.value === null || selectedRangeEnd.value === null) return
+  
+  const targetStartIdx = minSelectedMeasure.value - 1
+  saveHistory()
+  
+  const totalCopied = copiedMeasures.value.length
+  
+  // Enforce plan limit of 20 measures for FREE users
+  if (currentPlan.value === 'FREE') {
+    const finalLength = Math.max(measures.value.length, targetStartIdx + totalCopied)
+    if (finalLength > 20) {
+      upgradeReason.value = 'limit'
+      isUpgradeModalOpen.value = true
+      return
+    }
+  }
+
+  for (let i = 0; i < totalCopied; i++) {
+    const copiedM = copiedMeasures.value[i]
+    const destIdx = targetStartIdx + i
+    
+    if (destIdx < measures.value.length) {
+      // Overwrite existing measure
+      const destM = measures.value[destIdx]
+      destM.beats = JSON.parse(JSON.stringify(copiedM.beats))
+      destM.sectionLabel = copiedM.sectionLabel
+      destM.showObligado = copiedM.showObligado
+      destM.showSubdivisions = copiedM.showSubdivisions
+      destM.lyrics = JSON.parse(JSON.stringify(copiedM.lyrics))
+      
+      if (copiedM.timeSignature) {
+        destM.timeSignature = JSON.parse(JSON.stringify(copiedM.timeSignature))
+      } else {
+        delete destM.timeSignature
+      }
+      
+      if (copiedM.grouping) {
+        destM.grouping = JSON.parse(JSON.stringify(copiedM.grouping))
+      } else {
+        delete destM.grouping
+      }
+      
+      if (copiedM.keyChange) {
+        destM.keyChange = JSON.parse(JSON.stringify(copiedM.keyChange))
+      } else {
+        delete destM.keyChange
+      }
+    } else {
+      // Append new measure
+      measures.value.push({
+        id: generateUniqueId(),
+        beats: JSON.parse(JSON.stringify(copiedM.beats)),
+        sectionLabel: copiedM.sectionLabel,
+        showObligado: copiedM.showObligado,
+        showSubdivisions: copiedM.showSubdivisions,
+        lyrics: JSON.parse(JSON.stringify(copiedM.lyrics)),
+        ...(copiedM.timeSignature ? { timeSignature: JSON.parse(JSON.stringify(copiedM.timeSignature)) } : {}),
+        ...(copiedM.grouping ? { grouping: JSON.parse(JSON.stringify(copiedM.grouping)) } : {}),
+        ...(copiedM.keyChange ? { keyChange: JSON.parse(JSON.stringify(copiedM.keyChange)) } : {})
+      })
+    }
+  }
+  
+  syncMeasuresBeats()
+  clearSelection()
+  showToast(`Compases pegados con éxito`)
+}
 let wasAlreadySelectedBeforeMousedown = false
 const toggleMeasureSelection = (index) => {
   if (wasAlreadySelectedBeforeMousedown) {
@@ -10170,7 +10269,24 @@ const confirmExportPdf = () => {
                 </span>
               </div>
             </div>
-            <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
+            <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+              <!-- Botón COPIAR -->
+              <button 
+                @click="copySelectedMeasures" 
+                class="flex-1 sm:flex-initial px-3.5 py-2 text-[13px] font-bold text-gray-700 bg-gray-100 hover:bg-gray-250 border border-gray-300 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-1"
+              >
+                📋 COPIAR
+              </button>
+              
+              <!-- Botón PEGAR (visible si hay compases copiados) -->
+              <button 
+                v-if="copiedMeasures !== null"
+                @click="pasteCopiedMeasures" 
+                class="flex-1 sm:flex-initial px-3.5 py-2 text-[13px] font-bold text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 rounded-xl transition-all shadow-md shadow-emerald-100/50 active:scale-95 flex items-center justify-center gap-1"
+              >
+                📥 PEGAR
+              </button>
+
               <button 
                 @click="openTimesSelector" 
                 class="flex-1 sm:flex-initial px-4 py-2 text-[14px] font-bold rounded-xl transition-all shadow-md active:scale-95"
