@@ -1,5 +1,32 @@
 import { jsPDF } from "jspdf"
 import { formatChord } from "./chords.js"
+import { getKeySignature } from "./keySignatures.js"
+
+const getAccidentalNotes = (type, count) => {
+  const flats = ['b', 'e', 'a', 'd', 'g', 'c', 'f'];
+  const sharps = ['f#', 'c#', 'g#', 'd#', 'a#', 'e#', 'b#'];
+  const base = type === 'flat' ? flats : sharps;
+  const result = [];
+  for (let i = 0; i < count; i++) {
+    const idx = i % 7;
+    const round = Math.floor(i / 7);
+    let note = base[idx];
+    if (round > 0) {
+      note += type === 'flat' ? 'b' : '#';
+    }
+    result.push(note);
+  }
+  return result.join(',');
+};
+
+function getKeySignatureBoxText(key, scaleType) {
+  const sig = getKeySignature(key, scaleType);
+  if (!sig || sig.count === 0) return '';
+  const symbol = sig.type === 'flat' ? 'b' : '#';
+  const count = sig.count;
+  const activeNotes = getAccidentalNotes(sig.type, count);
+  return `${symbol} = ${count} (${activeNotes})`;
+}
 
 export function generatePDF(project, exportOption = 'chords-only') {
   const GROOVE_PATTERNS = {
@@ -432,12 +459,13 @@ export function generatePDF(project, exportOption = 'chords-only') {
     }
 
     const stems = [];
+    const nonSilences = [];
     slots.forEach((slot, idx) => {
       const nx = xs[idx];
-      if (!slot.isSilence) {
-        doc.circle(nx, cy, 1.2, 'F');
+      if (!slot.isSilence && !slot.isMerged) {
         stems.push({ x: nx, y: cy });
-      } else {
+        nonSilences.push({ x: nx + 1.0, y: cy });
+      } else if (slot.isSilence) {
         // Draw rest
         if (baseRhythm === 'sixteenth' || (baseRhythm === 'eighth' && isDenom8)) {
           doc.circle(nx - 1, cy - 6, 0.6, 'F');
@@ -478,6 +506,11 @@ export function generatePDF(project, exportOption = 'chords-only') {
         doc.line(stem.x, cy + dy2, stem.x + 2, cy + dy2 - flagOffset);
       }
     }
+
+    // DRAW NOTEHEADS ON TOP OF STEMS
+    nonSilences.forEach(ns => {
+      doc.circle(ns.x, ns.y, 1.2, 'F');
+    });
 
     if (baseRhythm === 'triplet') {
       doc.setFont("helvetica", "bold");
@@ -550,14 +583,18 @@ export function generatePDF(project, exportOption = 'chords-only') {
           doc.circle(cx + 3.5, cy, 0.6, 'F');
         }
       } else if (base === 'half' || base === 'dotted-half' || base === 'double') {
-        doc.ellipse(cx, cy, 2.0, 1.4, 'S');
-        doc.line(cx + 1.8, cy, cx + 1.8, cy + dy);
+        // Draw stem line first
+        doc.line(cx - 1.8, cy, cx - 1.8, cy + dy);
+        // Fill ellipse with white and stroke with gray so the stem goes behind
+        doc.setFillColor(255, 255, 255);
+        doc.ellipse(cx, cy, 2.0, 1.4, 'FD');
+        doc.setFillColor(80, 80, 80); // Restore fill color
         if (base === 'dotted-half') {
           doc.circle(cx + 3.5, cy, 0.6, 'F');
         }
       } else if (base === 'quarter' || base === 'dotted-quarter') {
+        doc.line(cx - 1.2, cy, cx - 1.2, cy + dy);
         doc.circle(cx, cy, 1.3, 'F');
-        doc.line(cx + 1.2, cy, cx + 1.2, cy + dy);
         if (base === 'dotted-quarter') {
           doc.circle(cx + 3, cy, 0.6, 'F');
         }
@@ -565,20 +602,20 @@ export function generatePDF(project, exportOption = 'chords-only') {
         const mockSlots = [{ isSilence: false }, { isSilence: false }]
         drawPDFSubdivisionPattern(cx, cy, mockSlots, 'eighth', isDenom8, stemDirection)
       } else if (base === 'eighth' || base === 'dotted-eighth') {
-        doc.circle(cx, cy, 1.3, 'F');
-        doc.line(cx + 1.2, cy, cx + 1.2, cy + dy);
         const flagOffset = stemDirection === 'down' ? 3 : -3;
-        doc.line(cx + 1.2, cy + dy, cx + 3.2, cy + dy - flagOffset); // flag
+        doc.line(cx - 1.2, cy, cx - 1.2, cy + dy);
+        doc.line(cx - 1.2, cy + dy, cx + 0.8, cy + dy - flagOffset); // flag
+        doc.circle(cx, cy, 1.3, 'F');
         if (base === 'dotted-eighth') {
           doc.circle(cx + 3, cy, 0.6, 'F'); // dot
         }
       } else if (base === 'sixteenth' || base === 'dotted-sixteenth') {
-        doc.circle(cx, cy, 1.3, 'F');
-        doc.line(cx + 1.2, cy, cx + 1.2, cy + dy);
         const flagOffset = stemDirection === 'down' ? 3 : -3;
-        doc.line(cx + 1.2, cy + dy, cx + 3.2, cy + dy - flagOffset); // flag 1
         const dy2 = stemDirection === 'down' ? 7.5 : -7.5;
-        doc.line(cx + 1.2, cy + dy2, cx + 3.2, cy + dy2 - flagOffset); // flag 2
+        doc.line(cx - 1.2, cy, cx - 1.2, cy + dy);
+        doc.line(cx - 1.2, cy + dy, cx + 0.8, cy + dy - flagOffset); // flag 1
+        doc.line(cx - 1.2, cy + dy2, cx + 0.8, cy + dy2 - flagOffset); // flag 2
+        doc.circle(cx, cy, 1.3, 'F');
         if (base === 'dotted-sixteenth') {
           doc.circle(cx + 3.5, cy, 0.6, 'F'); // dot
         }
@@ -731,23 +768,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
   }
 
   const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
-    if (!measure || !beat) return false
-    if (beat.forceSeparated) return false
-    const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
-    const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
-    const subCount = getSubdivisionCount(rhythm, sig.unit === 8, beat)
-    if (subCount === 1) return false
-    
-    const slots = getBeatSlots(measure, beat, beatIdx)
-    if (slots.length <= 1) return false
-    
-    const activeSlots = slots.filter(s => !s.isSilence && !s.isMerged)
-    if (activeSlots.length === 0) return true
-    
-    const hasAllRoot = activeSlots.every(s => s.root)
-    if (!hasAllRoot) return false
-    
-    return activeSlots.every(s => areChordsEqual(s, activeSlots[0]))
+    return false
   }
 
   const shouldRenderAsSubdivided = (measure, beat, beatIdx) => {
@@ -1575,12 +1596,31 @@ export function generatePDF(project, exportOption = 'chords-only') {
 
     // Información de Cifra indicadora y Tonalidad (Solo en la primera fila, dibujada ANTES del sistema)
     if (rowIdx === 0) {
-      // Dibujar clave / armadura de clave
-      if (project.keySignatureStr) {
+      // Dibujar clave / armadura de clave en un recuadro sobre la cifra indicadora
+      const boxText = getKeySignatureBoxText(project.key, project.scaleType);
+      if (boxText) {
+        doc.saveGraphicsState && doc.saveGraphicsState();
         doc.setFont("helvetica", "bold")
-        doc.setFontSize(14)
-        // Draw right-aligned to prevent overlapping the time signature
-        doc.text(project.keySignatureStr, marginX - 14, lineY - 6, { align: "right" })
+        doc.setFontSize(8)
+        const textWidth = doc.getTextWidth(boxText);
+        const boxPaddingX = 2.0;
+        const boxWidth = textWidth + (boxPaddingX * 2);
+        const boxHeight = 5.0;
+        
+        // Centrar horizontalmente sobre el área de la métrica (centro aproximado x = 15)
+        const boxX = 15 - (boxWidth / 2);
+        const boxY = lineY - 23;
+        
+        // Dibujar recuadro con borde y fondo blanco
+        doc.setLineWidth(0.4)
+        doc.setDrawColor(80, 80, 80)
+        doc.setFillColor(255, 255, 255)
+        doc.roundedRect(boxX, boxY, boxWidth, boxHeight, 0.8, 0.8, "FD")
+        
+        // Dibujar texto
+        doc.setTextColor(80, 80, 80)
+        doc.text(boxText, boxX + boxPaddingX, boxY + 3.6)
+        doc.restoreGraphicsState && doc.restoreGraphicsState();
       }
       
       doc.setFont("times", "bold")
@@ -1591,6 +1631,14 @@ export function generatePDF(project, exportOption = 'chords-only') {
 
     // Pre-calculate measure widths and start positions for this row
     const measureWidths = rowMeasures.map(() => usableWidth / rowMeasures.length)
+
+    // Líneas horizontales del sistema (dibujadas antes de las notas para que queden por detrás)
+    const endX = startX + rowMeasures.reduce((sum, _, cIdx) => sum + measureWidths[cIdx], 0)
+    doc.saveGraphicsState && doc.saveGraphicsState();
+    doc.setDrawColor(0, 0, 0)
+    doc.setLineWidth(0.5)
+    doc.line(startX, lineY, endX, lineY)
+    doc.restoreGraphicsState && doc.restoreGraphicsState();
 
     const measureStarts = []
     let currentAccumulatedX = startX
@@ -1939,11 +1987,6 @@ export function generatePDF(project, exportOption = 'chords-only') {
         doc.line(mEndX, lineY - 5, mEndX, lineY + 5)
       }
     })
-
-    // Líneas horizontales del sistema
-    const endX = startX + rowMeasures.reduce((sum, _, cIdx) => sum + measureWidths[cIdx], 0)
-    doc.setLineWidth(0.5)
-    doc.line(startX, lineY, endX, lineY)
 
     currentY += currentRowHeight
   })

@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import logoUrl from './assets/logo.jpg'
 import { getDiatonicChords, SCALES, getScaleNotes } from './core/scales.js'
 import { formatChord } from './core/chords.js'
+import { playClick, playChordNotes, getVoiceLedMidi, getRootPositionMidi } from './core/audio.js'
 import { generatePDF } from './core/pdfExport.js'
 import { getKeySignatureString, getKeySignature, getParentKeyRoot, SCALE_PARENTS } from './core/keySignatures.js'
 import { getSuggestionsForSystem, applySuggestion, getChordDegree, analyzeModulationRelationship } from './core/suggestions.js'
@@ -115,16 +116,7 @@ const measures = ref([])
 const repeats = ref([])
 const globalGroove = ref('Ninguno')
 const globalShowObligado = ref(false)
-const globalShowSubdivisions = computed({
-  get() {
-    return measures.value.some(m => m.showSubdivisions !== false)
-  },
-  set(on) {
-    measures.value.forEach(m => {
-      m.showSubdivisions = on
-    })
-  }
-})
+const globalShowSubdivisions = ref(false)
 const tempMeasureGroove = ref('global')
 // --- UNDO HISTORY STATE & OPERATIONS ---
 const undoStack = ref([])
@@ -198,9 +190,11 @@ const setPlan = (plan) => {
     // Reset global groove and rhythmic overrides under FREE plan
     globalGroove.value = 'Ninguno'
     globalShowObligado.value = false
+    globalShowSubdivisions.value = false
     measures.value.forEach(m => {
       m.groove = 'global'
       m.showObligado = false
+      m.showSubdivisions = false
       m.beats.forEach(b => {
         b.harmonicRhythm = 'auto'
         delete b.subdivisions
@@ -221,6 +215,7 @@ const startProject = () => {
   
   // Reset all layout toggles to OFF when entering the editor
   globalShowObligado.value = false
+  globalShowSubdivisions.value = false
   showLyricsGlobal.value = false
   
   const limit = currentPlan.value === 'PRO' ? 999 : 20
@@ -3944,6 +3939,7 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', handleGlobalMouseUp)
   window.removeEventListener('resize', handleResize)
   window.removeEventListener('keydown', handleKeyDown)
+  stopPlayback()
 })
 const activeModalKeyAndScale = computed(() => {
   if (selectedBeat.value) {
@@ -6154,6 +6150,9 @@ const toggleAllSubdivisions = (event) => {
   }
   saveHistory()
   globalShowSubdivisions.value = on
+  measures.value.forEach(m => {
+    m.showSubdivisions = on
+  })
 }
 const toggleGlobalShowObligado = (event) => {
   const on = event.target.checked
@@ -6170,6 +6169,26 @@ const toggleGlobalShowObligado = (event) => {
   })
   syncMeasuresBeats()
   showToast(on ? 'Modo rítmico activado: Los acordes respetarán duración exacta de figuras' : 'Modo rítmico desactivado')
+}
+const toggleLocalSubdivisions = (event) => {
+  const on = event.target.checked
+  if (currentPlan.value !== 'PRO') {
+    upgradeReason.value = 'ritmo_armonico'
+    isUpgradeModalOpen.value = true
+    event.target.checked = false
+    return
+  }
+  tempShowSubdivisions.value = on
+}
+const toggleLocalObligado = (event) => {
+  const on = event.target.checked
+  if (currentPlan.value !== 'PRO') {
+    upgradeReason.value = 'ritmo_armonico'
+    isUpgradeModalOpen.value = true
+    event.target.checked = false
+    return
+  }
+  tempShowObligado.value = on
 }
 const saveMeasureOptions = () => {
   if (selectedMeasureIndex.value !== null) {
@@ -8284,6 +8303,348 @@ const confirmExportPdf = () => {
     alert("Error al generar PDF: " + err.message + "\n" + err.stack)
   }
 }
+
+// =========================================================================
+// --- PLAYBACK & AUDIO ENGINE SYSTEM ---
+// =========================================================================
+let audioCtx = null
+const isPlaying = ref(false)
+const playbackBpm = ref(120)
+const playbackMetronome = ref(false)
+const playbackMetronomeSound = ref('beep')
+const playbackContinuity = ref(true)
+const playbackFillChords = ref(true)
+const playbackTriadVoicing = ref('fundamental')
+const playbackTetradVoicing = ref('fundamental')
+
+const currentPlayingMeasureIndex = ref(null)
+const currentPlayingOriginalMeasureIndex = ref(null)
+const currentPlayingBeatIndex = ref(null)
+const playheadProgress = ref(0)
+const isAudioSettingsOpen = ref(false)
+
+const initAudio = () => {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume()
+  }
+}
+
+// Bucle de programación (look-ahead scheduler)
+let schedulerTimer = null
+let nextNoteTime = 0.0
+let scheduleMeasureIdx = 0
+let scheduleBeatIdx = 0
+let lastVoicedNotes = null
+const visualQueue = []
+
+const playbackSequence = computed(() => {
+  const sortedRepeats = [...repeats.value].sort((a, b) => a.startMeasure - b.startMeasure)
+  const result = []
+  let i = 0
+  
+  while (i < measuresWithKey.value.length) {
+    const measureNum = i + 1
+    const r = sortedRepeats.find(rep => rep.startMeasure === measureNum)
+    
+    if (r) {
+      if (r.startMeasure > measuresWithKey.value.length) {
+        const origM = measuresWithKey.value[i]
+        result.push({
+          ...origM,
+          originalMeasureIndex: i,
+          isExpandedCopy: false,
+          displayPass: null
+        })
+        i++
+        continue
+      }
+      
+      if (r.type === 'casilla') {
+        const times = Number(r.times) || 2
+        const casilla1Start = Number(r.casilla1Start) || r.startMeasure
+        const casilla2Start = Number(r.casilla2Start) || (r.endMeasure + 1)
+        const casilla2End = Number(r.casilla2End) || casilla2Start
+        
+        if (casilla1Start < r.startMeasure || casilla1Start > r.endMeasure || casilla2Start > measuresWithKey.value.length || casilla2End < casilla2Start) {
+          const origM = measuresWithKey.value[i]
+          result.push({
+            ...origM,
+            originalMeasureIndex: i,
+            isExpandedCopy: false,
+            displayPass: null
+          })
+          i++
+          continue
+        }
+        
+        const pushRange = (start, end, pass) => {
+          for (let m = start; m <= end; m++) {
+            const origM = measuresWithKey.value[m - 1]
+            if (origM) {
+              result.push({
+                ...origM,
+                id: `${origM.id}-playback-${pass}-${m}`,
+                originalMeasureIndex: m - 1,
+                isExpandedCopy: true,
+                displayPass: pass
+              })
+            }
+          }
+        }
+        
+        for (let pass = 1; pass <= times; pass++) {
+          if (casilla1Start > r.startMeasure) {
+            pushRange(r.startMeasure, casilla1Start - 1, pass)
+          }
+          pushRange(casilla1Start, r.endMeasure, pass)
+        }
+        
+        const finalPass = times + 1
+        if (casilla1Start > r.startMeasure) {
+          pushRange(r.startMeasure, casilla1Start - 1, finalPass)
+        }
+        pushRange(casilla2Start, casilla2End, finalPass)
+        
+        i = Math.max(r.endMeasure, casilla2End)
+      } else {
+        const times = Number(r.times) || 2
+        const start = r.startMeasure
+        const end = r.endMeasure
+        
+        if (start > end || end > measuresWithKey.value.length) {
+          const origM = measuresWithKey.value[i]
+          result.push({
+            ...origM,
+            originalMeasureIndex: i,
+            isExpandedCopy: false,
+            displayPass: null
+          })
+          i++
+          continue
+        }
+        
+        for (let pass = 1; pass <= times; pass++) {
+          for (let m = start; m <= end; m++) {
+            const origM = measuresWithKey.value[m - 1]
+            if (origM) {
+              result.push({
+                ...origM,
+                id: `${origM.id}-playback-simple-${pass}-${m}`,
+                originalMeasureIndex: m - 1,
+                isExpandedCopy: true,
+                displayPass: pass
+              })
+            }
+          }
+        }
+        i = end
+      }
+    } else {
+      const origM = measuresWithKey.value[i]
+      result.push({
+        ...origM,
+        originalMeasureIndex: i,
+        isExpandedCopy: false,
+        displayPass: null
+      })
+      i++
+    }
+  }
+  return result.map((m, idx) => ({
+    ...m,
+    displayedMeasureIndex: idx
+  }))
+})
+
+const scheduler = () => {
+  while (nextNoteTime < audioCtx.currentTime + 0.1) {
+    if (scheduleMeasureIdx >= playbackSequence.value.length) {
+      break
+    }
+    
+    const measure = playbackSequence.value[scheduleMeasureIdx]
+    const sig = getMeasureTimeSignature(measure)
+    const beatDuration = (sig.unit === 8 ? 0.5 : 1.0) * (60.0 / playbackBpm.value)
+    
+    // Metrónomo
+    if (playbackMetronome.value) {
+      playClick(audioCtx, nextNoteTime, playbackMetronomeSound.value, scheduleBeatIdx === 0)
+    }
+    
+    // Acordes
+    const beat = measure.beats[scheduleBeatIdx]
+    if (beat) {
+      if (measure.showObligado) {
+        if (shouldRenderAsSubdivided(measure, beat, scheduleBeatIdx)) {
+          const slots = getBeatSlots(measure, beat, scheduleBeatIdx)
+          const subCount = slots.length
+          const slotDuration = beatDuration / subCount
+          
+          for (let k = 0; k < subCount; k++) {
+            const slot = slots[k]
+            if (slot && slot.root && !slot.isSilence && !slot.isMerged) {
+              let durationSlots = 1
+              while (k + durationSlots < subCount && slots[k + durationSlots].isMerged) {
+                durationSlots++
+              }
+              const durationSeconds = durationSlots * slotDuration
+              
+              let notes = []
+              if (playbackContinuity.value) {
+                notes = getVoiceLedMidi(slot, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
+              } else {
+                notes = getRootPositionMidi(slot, playbackTriadVoicing.value, playbackTetradVoicing.value)
+              }
+              if (notes.length > 0) {
+                playChordNotes(audioCtx, nextNoteTime + k * slotDuration, notes, durationSeconds - 0.02)
+                lastVoicedNotes = notes
+              }
+            }
+          }
+        } else {
+          const states = getMergedBeats(measure)
+          const state = states.find(s => s.index === scheduleBeatIdx)
+          if (state && !state.isMerged && state.beat.root) {
+            const durationSeconds = state.durationSlots * beatDuration
+            let notes = []
+            if (playbackContinuity.value) {
+              notes = getVoiceLedMidi(state.beat, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
+            } else {
+              notes = getRootPositionMidi(state.beat, playbackTriadVoicing.value, playbackTetradVoicing.value)
+            }
+            if (notes.length > 0) {
+              playChordNotes(audioCtx, nextNoteTime, notes, durationSeconds - 0.02)
+              lastVoicedNotes = notes
+            }
+          }
+        }
+      } else {
+        if (beat.root) {
+          let durationBeats = 1
+          if (playbackFillChords.value) {
+            for (let j = scheduleBeatIdx + 1; j < measure.beats.length; j++) {
+              if (measure.beats[j] && measure.beats[j].root) {
+                durationBeats = j - scheduleBeatIdx
+                break
+              } else {
+                durationBeats = measure.beats.length - scheduleBeatIdx
+              }
+            }
+          }
+          const durationSeconds = durationBeats * beatDuration
+          let notes = []
+          if (playbackContinuity.value) {
+            notes = getVoiceLedMidi(beat, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
+          } else {
+            notes = getRootPositionMidi(beat, playbackTriadVoicing.value, playbackTetradVoicing.value)
+          }
+          if (notes.length > 0) {
+            playChordNotes(audioCtx, nextNoteTime, notes, durationSeconds - 0.02)
+            lastVoicedNotes = notes
+          }
+        }
+      }
+    }
+    
+    visualQueue.push({
+      measureIdx: viewMode.value === 'expanded' && currentPlan.value === 'PRO' ? scheduleMeasureIdx : measure.displayedMeasureIndex,
+      origMeasureIdx: measure.originalMeasureIndex,
+      beatIdx: scheduleBeatIdx,
+      beatDuration: beatDuration,
+      startTime: nextNoteTime,
+      numBeats: measure.beats.length
+    })
+    
+    nextNoteTime += beatDuration
+    scheduleBeatIdx++
+    if (scheduleBeatIdx >= measure.beats.length) {
+      scheduleBeatIdx = 0
+      scheduleMeasureIdx++
+    }
+  }
+}
+
+let animationFrameId = null
+const updatePlayhead = () => {
+  if (!isPlaying.value) {
+    currentPlayingMeasureIndex.value = null
+    currentPlayingOriginalMeasureIndex.value = null
+    currentPlayingBeatIndex.value = null
+    playheadProgress.value = 0
+    return
+  }
+  
+  const now = audioCtx ? audioCtx.currentTime : 0
+  
+  while (visualQueue.length > 0 && visualQueue[0].startTime + visualQueue[0].beatDuration < now) {
+    visualQueue.shift()
+  }
+  
+  if (visualQueue.length > 0) {
+    const currentEvent = visualQueue[0]
+    if (now >= currentEvent.startTime && now <= currentEvent.startTime + currentEvent.beatDuration) {
+      const beatProgress = (now - currentEvent.startTime) / currentEvent.beatDuration
+      
+      currentPlayingMeasureIndex.value = currentEvent.measureIdx
+      currentPlayingOriginalMeasureIndex.value = currentEvent.origMeasureIdx
+      currentPlayingBeatIndex.value = currentEvent.beatIdx
+      
+      playheadProgress.value = (currentEvent.beatIdx + beatProgress) / currentEvent.numBeats
+    }
+  } else {
+    if (scheduleMeasureIdx >= playbackSequence.value.length) {
+      stopPlayback()
+    }
+  }
+  
+  animationFrameId = requestAnimationFrame(updatePlayhead)
+}
+
+const startPlayback = () => {
+  if (measuresWithKey.value.length === 0) return
+  initAudio()
+  
+  isPlaying.value = true
+  lastVoicedNotes = null
+  scheduleMeasureIdx = 0
+  scheduleBeatIdx = 0
+  nextNoteTime = audioCtx.currentTime + 0.05
+  visualQueue.length = 0
+  
+  schedulerTimer = setInterval(() => {
+    scheduler()
+  }, 25)
+  
+  animationFrameId = requestAnimationFrame(updatePlayhead)
+}
+
+const stopPlayback = () => {
+  isPlaying.value = false
+  if (schedulerTimer) {
+    clearInterval(schedulerTimer)
+    schedulerTimer = null
+  }
+  if (animationFrameId) {
+    cancelAnimationFrame(animationFrameId)
+    animationFrameId = null
+  }
+  
+  currentPlayingMeasureIndex.value = null
+  currentPlayingOriginalMeasureIndex.value = null
+  currentPlayingBeatIndex.value = null
+  playheadProgress.value = 0
+}
+
+const togglePlayback = () => {
+  if (isPlaying.value) {
+    stopPlayback()
+  } else {
+    startPlayback()
+  }
+}
 </script>
 <template>
   <div class="h-[100dvh] w-full flex flex-col bg-[#F5FCE6] text-[#1C1C1E] font-sans antialiased overflow-hidden">
@@ -9052,6 +9413,12 @@ const confirmExportPdf = () => {
                     }"
                     :style="getMeasureFlexStyle(measure)"
                   >
+                    <!-- Playhead Line (Reproducción) -->
+                    <div 
+                      v-if="isPlaying && currentPlayingMeasureIndex === measure.displayedMeasureIndex" 
+                      class="absolute top-0 bottom-0 w-[3px] bg-[#8EE000] z-40 pointer-events-none shadow-[0_0_8px_#8EE000] transition-[left] duration-75"
+                      :style="{ left: (playheadProgress * 100) + '%' }"
+                    ></div>
                     <!-- Selection Mode Overlay -->
                     <div 
                       v-if="isSelectionMode"
@@ -9204,7 +9571,8 @@ const confirmExportPdf = () => {
                             'rounded-l-lg border-l border-violet-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst,
                             'rounded-r-lg border-r border-violet-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isLast,
                             'ml-2.5': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0,
-                            'ml-2': currentPlan === 'PRO' && measure.showSubdivisions === false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0
+                            'ml-2': currentPlan === 'PRO' && measure.showSubdivisions === false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0,
+                            'ring-2 ring-[#8EE000]/80 bg-[#8EE000]/10 shadow-lg shadow-[#8EE000]/15 z-20': isPlaying && currentPlayingMeasureIndex === measure.displayedMeasureIndex && currentPlayingBeatIndex === state.index
                           }"
                         >
                           <!-- Group separator line -->
@@ -10532,15 +10900,16 @@ const confirmExportPdf = () => {
                   <!-- Subdivisiones Toggle -->
                   <div class="flex items-center justify-between pt-1">
                     <div>
-                      <span class="block text-[15px] font-bold text-gray-800">Subdivisiones de Compás</span>
-                      <span class="block text-[11px] text-gray-400 mt-0.5">Muestra las líneas de subdivisión (slashes) y agrupa acordes según su duración.</span>
+                      <span class="block text-[15px] font-bold text-gray-800">Subdivisión (sólo para este compás)</span>
+                      <span class="block text-[11px] text-gray-400 mt-0.5">Activa las subdivisiones de compás de manera independiente.</span>
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer select-none">
                       <input 
                         id="tempShowSubdivisions"
                         name="tempShowSubdivisions"
                         type="checkbox" 
-                        v-model="tempShowSubdivisions" 
+                        :checked="tempShowSubdivisions" 
+                        @change="toggleLocalSubdivisions($event)"
                         class="sr-only peer"
                       >
                       <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#8EE000]"></div>
@@ -10550,15 +10919,16 @@ const confirmExportPdf = () => {
                   <!-- Obligado Rítmico Toggle -->
                   <div class="flex items-center justify-between pt-3">
                     <div>
-                      <span class="block text-[15px] font-bold text-gray-800">Obligado Rítmico (Modo Avanzado)</span>
-                      <span class="block text-[11px] text-gray-400 mt-0.5">Muestra figuras musicales asociadas a los acordes para cortes rítmicos.</span>
+                      <span class="block text-[15px] font-bold text-gray-800">Ritmo Armónico (sólo para este compás)</span>
+                      <span class="block text-[11px] text-gray-400 mt-0.5">Activa la edición y visualización de figuras rítmicas de manera independiente.</span>
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer select-none">
                       <input 
                         id="tempShowObligado"
                         name="tempShowObligado"
                         type="checkbox" 
-                        v-model="tempShowObligado" 
+                        :checked="tempShowObligado" 
+                        @change="toggleLocalObligado($event)"
                         class="sr-only peer"
                       >
                       <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#8EE000]"></div>
@@ -11125,7 +11495,7 @@ const confirmExportPdf = () => {
               </button>
             </div>
             <!-- RITMO ARMONICO SECTION -->
-            <div v-if="activeEditingBeat && (wasBeatAlreadySet || getEffectiveRhythm(measures[selectedBeat.measureIndex], measures[selectedBeat.measureIndex]?.beats[selectedBeat.beatIndex], selectedBeat.beatIndex) !== 'quarter') && currentPlan === 'PRO'" class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 space-y-4">
+            <div v-if="activeEditingBeat && (wasBeatAlreadySet || getEffectiveRhythm(measures[selectedBeat.measureIndex], measures[selectedBeat.measureIndex]?.beats[selectedBeat.beatIndex], selectedBeat.beatIndex) !== 'quarter') && currentPlan === 'PRO' && measures[selectedBeat.measureIndex]?.showObligado" class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 space-y-4">
               <div class="flex items-center justify-between">
                 <h4 class="text-sm font-black text-gray-800 flex items-center gap-2">
                   <span>🥁</span> <span>Ritmo Armónico</span>
@@ -12278,6 +12648,153 @@ const confirmExportPdf = () => {
         </div>
       </div>
     </transition>
+    
+    <!-- ==================== FLOATING PLAYBACK CONTROLLER ==================== -->
+    <div 
+      v-if="!isSetupMode" 
+      class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-white/85 backdrop-blur-md border border-gray-200/80 px-5 py-3 rounded-full shadow-2xl transition-all duration-300 hover:shadow-black/10 select-none max-w-[95dvw] overflow-visible"
+      :class="{ 'bottom-20': toastMessage }"
+    >
+      <!-- Play/Stop Button -->
+      <button 
+        @click="togglePlayback" 
+        class="w-10 h-10 rounded-full flex items-center justify-center text-white transition-all transform active:scale-95 shadow-md"
+        :class="isPlaying ? 'bg-red-500 hover:bg-red-605 shadow-red-500/20' : 'bg-[#8EE000] hover:bg-[#7bc200] text-black shadow-[#8EE000]/30'"
+        :title="isPlaying ? 'Detener Reproducción' : 'Reproducir'"
+      >
+        <span v-if="isPlaying" class="text-xs">■</span>
+        <span v-else class="text-xs ml-0.5">▶</span>
+      </button>
+
+      <!-- BPM Control -->
+      <div class="flex items-center gap-1.5 border-r border-gray-200 pr-3 mr-1">
+        <span class="text-[9px] font-black text-gray-400 uppercase tracking-wider">BPM</span>
+        <input 
+          type="number" 
+          v-model.number="playbackBpm" 
+          min="40" 
+          max="240" 
+          class="w-12 bg-gray-50 border border-gray-200 rounded-lg text-center text-xs font-bold text-gray-800 focus:outline-none focus:border-[#8EE000] py-1"
+        />
+      </div>
+
+      <!-- Metronome Toggle -->
+      <div class="flex items-center gap-1 border-r border-gray-200 pr-3 mr-1">
+        <button 
+          @click="playbackMetronome = !playbackMetronome"
+          class="px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all flex items-center gap-1"
+          :class="playbackMetronome ? 'bg-[#8EE000]/20 text-[#6CA600]' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'"
+          title="Activar/Desactivar Metrónomo"
+        >
+          <span>🔔</span>
+          <span class="hidden sm:inline">Metrónomo</span>
+        </button>
+
+        <!-- Metronome Sound Selector (only visible if metronome is ON) -->
+        <select 
+          v-model="playbackMetronomeSound"
+          v-if="playbackMetronome"
+          class="bg-gray-50 border border-gray-250 rounded-lg text-[10px] font-bold text-gray-700 py-1 px-1 focus:outline-none focus:border-[#8EE000]"
+          title="Sonido del Metrónomo"
+        >
+          <option value="beep">Beep</option>
+          <option value="woodblock">Madera</option>
+          <option value="cowbell">Cencerro</option>
+          <option value="rimshot">Rimshot</option>
+        </select>
+      </div>
+
+      <!-- Sound Settings Gear -->
+      <div class="relative">
+        <button 
+          @click="isAudioSettingsOpen = !isAudioSettingsOpen"
+          class="w-8 h-8 rounded-full bg-gray-50 border border-gray-205 hover:bg-gray-100 flex items-center justify-center text-xs shadow-sm transition-all"
+          :class="{ 'border-[#8EE000] text-[#6CA600] bg-[#8EE000]/10': isAudioSettingsOpen }"
+          title="Ajustes de Sonido y Armonización"
+        >
+          ⚙️
+        </button>
+
+        <!-- Settings Dropup Panel -->
+        <transition name="dropdown">
+          <div 
+            v-if="isAudioSettingsOpen" 
+            class="absolute bottom-full right-0 mb-3 w-72 bg-white rounded-2xl border border-gray-200/90 shadow-2xl p-4 flex flex-col gap-3.5 text-left font-sans z-50 animate-scale-up"
+          >
+            <div class="flex items-center justify-between border-b border-gray-100 pb-2">
+              <span class="text-[10px] font-black text-gray-500 uppercase tracking-wider">Ajustes de Sonido</span>
+              <button @click="isAudioSettingsOpen = false" class="text-gray-400 hover:text-gray-600 text-xs">✕</button>
+            </div>
+
+            <!-- Continuity Voice Leading Switch -->
+            <div class="flex items-center justify-between">
+              <div>
+                <span class="block text-xs font-bold text-gray-800">Continuidad Armónica</span>
+                <span class="block text-[9px] text-gray-400 mt-0.5">Movimientos de acordes fluidos paso a paso</span>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  v-model="playbackContinuity"
+                  class="sr-only peer"
+                >
+                <div class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#8EE000]"></div>
+              </label>
+            </div>
+
+            <!-- Fill Chords Switch (only shown if not in Ritmo Armónico mode) -->
+            <div class="flex items-center justify-between border-t border-gray-100 pt-2.5">
+              <div>
+                <span class="block text-xs font-bold text-gray-800">Rellenar compás con acordes</span>
+                <span class="block text-[9px] text-gray-400 mt-0.5">Llena compases vacíos con el acorde anterior (sin Ritmo Armónico)</span>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  v-model="playbackFillChords"
+                  class="sr-only peer"
+                >
+                <div class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#8EE000]"></div>
+              </label>
+            </div>
+
+            <!-- Voicings selection per structure -->
+            <div class="border-t border-gray-100 pt-2.5 space-y-2">
+              <span class="block text-[9px] font-black text-gray-400 uppercase tracking-wider">Estructura Armónica / Voicings</span>
+              
+              <!-- Tetrads voicing -->
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-xs font-semibold text-gray-750">Tétradas (7ª):</span>
+                <select 
+                  v-model="playbackTetradVoicing"
+                  class="bg-gray-50 border border-gray-200 rounded-lg text-xs font-bold text-gray-800 py-1 px-1.5 focus:outline-none focus:border-[#8EE000]"
+                >
+                  <option value="fundamental">Estado Fundamental</option>
+                  <option value="drop2">Drop 2 (5-1-3-7)</option>
+                  <option value="inversion1">1ª Inversión (3-5-7-1)</option>
+                  <option value="inversion2">2ª Inversión (5-7-1-3)</option>
+                  <option value="inversion3">3ª Inversión (7-1-3-5)</option>
+                </select>
+              </div>
+
+              <!-- Triads voicing -->
+              <div class="flex items-center justify-between gap-2 border-t border-gray-100 pt-2">
+                <span class="text-xs font-semibold text-gray-750">Tríadas (3ª):</span>
+                <select 
+                  v-model="playbackTriadVoicing"
+                  class="bg-gray-50 border border-gray-200 rounded-lg text-xs font-bold text-gray-800 py-1 px-1.5 focus:outline-none focus:border-[#8EE000]"
+                >
+                  <option value="fundamental">Estado Fundamental</option>
+                  <option value="inversion1">1ª Inversión (3-5-1)</option>
+                  <option value="inversion2">2ª Inversión (5-1-3)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </transition>
+      </div>
+    </div>
+
     <!-- ==================== TOAST NOTIFICATION ==================== -->
     <transition name="toast-fade">
       <div 
