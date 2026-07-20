@@ -286,21 +286,22 @@ export function getSuggestionsForSystem(systemMeasures, systemStartIdx, keyRoot,
   }
 
   // Regla 2: Tétradas a 9
-  const tetradChordIdx = activeChords.findIndex(c => ['maj7', 'm7', '7'].includes(c.type) && !c.tensions.includes('9'))
+  const tetradChordIdx = activeChords.findIndex(c => ['maj7', 'm7', '7'].includes(c.type) && (!c.tensions || !c.tensions.includes('9')))
   if (tetradChordIdx !== -1) {
     const tetradChord = activeChords[tetradChordIdx]
     const nineNote = getNineNoteOfRoot(tetradChord.root, tetradChord.activeKey)
-    const nextChord = activeChords[(tetradChordIdx + 1) % 4]
+    const nextChord = activeChords[(tetradChordIdx + 1) % activeChords.length]
     const voiceLeadingText = explainNoteResolution(nineNote, nextChord, tetradChord.activeKey)
+    const newTensions = Array.from(new Set([...(tetradChord.tensions || []), '9']))
 
     candidates.push({
-      id: `rule_2_${systemIndex}`,
+      id: `rule_2_${systemIndex}_${tetradChord.globalMeasureIndex}`,
       category: 'enrich',
-      title: 'Añadir extensión de Novena (9)',
-      text: `Podrías explorar añadir la novena (9) al acorde de séptima ${tetradChord.root}${tetradChord.type}. Al incorporar la novena (${nineNote}), se genera una textura abierta y sofisticada que enriquece el registro agudo. En este caso, esta se conecta con el acorde siguiente (${nextChord.root}) así: ${voiceLeadingText}.`,
+      title: `Añadir extensión de Novena (9) en ${tetradChord.root}`,
+      text: `Podrías explorar añadir la novena (9) al acorde de séptima ${tetradChord.root}${tetradChord.type} en compás ${tetradChord.globalMeasureIndex + 1}. Al incorporar la novena (${nineNote}), se genera una textura abierta y sofisticada que enriquece el registro agudo. En este caso, esta se conecta con el acorde siguiente (${nextChord.root}) así: ${voiceLeadingText}.`,
       preview: `${tetradChord.root}${tetradChord.type} ➔ ${tetradChord.root}${tetradChord.type}(9)`,
       payload: [
-        { measureIndex: tetradChord.globalMeasureIndex, beatIndex: tetradChord.beatIndex, chord: { root: tetradChord.root, type: tetradChord.type, tensions: [...tetradChord.tensions, '9'], bass: tetradChord.bass } }
+        { measureIndex: tetradChord.globalMeasureIndex, beatIndex: tetradChord.beatIndex, chord: { root: tetradChord.root, type: tetradChord.type, tensions: newTensions, bass: tetradChord.bass } }
       ],
       metadata: {
         name: `${tetradChord.root}${tetradChord.type}(9)`,
@@ -316,22 +317,22 @@ export function getSuggestionsForSystem(systemMeasures, systemStartIdx, keyRoot,
   }
 
   // Regla 3: Acorde Mayor a maj7 o add9
-  const majChordIdx = activeChords.findIndex(c => ['maj', 'major', ''].includes(c.type) || (c.type === 'maj7' && !c.tensions.includes('9')))
+  const majChordIdx = activeChords.findIndex(c => (['maj', 'major', ''].includes(c.type) || c.type === 'maj7') && (!c.tensions || !c.tensions.includes('9')))
   if (majChordIdx !== -1) {
     const majChord = activeChords[majChordIdx]
     const isTriad = ['maj', 'major', ''].includes(majChord.type)
     const previewStr = isTriad ? `${majChord.root}maj7` : `${majChord.root}maj9`
     const nextType = isTriad ? 'maj7' : majChord.type
-    const nextTensions = isTriad ? majChord.tensions : [...majChord.tensions, '9']
+    const nextTensions = isTriad ? (majChord.tensions || []) : Array.from(new Set([...(majChord.tensions || []), '9']))
     const addedNote = transposeNote(majChord.root, isTriad ? 11 : 2, majChord.activeKey)
-    const nextChord = activeChords[(majChordIdx + 1) % 4]
+    const nextChord = activeChords[(majChordIdx + 1) % activeChords.length]
     const voiceLeadingText = explainNoteResolution(addedNote, nextChord, majChord.activeKey)
 
     candidates.push({
-      id: `rule_3_${systemIndex}`,
+      id: `rule_3_${systemIndex}_${majChord.globalMeasureIndex}`,
       category: 'enrich',
-      title: 'Dar color al acorde mayor (maj7 / add9)',
-      text: `Para embellecer el acorde mayor ${majChord.root}, una opción sería enriquecerlo como ${previewStr}. Estas tensiones suavizan el ataque de la tríada. En esta transición, la tensión añadida (${addedNote}) se enlaza con el acorde siguiente (${nextChord.root}) de este modo: ${voiceLeadingText}.`,
+      title: `Dar color al acorde mayor ${majChord.root} (maj7 / add9)`,
+      text: `Para embellecer el acorde mayor ${majChord.root} en compás ${majChord.globalMeasureIndex + 1}, una opción sería enriquecerlo como ${previewStr}. Estas tensiones suavizan el ataque de la tríada. En esta transición, la tensión añadida (${addedNote}) se enlaza con el acorde siguiente (${nextChord.root}) de este modo: ${voiceLeadingText}.`,
       preview: `${majChord.root} ➔ ${previewStr}`,
       payload: [
         { measureIndex: majChord.globalMeasureIndex, beatIndex: majChord.beatIndex, chord: { root: majChord.root, type: nextType, tensions: nextTensions, bass: majChord.bass } }
@@ -350,22 +351,22 @@ export function getSuggestionsForSystem(systemMeasures, systemStartIdx, keyRoot,
   }
 
   // Regla 4: Acorde Menor a m7 o m9
-  const minChordIdx = activeChords.findIndex(c => ['min', 'minor', 'm'].includes(c.type) || (c.type === 'm7' && !c.tensions.includes('9')))
+  const minChordIdx = activeChords.findIndex(c => (['min', 'minor', 'm'].includes(c.type) || c.type === 'm7') && (!c.tensions || !c.tensions.includes('9')))
   if (minChordIdx !== -1) {
     const minChord = activeChords[minChordIdx]
     const isTriad = ['min', 'minor', 'm'].includes(minChord.type)
     const previewStr = isTriad ? `${minChord.root}m7` : `${minChord.root}m9`
     const nextType = isTriad ? 'm7' : minChord.type
-    const nextTensions = isTriad ? minChord.tensions : [...minChord.tensions, '9']
+    const nextTensions = isTriad ? (minChord.tensions || []) : Array.from(new Set([...(minChord.tensions || []), '9']))
     const addedNote = transposeNote(minChord.root, isTriad ? 10 : 2, minChord.activeKey)
-    const nextChord = activeChords[(minChordIdx + 1) % 4]
+    const nextChord = activeChords[(minChordIdx + 1) % activeChords.length]
     const voiceLeadingText = explainNoteResolution(addedNote, nextChord, minChord.activeKey)
 
     candidates.push({
-      id: `rule_4_${systemIndex}`,
+      id: `rule_4_${systemIndex}_${minChord.globalMeasureIndex}`,
       category: 'enrich',
-      title: 'Enriquecer acorde menor (m7 / m9)',
-      text: `Para darle mayor calidez al acorde menor de ${minChord.root}m, una opción pedagógica es convertirlo en ${previewStr}. Esto reduce el carácter melancólico directo de la tríada. En esta transición, la tensión añadida (${addedNote}) se conecta con el siguiente acorde (${nextChord.root}) así: ${voiceLeadingText}.`,
+      title: `Enriquecer acorde menor ${minChord.root}m (m7 / m9)`,
+      text: `Para darle mayor calidez al acorde menor de ${minChord.root}m en compás ${minChord.globalMeasureIndex + 1}, una opción pedagógica es convertirlo en ${previewStr}. Esto reduce el carácter melancólico directo de la tríada. En esta transición, la tensión añadida (${addedNote}) se conecta con el siguiente acorde (${nextChord.root}) así: ${voiceLeadingText}.`,
       preview: `${minChord.root}m ➔ ${previewStr}`,
       payload: [
         { measureIndex: minChord.globalMeasureIndex, beatIndex: minChord.beatIndex, chord: { root: minChord.root, type: nextType, tensions: nextTensions, bass: minChord.bass } }
@@ -1382,25 +1383,30 @@ export function getSuggestionsForSystem(systemMeasures, systemStartIdx, keyRoot,
   // ==================== 🔵 COLOR / MODAL (color) ====================
 
   // Regla 11: Mayor (I o IV) a #11 (Lidio)
-  const lydianChordIdx = activeChords.findIndex(c => ['I', 'IV'].includes(normDegree(c.degree)) && ['maj', 'maj7', 'major', ''].includes(c.type || ''))
+  const lydianChordIdx = activeChords.findIndex(c => 
+    ['I', 'IV'].includes(normDegree(c.degree)) && 
+    ['maj', 'maj7', 'major', ''].includes(c.type || '') &&
+    (!c.tensions || !c.tensions.includes('#11'))
+  )
   if (lydianChordIdx !== -1) {
     const lydianChord = activeChords[lydianChordIdx]
     const sharp11Note = transposeNote(lydianChord.root, 6, lydianChord.activeKey)
-    const nextChord = activeChords[(lydianChordIdx + 1) % 4]
+    const nextChord = activeChords[(lydianChordIdx + 1) % activeChords.length]
     const voiceLeadingText = explainNoteResolution(sharp11Note, nextChord, lydianChord.activeKey)
 
     const isTriad = ['maj', 'major', ''].includes(lydianChord.type || '')
     const currentName = isTriad ? lydianChord.root : `${lydianChord.root}maj7`
     const nextName = isTriad ? `${lydianChord.root}(#11)` : `${lydianChord.root}maj7(#11)`
+    const newTensions = Array.from(new Set([...(lydianChord.tensions || []), '#11']))
 
     candidates.push({
-      id: `rule_11_${systemIndex}`,
+      id: `rule_11_${systemIndex}_${lydianChord.globalMeasureIndex}`,
       category: 'color',
-      title: 'Añadir color Lidio (#11)',
-      text: `Podrías probar añadiendo la tensión #11 al acorde mayor de ${lydianChord.root} (${lydianChord.degree}). Esta nota característica del modo Lidio introduce una sonoridad brillante y de ensueño. Al conectar con el siguiente acorde (${nextChord.root}), la tensión #11 (${sharp11Note}) se conduce de la siguiente manera: ${voiceLeadingText}.`,
+      title: `Añadir color Lidio (#11) en ${lydianChord.root}`,
+      text: `Podrías probar añadiendo la tensión #11 al acorde mayor de ${lydianChord.root} (${lydianChord.degree} en compás ${lydianChord.globalMeasureIndex + 1}). Esta nota característica del modo Lidio introduce una sonoridad brillante y de ensueño. Al conectar con el siguiente acorde (${nextChord.root}), la tensión #11 (${sharp11Note}) se conduce de la siguiente manera: ${voiceLeadingText}.`,
       preview: `${currentName} ➔ ${nextName}`,
       payload: [
-        { measureIndex: lydianChord.globalMeasureIndex, beatIndex: lydianChord.beatIndex, chord: { root: lydianChord.root, type: lydianChord.type, tensions: [...lydianChord.tensions, '#11'], bass: lydianChord.bass } }
+        { measureIndex: lydianChord.globalMeasureIndex, beatIndex: lydianChord.beatIndex, chord: { root: lydianChord.root, type: lydianChord.type, tensions: newTensions, bass: lydianChord.bass } }
       ],
       metadata: {
         name: nextName,
@@ -1410,31 +1416,36 @@ export function getSuggestionsForSystem(systemMeasures, systemStartIdx, keyRoot,
         target: `${nextChord.root}${nextChord.type}`,
         tension: 'Media',
         styles: ['Jazz', 'Fusion', 'Cine'],
-        explanation: `Aporta una atmósfera etérea e ingeniosa propia del modo Lidio. La tensión #11 (${sharp11Note}) se conduce así: ${voiceLeadingText}.`
+        explanation: `Aporta una atmósfera etérea e ingeniosa propia del modo Lidio en compás ${lydianChord.globalMeasureIndex + 1}. La tensión #11 (${sharp11Note}) se conduce así: ${voiceLeadingText}.`
       }
     })
   }
 
   // Regla 12: Menor (ii o vi) a 13 (Dórico)
-  const dorianChordIdx = activeChords.findIndex(c => ['ii', 'vi'].includes(normDegree(c.degree)) && ['min', 'minor', 'm', 'm7'].includes(c.type || ''))
+  const dorianChordIdx = activeChords.findIndex(c => 
+    ['ii', 'vi'].includes(normDegree(c.degree)) && 
+    ['min', 'minor', 'm', 'm7'].includes(c.type || '') &&
+    (!c.tensions || !c.tensions.includes('13'))
+  )
   if (dorianChordIdx !== -1) {
     const dorianChord = activeChords[dorianChordIdx]
     const thirteenNote = transposeNote(dorianChord.root, 9, dorianChord.activeKey)
-    const nextChord = activeChords[(dorianChordIdx + 1) % 4]
+    const nextChord = activeChords[(dorianChordIdx + 1) % activeChords.length]
     const voiceLeadingText = explainNoteResolution(thirteenNote, nextChord, dorianChord.activeKey)
 
     const isTriad = ['min', 'minor', 'm'].includes(dorianChord.type || '')
     const currentName = isTriad ? `${dorianChord.root}m` : `${dorianChord.root}m7`
     const nextName = isTriad ? `${dorianChord.root}m(13)` : `${dorianChord.root}m7(13)`
+    const newTensions = Array.from(new Set([...(dorianChord.tensions || []), '13']))
 
     candidates.push({
-      id: `rule_12_${systemIndex}`,
+      id: `rule_12_${systemIndex}_${dorianChord.globalMeasureIndex}`,
       category: 'color',
-      title: 'Añadir color Dórico (13)',
-      text: `Para darle un carácter de jazz clásico y un tinte más fresco al acorde menor de ${dorianChord.root}m, una opción excelente es agregar la tensión 13. Al resolver al siguiente acorde (${nextChord.root}), la nota 13 (${thirteenNote}) se conecta así: ${voiceLeadingText}.`,
+      title: `Añadir color Dórico (13) en ${dorianChord.root}m`,
+      text: `Para darle un carácter de jazz clásico y un tinte más fresco al acorde menor de ${dorianChord.root}m (${dorianChord.degree} en compás ${dorianChord.globalMeasureIndex + 1}), una opción excelente es agregar la tensión 13. Al resolver al siguiente acorde (${nextChord.root}), la nota 13 (${thirteenNote}) se conecta así: ${voiceLeadingText}.`,
       preview: `${currentName} ➔ ${nextName}`,
       payload: [
-        { measureIndex: dorianChord.globalMeasureIndex, beatIndex: dorianChord.beatIndex, chord: { root: dorianChord.root, type: dorianChord.type, tensions: [...dorianChord.tensions, '13'], bass: dorianChord.bass } }
+        { measureIndex: dorianChord.globalMeasureIndex, beatIndex: dorianChord.beatIndex, chord: { root: dorianChord.root, type: dorianChord.type, tensions: newTensions, bass: dorianChord.bass } }
       ],
       metadata: {
         name: nextName,
@@ -1444,7 +1455,7 @@ export function getSuggestionsForSystem(systemMeasures, systemStartIdx, keyRoot,
         target: `${nextChord.root}${nextChord.type}`,
         tension: 'Media',
         styles: ['Jazz', 'Fusion', 'Funk'],
-        explanation: `Introduce la brillantez del modo Dórico sobre un acorde menor. La novena mayor o treceava (${thirteenNote}) se conecta así: ${voiceLeadingText}.`
+        explanation: `Introduce la brillantez del modo Dórico sobre un acorde menor en compás ${dorianChord.globalMeasureIndex + 1}. La novena mayor o treceava (${thirteenNote}) se conecta así: ${voiceLeadingText}.`
       }
     })
   }
@@ -2195,6 +2206,124 @@ export function getSuggestionsForSystem(systemMeasures, systemStartIdx, keyRoot,
         }
       })
     }
+  }
+
+  // Regla I ➔ IV: Intercambio Modal de Tónica a Subdominante (ej: C a F en Do)
+  const tonicToSubdomIdx = activeChords.findIndex((c, idx) => {
+    if (idx >= activeChords.length - 1) return false
+    const norm = normDegree(c.degree)
+    const nextNorm = normDegree(activeChords[idx + 1].degree)
+    return norm === 'I' && nextNorm === 'IV'
+  })
+
+  if (tonicToSubdomIdx !== -1) {
+    const tonicChord = activeChords[tonicToSubdomIdx]
+    const subdomChord = activeChords[tonicToSubdomIdx + 1]
+    const minorFiveRoot = transposeNote(tonicChord.root, 7, tonicChord.activeKey)
+    const flatSevenRoot = transposeNote(tonicChord.root, 10, tonicChord.activeKey)
+
+    candidates.push({
+      id: `rule_i_iv_minor_v_${systemIndex}`,
+      category: 'color',
+      title: `Préstamo Modal v menor (${minorFiveRoot}m7 ➔ ${subdomChord.root})`,
+      text: `Al pasar de ${tonicChord.root} a ${subdomChord.root}, tomar prestado el acorde v menor (${minorFiveRoot}m7) de la escala menor paralela crea un hermoso enlace ii-V de paso hacia ${subdomChord.root}, aportando una sonoridad moderna y sofisticada.`,
+      preview: `${tonicChord.root} ➔ ${minorFiveRoot}m7 ➔ ${subdomChord.root}`,
+      payload: [
+        { 
+          measureIndex: subdomChord.globalMeasureIndex, 
+          beatIndex: Math.max(0, subdomChord.beatIndex), 
+          chord: { root: minorFiveRoot, type: 'm7', tensions: [], bass: null } 
+        }
+      ],
+      metadata: {
+        name: `${minorFiveRoot}m7`,
+        categoryLabel: 'Intercambio Modal',
+        function: 'v (Menor Paralelo)',
+        origin: 'Escala Menor Paralela (Préstamo Modal)',
+        target: `${subdomChord.root}`,
+        tension: 'Media',
+        styles: ['POP', 'NEO-SOUL', 'JAZZ', 'R&B', 'GOSPEL'],
+        explanation: `Introduce el quinto grado menor (${minorFiveRoot}m7) prestado de la menor paralela para preceder al cuarto grado (${subdomChord.root}).`
+      }
+    })
+
+    candidates.push({
+      id: `rule_i_iv_flat_vii_${systemIndex}`,
+      category: 'color',
+      title: `Préstamo Modal ♭VII (${flatSevenRoot} ➔ ${subdomChord.root})`,
+      text: `Al pasar de ${tonicChord.root} a ${subdomChord.root}, tomar prestado el acorde de séptimo grado bemol ♭VII (${flatSevenRoot}) de la escala menor paralela genera la clásica resolución modal/backdoor hacia ${subdomChord.root}.`,
+      preview: `${tonicChord.root} ➔ ${flatSevenRoot} ➔ ${subdomChord.root}`,
+      payload: [
+        { 
+          measureIndex: subdomChord.globalMeasureIndex, 
+          beatIndex: Math.max(0, subdomChord.beatIndex), 
+          chord: { root: flatSevenRoot, type: 'maj', tensions: [], bass: null } 
+        }
+      ],
+      metadata: {
+        name: `${flatSevenRoot}`,
+        categoryLabel: 'Intercambio Modal',
+        function: '♭VII',
+        origin: 'Escala Menor Paralela (Préstamo Modal)',
+        target: `${subdomChord.root}`,
+        tension: 'Media',
+        styles: ['ROCK', 'POP', 'FUNK', 'SOUL'],
+        explanation: `El acorde ♭VII (${flatSevenRoot}) prestado del modo menor paralelo conduce con empuje característico hacia el IV grado (${subdomChord.root}).`
+      }
+    })
+
+    const minorFourRoot = transposeNote(tonicChord.root, 5, tonicChord.activeKey)
+    const flatSixRoot = transposeNote(tonicChord.root, 8, tonicChord.activeKey)
+
+    candidates.push({
+      id: `rule_i_iv_minor_iv_${systemIndex}`,
+      category: 'color',
+      title: `Préstamo Modal iv menor (${minorFourRoot}m7)`,
+      text: `El acorde iv menor (${minorFourRoot}m7) es uno de los préstamos modales más expresivos. Su tercera menor desciende melódicamente creando un suave efecto melancólico hacia la tónica o subdominante.`,
+      preview: `${subdomChord.root} ➔ ${minorFourRoot}m7 ➔ ${tonicChord.root}`,
+      payload: [
+        { 
+          measureIndex: subdomChord.globalMeasureIndex, 
+          beatIndex: Math.max(0, subdomChord.beatIndex), 
+          chord: { root: minorFourRoot, type: 'm7', tensions: [], bass: null } 
+        }
+      ],
+      metadata: {
+        name: `${minorFourRoot}m7`,
+        categoryLabel: 'Intercambio Modal',
+        function: 'iv (Menor Paralelo)',
+        origin: 'Escala Menor Paralela (Préstamo Modal)',
+        target: `${tonicChord.root}`,
+        tension: 'Media-Alta',
+        styles: ['POP', 'CINEMATIC', 'NEO-SOUL', 'BOLERO'],
+        explanation: `El subdominante menor (${minorFourRoot}m7) prestado del modo menor paralelo aporta un tinte emotivo inmediato.`
+      }
+    })
+
+    candidates.push({
+      id: `rule_i_flat_vi_${systemIndex}`,
+      category: 'color',
+      title: `Préstamo Modal ♭VI (${flatSixRoot})`,
+      text: `El sexto grado bemol ♭VI (${flatSixRoot}) es un pilar armónico dramático del modo menor paralelo que funciona de maravilla en cadencias épicas ♭VI ➔ ♭VII ➔ I.`,
+      preview: `${tonicChord.root} ➔ ${flatSixRoot} ➔ ${flatSevenRoot} ➔ ${tonicChord.root}`,
+      payload: [
+        { 
+          measureIndex: subdomChord.globalMeasureIndex, 
+          beatIndex: Math.max(0, subdomChord.beatIndex), 
+          chord: { root: flatSixRoot, type: 'maj', tensions: [], bass: null } 
+        }
+      ],
+      metadata: {
+        name: `${flatSixRoot}`,
+        categoryLabel: 'Intercambio Modal',
+        function: '♭VI (Menor Paralelo)',
+        origin: 'Escala Menor Paralela (Préstamo Modal)',
+        target: `${tonicChord.root}`,
+        tension: 'Media-Alta',
+        styles: ['ROCK', 'POP', 'EPIC', 'CINEMATIC'],
+        explanation: `Aporta una cadencia épica (♭VI ➔ ♭VII ➔ I) muy rica armónicamente.`
+      }
+    })
   }
 
   // Regla 14: Dominante prolongado a b9 / #9 / b13
@@ -3438,10 +3567,12 @@ export function applySuggestion(measures, payload) {
     } else {
       const m = newMeasures[change.measureIndex]
       if (m && m.beats && m.beats[change.beatIndex] !== undefined) {
+        const rawTensions = change.chord.tensions || []
+        const uniqueTensions = Array.from(new Set(rawTensions))
         m.beats[change.beatIndex] = {
           root: change.chord.root,
           type: change.chord.type,
-          tensions: change.chord.tensions || [],
+          tensions: uniqueTensions,
           tension: change.chord.tension || null,
           bass: change.chord.bass || null
         }

@@ -81,7 +81,7 @@ export function getRootPositionMidi(chordObj, triadVoicingStyle = 'fundamental',
   const rootIndex = NOTE_TO_INDEX[chordObj.root]
   if (rootIndex === undefined) return []
 
-  const rootMidi = 48 + rootIndex // C3 como base
+  const rootMidi = 60 + rootIndex // C4 como base (una octava más arriba por defecto)
 
   // Obtener intervalos base
   const intervals = CHORD_TYPE_INTERVALS[chordObj.type] || [0, 4, 7]
@@ -111,11 +111,12 @@ export function getRootPositionMidi(chordObj, triadVoicingStyle = 'fundamental',
       const bassMidi = 36 + bassIndex
       chordMidiNotes.push(bassMidi)
 
-      // El resto del acorde se coloca de forma ascendente sobre el bajo
+      // El resto del acorde se coloca de forma ascendente sobre el bajo,
+      // desplazado una octava más arriba para dar espacio al bajo.
       const chordPitchClasses = voicedIntervals.map(inv => (rootIndex + inv) % 12)
       const remainingPitchClasses = chordPitchClasses.filter(pc => pc !== bassIndex)
 
-      let lastMidi = bassMidi + 5 // Salto de cuarta/quinta arriba para evitar choque acústico
+      let lastMidi = bassMidi + 17 // Salto de octava + cuarta/quinta arriba para evitar choque acústico y hacer notorio el bajo
       remainingPitchClasses.forEach(pc => {
         let noteMidi = pc + 12 * Math.ceil((lastMidi - pc) / 12)
         if (noteMidi <= bassMidi) {
@@ -264,40 +265,178 @@ export function playClick(audioCtx, time, soundType, isAccent) {
 }
 
 /**
- * Sintetiza un acorde polifónico (cálido estilo Rhodes/piano eléctrico)
+ * Sintetiza un acorde polifónico según el instrumento seleccionado (Rhodes, Piano Acústico, Guitarra, Órgano)
  */
-export function playChordNotes(audioCtx, time, midiNotes, durationSeconds) {
+export function playChordNotes(audioCtx, time, midiNotes, durationSeconds, instrument = 'rhodes') {
   if (midiNotes.length === 0) return
 
-  // Filtro paso bajo maestro para darle calidez y redondear los agudos
-  const filter = audioCtx.createBiquadFilter()
-  filter.type = 'lowpass'
-  filter.frequency.setValueAtTime(900, time)
-  filter.Q.setValueAtTime(1.0, time)
-  filter.connect(audioCtx.destination)
+  if (instrument === 'piano') {
+    midiNotes.forEach(note => {
+      const freq = 440 * Math.pow(2, (note - 69) / 12)
+      const noteVolume = 0.15 / Math.max(midiNotes.length, 1)
 
-  midiNotes.forEach(note => {
-    const osc = audioCtx.createOscillator()
-    const gain = audioCtx.createGain()
+      // 1. Fundamental (senoidal)
+      const osc1 = audioCtx.createOscillator()
+      const gain1 = audioCtx.createGain()
+      osc1.type = 'sine'
+      osc1.frequency.setValueAtTime(freq, time)
+      osc1.connect(gain1)
+      gain1.connect(audioCtx.destination)
 
-    // Onda triangular combinada con envolvente suave
-    osc.type = 'triangle'
-    const freq = 440 * Math.pow(2, (note - 69) / 12)
-    osc.frequency.setValueAtTime(freq, time)
+      gain1.gain.setValueAtTime(0, time)
+      gain1.gain.linearRampToValueAtTime(noteVolume * 0.7, time + 0.005)
+      gain1.gain.exponentialRampToValueAtTime(0.0001, time + durationSeconds)
 
-    osc.connect(gain)
-    gain.connect(filter)
+      // 2. Segundo armónico (triangular) - decae más rápido
+      const osc2 = audioCtx.createOscillator()
+      const gain2 = audioCtx.createGain()
+      osc2.type = 'triangle'
+      osc2.frequency.setValueAtTime(freq * 2, time)
+      osc2.connect(gain2)
+      gain2.connect(audioCtx.destination)
 
-    // Ajuste de volumen proporcional al número de notas
-    const noteVolume = 0.18 / Math.max(midiNotes.length, 1)
+      gain2.gain.setValueAtTime(0, time)
+      gain2.gain.linearRampToValueAtTime(noteVolume * 0.35, time + 0.005)
+      gain2.gain.exponentialRampToValueAtTime(0.0001, time + durationSeconds * 0.5)
 
-    // Envolvente de sonido con ataque corto y liberación suave
-    gain.gain.setValueAtTime(0, time)
-    gain.gain.linearRampToValueAtTime(noteVolume, time + 0.02) // Ataque
-    gain.gain.setValueAtTime(noteVolume, time + durationSeconds - 0.06)
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + durationSeconds) // Relajación
+      // 3. Tercer armónico (senoidal) - decaimiento aún más rápido
+      const osc3 = audioCtx.createOscillator()
+      const gain3 = audioCtx.createGain()
+      osc3.type = 'sine'
+      osc3.frequency.setValueAtTime(freq * 3, time)
+      osc3.connect(gain3)
+      gain3.connect(audioCtx.destination)
 
-    osc.start(time)
-    osc.stop(time + durationSeconds + 0.02)
-  })
+      gain3.gain.setValueAtTime(0, time)
+      gain3.gain.linearRampToValueAtTime(noteVolume * 0.15, time + 0.005)
+      gain3.gain.exponentialRampToValueAtTime(0.0001, time + durationSeconds * 0.3)
+
+      // 4. Transitorio del impacto del martillo (barrido de frecuencia rápido)
+      const oscHammer = audioCtx.createOscillator()
+      const gainHammer = audioCtx.createGain()
+      oscHammer.type = 'sine'
+      oscHammer.frequency.setValueAtTime(freq * 8, time)
+      oscHammer.frequency.exponentialRampToValueAtTime(freq, time + 0.015)
+      oscHammer.connect(gainHammer)
+      gainHammer.connect(audioCtx.destination)
+
+      gainHammer.gain.setValueAtTime(noteVolume * 0.4, time)
+      gainHammer.gain.exponentialRampToValueAtTime(0.0001, time + 0.015)
+
+      osc1.start(time)
+      osc2.start(time)
+      osc3.start(time)
+      oscHammer.start(time)
+
+      osc1.stop(time + durationSeconds + 0.02)
+      osc2.stop(time + durationSeconds + 0.02)
+      osc3.stop(time + durationSeconds + 0.02)
+      oscHammer.stop(time + 0.02)
+    })
+  } else if (instrument === 'guitar') {
+    midiNotes.forEach(note => {
+      const osc1 = audioCtx.createOscillator()
+      const osc2 = audioCtx.createOscillator()
+      const filter = audioCtx.createBiquadFilter()
+      const gain = audioCtx.createGain()
+
+      osc1.type = 'triangle'
+      osc2.type = 'sawtooth'
+      const freq = 440 * Math.pow(2, (note - 69) / 12)
+      osc1.frequency.setValueAtTime(freq, time)
+      osc2.frequency.setValueAtTime(freq, time)
+
+      filter.type = 'lowpass'
+      filter.frequency.setValueAtTime(freq * 6, time)
+      filter.frequency.exponentialRampToValueAtTime(freq * 1.2, time + Math.min(0.25, durationSeconds * 0.5))
+      filter.Q.setValueAtTime(1.5, time)
+
+      osc1.connect(filter)
+      osc2.connect(filter)
+      filter.connect(gain)
+      gain.connect(audioCtx.destination)
+
+      const noteVolume = 0.14 / Math.max(midiNotes.length, 1)
+
+      gain.gain.setValueAtTime(0, time)
+      gain.gain.linearRampToValueAtTime(noteVolume, time + 0.008) // Ataque de pulsación rápido
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + durationSeconds)
+
+      osc1.start(time)
+      osc2.start(time)
+      osc1.stop(time + durationSeconds + 0.02)
+      osc2.stop(time + durationSeconds + 0.02)
+    })
+  } else if (instrument === 'organ') {
+    midiNotes.forEach(note => {
+      const freq = 440 * Math.pow(2, (note - 69) / 12)
+      const noteVolume = 0.12 / Math.max(midiNotes.length, 1)
+
+      // Harmónicos del órgano estilo drawbars
+      const harmonics = [
+        { ratio: 0.5, vol: 0.5 },  // Sub-octava
+        { ratio: 1.0, vol: 1.0 },  // Fundamental
+        { ratio: 1.5, vol: 0.6 },  // Quinta armónica
+        { ratio: 2.0, vol: 0.5 },  // Octava superior
+        { ratio: 3.0, vol: 0.3 }   // Quinta doble
+      ]
+
+      const oscillators = []
+      const masterGain = audioCtx.createGain()
+      masterGain.connect(audioCtx.destination)
+
+      harmonics.forEach(h => {
+        const osc = audioCtx.createOscillator()
+        const oscGain = audioCtx.createGain()
+
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(freq * h.ratio, time)
+        oscGain.gain.setValueAtTime(h.vol, time)
+
+        osc.connect(oscGain)
+        oscGain.connect(masterGain)
+        oscillators.push(osc)
+      })
+
+      // Envolvente de órgano clásica: entrada y salida inmediata sin decay prolongado
+      masterGain.gain.setValueAtTime(0, time)
+      masterGain.gain.linearRampToValueAtTime(noteVolume * 0.45, time + 0.01)
+      masterGain.gain.setValueAtTime(noteVolume * 0.45, time + durationSeconds - 0.02)
+      masterGain.gain.exponentialRampToValueAtTime(0.0001, time + durationSeconds)
+
+      oscillators.forEach(osc => {
+        osc.start(time)
+        osc.stop(time + durationSeconds + 0.02)
+      })
+    })
+  } else {
+    // Sonido original: Rhodes (piano eléctrico cálido)
+    const filter = audioCtx.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.frequency.setValueAtTime(900, time)
+    filter.Q.setValueAtTime(1.0, time)
+    filter.connect(audioCtx.destination)
+
+    midiNotes.forEach(note => {
+      const osc = audioCtx.createOscillator()
+      const gain = audioCtx.createGain()
+
+      osc.type = 'triangle'
+      const freq = 440 * Math.pow(2, (note - 69) / 12)
+      osc.frequency.setValueAtTime(freq, time)
+
+      osc.connect(gain)
+      gain.connect(filter)
+
+      const noteVolume = 0.18 / Math.max(midiNotes.length, 1)
+
+      gain.gain.setValueAtTime(0, time)
+      gain.gain.linearRampToValueAtTime(noteVolume, time + 0.02)
+      gain.gain.setValueAtTime(noteVolume, time + durationSeconds - 0.06)
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + durationSeconds)
+
+      osc.start(time)
+      osc.stop(time + durationSeconds + 0.02)
+    })
+  }
 }

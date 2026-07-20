@@ -2,12 +2,12 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import logoUrl from './assets/logo.jpg'
 import { getDiatonicChords, SCALES, getScaleNotes } from './core/scales.js'
-import { formatChord } from './core/chords.js'
+import { formatChord, getRomanNumeralForChord } from './core/chords.js'
 import { playClick, playChordNotes, getVoiceLedMidi, getRootPositionMidi } from './core/audio.js'
 import { generatePDF } from './core/pdfExport.js'
 import { getKeySignatureString, getKeySignature, getParentKeyRoot, SCALE_PARENTS } from './core/keySignatures.js'
 import { getSuggestionsForSystem, applySuggestion, getChordDegree, analyzeModulationRelationship } from './core/suggestions.js'
-import { NOTE_TO_INDEX, transposeNote } from './core/notes.js'
+import { NOTE_TO_INDEX, transposeNote, getNoteName } from './core/notes.js'
 import { getTransposedChord } from './core/transpose.js'
 const generateUniqueId = () => {
   return `${Date.now()}-${Math.floor(Math.random() * 1000000)}`
@@ -669,6 +669,104 @@ const measuresWithKey = computed(() => {
     }
   })
 })
+const buildExpandedSequence = (measuresArray, repeatsArray) => {
+  if (!measuresArray || measuresArray.length === 0) return []
+  const sortedRepeats = [...(repeatsArray || [])].sort((a, b) => a.startMeasure - b.startMeasure)
+  const result = []
+  let i = 0
+
+  while (i < measuresArray.length) {
+    const measureNum = i + 1
+    const r = sortedRepeats.find(rep => rep.startMeasure === measureNum)
+
+    if (!r) {
+      const origM = measuresArray[i]
+      result.push({
+        ...origM,
+        originalMeasureIndex: i,
+        isExpandedCopy: false,
+        displayPass: null
+      })
+      i++
+      continue
+    }
+
+    if (r.type === 'simple') {
+      const times = Number(r.times) || 2
+      const start = r.startMeasure
+      const end = Math.min(r.endMeasure, measuresArray.length)
+
+      if (start > end) {
+        result.push({ ...measuresArray[i], originalMeasureIndex: i, isExpandedCopy: false, displayPass: null })
+        i++
+        continue
+      }
+
+      for (let pass = 1; pass <= times; pass++) {
+        for (let m = start; m <= end; m++) {
+          const origM = measuresArray[m - 1]
+          if (origM) {
+            result.push({
+              ...origM,
+              id: `${origM.id}-rep-${pass}-${m}`,
+              originalMeasureIndex: m - 1,
+              isExpandedCopy: true,
+              displayPass: pass
+            })
+          }
+        }
+      }
+      i = end
+    } else if (r.type === 'casilla') {
+      const times = Number(r.times) || 2
+      const start = r.startMeasure
+      const c1Start = Number(r.casilla1Start) || start
+      const c1End = Number(r.endMeasure)
+      const c2Start = Number(r.casilla2Start) || (c1End + 1)
+      const c2End = Number(r.casilla2End) || c2Start
+
+      const pushMeasureRange = (sM, eM, passNum) => {
+        for (let m = sM; m <= eM; m++) {
+          const origM = measuresArray[m - 1]
+          if (origM) {
+            result.push({
+              ...origM,
+              id: `${origM.id}-casilla-${passNum}-${m}`,
+              originalMeasureIndex: m - 1,
+              isExpandedCopy: true,
+              displayPass: passNum
+            })
+          }
+        }
+      }
+
+      // Passes 1 to (times - 1): Common section + Casilla 1
+      for (let pass = 1; pass < times; pass++) {
+        if (c1Start > start) {
+          pushMeasureRange(start, c1Start - 1, pass)
+        }
+        pushMeasureRange(c1Start, c1End, pass)
+      }
+
+      // Final pass (times): Common section + Casilla 2
+      const finalPass = times
+      if (c1Start > start) {
+        pushMeasureRange(start, c1Start - 1, finalPass)
+      }
+      if (c2Start <= measuresArray.length) {
+        pushMeasureRange(c2Start, Math.min(c2End, measuresArray.length), finalPass)
+      }
+
+      i = Math.max(c1End, c2End)
+    }
+  }
+
+  return result.map((m, idx) => ({
+    ...m,
+    displayedMeasureIndex: idx
+  }))
+}
+
 const displayedMeasures = computed(() => {
   if (currentPlan.value === 'FREE' || viewMode.value === 'compact') {
     return measuresWithKey.value.map((m, idx) => ({
@@ -679,124 +777,7 @@ const displayedMeasures = computed(() => {
       displayPass: null
     }))
   }
-  
-  // Expanded Mode (PRO)
-  const sortedRepeats = [...repeats.value].sort((a, b) => a.startMeasure - b.startMeasure)
-  const result = []
-  let i = 0
-  
-  while (i < measuresWithKey.value.length) {
-    const measureNum = i + 1
-    const r = sortedRepeats.find(rep => rep.startMeasure === measureNum)
-    
-    if (r) {
-      if (r.startMeasure > measuresWithKey.value.length) {
-        const origM = measuresWithKey.value[i]
-        result.push({
-          ...origM,
-          originalMeasureIndex: i,
-          isExpandedCopy: false,
-          displayPass: null
-        })
-        i++
-        continue
-      }
-      
-      if (r.type === 'casilla') {
-        const times = Number(r.times) || 2
-        const casilla1Start = Number(r.casilla1Start) || r.startMeasure
-        const casilla2Start = Number(r.casilla2Start) || (r.endMeasure + 1)
-        const casilla2End = Number(r.casilla2End) || casilla2Start
-        
-        if (casilla1Start < r.startMeasure || casilla1Start > r.endMeasure || casilla2Start > measuresWithKey.value.length || casilla2End < casilla2Start) {
-          const origM = measuresWithKey.value[i]
-          result.push({
-            ...origM,
-            originalMeasureIndex: i,
-            isExpandedCopy: false,
-            displayPass: null
-          })
-          i++
-          continue
-        }
-        
-        const pushRange = (start, end, pass) => {
-          for (let m = start; m <= end; m++) {
-            const origM = measuresWithKey.value[m - 1]
-            if (origM) {
-              result.push({
-                ...origM,
-                id: `${origM.id}-exp-${pass}-${m}`,
-                originalMeasureIndex: m - 1,
-                isExpandedCopy: true,
-                displayPass: pass
-              })
-            }
-          }
-        }
-        
-        for (let pass = 1; pass <= times; pass++) {
-          if (casilla1Start > r.startMeasure) {
-            pushRange(r.startMeasure, casilla1Start - 1, pass)
-          }
-          pushRange(casilla1Start, r.endMeasure, pass)
-        }
-        
-        const finalPass = times + 1
-        if (casilla1Start > r.startMeasure) {
-          pushRange(r.startMeasure, casilla1Start - 1, finalPass)
-        }
-        pushRange(casilla2Start, casilla2End, finalPass)
-        
-        i = Math.max(r.endMeasure, casilla2End)
-      } else {
-        const times = Number(r.times) || 2
-        const start = r.startMeasure
-        const end = r.endMeasure
-        
-        if (start > end || end > measuresWithKey.value.length) {
-          const origM = measuresWithKey.value[i]
-          result.push({
-            ...origM,
-            originalMeasureIndex: i,
-            isExpandedCopy: false,
-            displayPass: null
-          })
-          i++
-          continue
-        }
-        
-        for (let pass = 1; pass <= times; pass++) {
-          for (let m = start; m <= end; m++) {
-            const origM = measuresWithKey.value[m - 1]
-            if (origM) {
-              result.push({
-                ...origM,
-                id: `${origM.id}-exp-simple-${pass}-${m}`,
-                originalMeasureIndex: m - 1,
-                isExpandedCopy: true,
-                displayPass: pass
-              })
-            }
-          }
-        }
-        i = end
-      }
-    } else {
-      const origM = measuresWithKey.value[i]
-      result.push({
-        ...origM,
-        originalMeasureIndex: i,
-        isExpandedCopy: false,
-        displayPass: null
-      })
-      i++
-    }
-  }
-  return result.map((m, idx) => ({
-    ...m,
-    displayedMeasureIndex: idx
-  }))
+  return buildExpandedSequence(measuresWithKey.value, repeats.value)
 })
 // --- GRID & MODAL STATE ---
 const isModalOpen = ref(false)
@@ -2149,7 +2130,7 @@ const getBeatMinWidth = (measure, beat, state) => {
             padding = isMobile ? 10 : 12
           }
           
-          const displayParts = splitChordDisplay(s)
+          const displayParts = splitChordDisplay(s, measure.originalMeasureIndex)
           const maxPartLen = Math.max(displayParts.main.length, displayParts.bass.length)
           slotMin = padding + maxPartLen * charWidth
         }
@@ -2183,7 +2164,7 @@ const getBeatMinWidth = (measure, beat, state) => {
         padding = padding * 0.8
       }
       
-      const displayParts = splitChordDisplay(chordBeat)
+      const displayParts = splitChordDisplay(chordBeat, measure.originalMeasureIndex)
       const maxPartLen = Math.max(displayParts.main.length, displayParts.bass.length)
       let chordValMinWidth = padding + maxPartLen * charWidth
       
@@ -2592,6 +2573,82 @@ const getMergedBeats = (measure) => {
   }
   // When showObligado is OFF: NO merging — all slots remain free and independently clickable
   return states
+}
+const getPlaybackMergedBeats = (measure) => {
+  if (!measure) return []
+  const sig = getMeasureTimeSignature(measure)
+  const numBeats = sig.beats
+  const origMIdx = measure.originalMeasureIndex
+  
+  const states = Array.from({ length: numBeats }, (_, i) => ({
+    index: i,
+    beat: measure.beats[i] || { root: '', type: '' },
+    isMerged: false,
+    durationSlots: 1
+  }))
+  
+  if (currentPlan.value === 'PRO') {
+    // 1. Initial merge based on explicit figures duration
+    for (let i = 0; i < numBeats; i++) {
+      if (states[i].isMerged) continue
+      const beat = states[i].beat
+      if (beat.root !== '' || (beat.harmonicRhythm && beat.harmonicRhythm !== 'auto')) {
+        const dur = getBeatSlotDuration(measure, beat, i)
+        states[i].durationSlots = dur
+        for (let j = 1; j < dur; j++) {
+          if (i + j < numBeats) {
+            states[i + j].isMerged = true
+          }
+        }
+      }
+    }
+    
+    // 2. Fusion of adjacent identical tied beats
+    for (let i = 0; i < numBeats; i++) {
+      if (states[i].isMerged) continue
+      
+      let currentIdx = i
+      let nextIdx = currentIdx + states[currentIdx].durationSlots
+      
+      while (nextIdx < numBeats) {
+        const currentBeat = states[currentIdx].beat
+        const nextBeat = states[nextIdx].beat
+        
+        const currentRhythm = getEffectiveRhythm(measure, currentBeat, currentIdx)
+        const nextRhythm = getEffectiveRhythm(measure, nextBeat, nextIdx)
+        const currentSubdivided = isSubdividedRhythm(currentRhythm, sig.unit === 8, currentBeat)
+        const nextSubdivided = isSubdividedRhythm(nextRhythm, sig.unit === 8, nextBeat)
+        
+        const nextSlotId = `${origMIdx}_${nextIdx}`
+        
+        if (
+          nextBeat &&
+          !states[nextIdx].isMerged &&
+          !currentSubdivided &&
+          !nextSubdivided &&
+          areChordsEqual(currentBeat, nextBeat) &&
+          tiedSlots.value.has(nextSlotId)
+        ) {
+          states[currentIdx].durationSlots += states[nextIdx].durationSlots
+          states[nextIdx].isMerged = true
+          nextIdx = currentIdx + states[currentIdx].durationSlots
+        } else {
+          break
+        }
+      }
+    }
+  }
+  return states
+}
+const shouldPlaybackRenderAsSubdivided = (measure, beat, beatIdx) => {
+  if (!measure || !beat) return false
+  
+  const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
+  const sig = getMeasureTimeSignature(measure)
+  const isSub = isSubdividedRhythm(rhythm, sig.unit === 8, beat)
+  if (!isSub) return false
+  
+  return true
 }
 const partitionsCache = {}
 const getPartitionsOf2And3 = (n) => {
@@ -3069,42 +3126,50 @@ const handleLocalGroupingInput = (event) => {
 }
 const saveLocalTimeSignature = (onlyThisMeasure = false) => {
   if (selectedMeasureIndex.value !== null) {
+    saveHistory()
     const idx = selectedMeasureIndex.value
     const m = measures.value[idx]
     if (!m) return
     
-    // If only applying to this measure, we must preserve the previous active time signature
-    // for the subsequent measure (if it exists and doesn't have an explicit signature yet).
-    if (onlyThisMeasure && idx < measures.value.length - 1) {
-      const nextM = measures.value[idx + 1]
-      if (nextM && !nextM.timeSignature) {
-        const prevActiveSig = getMeasureTimeSignature(idx)
-        const prevActiveGrouping = getMeasureGrouping(idx)
-        nextM.timeSignature = {
-          beats: prevActiveSig.beats,
-          unit: prevActiveSig.unit
-        }
-        nextM.grouping = [...prevActiveGrouping]
-      }
-    }
-
-    m.timeSignature = {
+    const newTimeSig = {
       beats: localMetricBeats.value,
       unit: localMetricUnit.value
     }
     const parsed = parseGroupingString(tempLocalGroupingStr.value, localMetricBeats.value)
-    if (parsed) {
-      m.grouping = parsed
+    const newGrouping = parsed || getDefaultGrouping(localMetricBeats.value, localMetricUnit.value)
+
+    if (onlyThisMeasure) {
+      if (idx < measures.value.length - 1) {
+        const nextM = measures.value[idx + 1]
+        if (nextM && !nextM.timeSignature) {
+          const prevActiveSig = getMeasureTimeSignature(idx)
+          const prevActiveGrouping = getMeasureGrouping(idx)
+          nextM.timeSignature = {
+            beats: prevActiveSig.beats,
+            unit: prevActiveSig.unit
+          }
+          nextM.grouping = [...prevActiveGrouping]
+        }
+      }
+      m.timeSignature = { ...newTimeSig }
+      m.grouping = [...newGrouping]
+      m.showSubdivisions = tempShowSubdivisions.value
     } else {
-      m.grouping = getDefaultGrouping(localMetricBeats.value, localMetricUnit.value)
+      // Apply to this measure AND ALL SUBSEQUENT MEASURES
+      for (let i = idx; i < measures.value.length; i++) {
+        const targetM = measures.value[i]
+        targetM.timeSignature = { ...newTimeSig }
+        targetM.grouping = [...newGrouping]
+        targetM.showSubdivisions = tempShowSubdivisions.value
+      }
     }
-    
+
     syncMeasuresBeats()
     
     isLocalMetricSubMenuOpen.value = false
     isMeasureOptionsOpen.value = false
     const scopeMsg = onlyThisMeasure ? "sólo a este compás" : "a partir de este compás"
-    showToast(`Métrica local aplicada ${scopeMsg}: ${localMetricBeats.value}/${localMetricUnit.value}`)
+    showToast(`Métrica y subdivisión aplicadas ${scopeMsg}: ${localMetricBeats.value}/${localMetricUnit.value}`)
   }
 }
 const removeLocalTimeSignature = () => {
@@ -3953,6 +4018,113 @@ const diatonicChords = computed(() => {
   const { key: activeKey, scale: activeScale } = activeModalKeyAndScale.value
   return getDiatonicChords(activeKey, activeScale, modalComplexity.value)
 })
+const modalInterchangeGroups = computed(() => {
+  const { key: activeKey, scale: activeScale } = activeModalKeyAndScale.value
+  const isTetrad = modalComplexity.value === 'tetrad'
+  const rootIndex = NOTE_TO_INDEX[activeKey]
+  if (rootIndex === undefined) return []
+
+  const groups = []
+
+  const createChord = (degreeNumeral, semitones, typeTriad, typeTetrad, suffixTriad, suffixTetrad) => {
+    const rootName = getNoteName(rootIndex + semitones, activeKey)
+    const type = isTetrad ? typeTetrad : typeTriad
+    const suffix = isTetrad ? suffixTetrad : suffixTriad
+    return {
+      degreeNumeral,
+      root: rootName,
+      type,
+      label: `${rootName}${suffix}`,
+      isModalInterchange: true
+    }
+  }
+
+  const isMajorFamily = ['major', 'lydian', 'mixolydian'].includes(activeScale)
+  const isMinorFamily = ['minor', 'dorian', 'phrygian', 'locrian', 'harmonic_minor', 'melodic_minor'].includes(activeScale)
+
+  if (isMajorFamily) {
+    groups.push({
+      id: 'aeolian',
+      title: 'Menor Paralela (Eólico)',
+      badge: 'Oscuro / Expresivo',
+      chords: [
+        createChord('v', 7, 'min', 'm7', 'm', 'm7'),
+        createChord('♭VII', 10, 'maj', '7', '', '7'),
+        createChord('iv', 5, 'min', 'm7', 'm', 'm7'),
+        createChord('♭VI', 8, 'maj', 'maj7', '', 'maj7'),
+        createChord('♭III', 3, 'maj', 'maj7', '', 'maj7'),
+        createChord('iiø', 2, 'dim', 'm7b5', 'dim', 'm7b5')
+      ]
+    })
+
+    groups.push({
+      id: 'phrygian',
+      title: 'Frigio & Napolitano',
+      badge: 'Dramático / Tensión',
+      chords: [
+        createChord('♭II', 1, 'maj', 'maj7', '', 'maj7'),
+        createChord('♭vii', 10, 'min', 'm7', 'm', 'm7')
+      ]
+    })
+
+    groups.push({
+      id: 'lydian',
+      title: 'Lidio & Mayor de 2º Grado',
+      badge: 'Luminoso / Brillante',
+      chords: [
+        createChord('II', 2, 'maj', '7', '', '7'),
+        createChord('vii', 11, 'min', 'm7', 'm', 'm7')
+      ]
+    })
+
+    groups.push({
+      id: 'dorian',
+      title: 'Dórico',
+      badge: 'Jazz / Neo-Soul',
+      chords: [
+        createChord('IV7', 5, 'maj', '7', '', '7')
+      ]
+    })
+  } else if (isMinorFamily) {
+    groups.push({
+      id: 'ionian',
+      title: 'Mayor Paralela (Jónico)',
+      badge: 'Brillante / Picardía',
+      chords: [
+        createChord('I', 0, 'maj', 'maj7', '', 'maj7'),
+        createChord('IV', 5, 'maj', 'maj7', '', 'maj7'),
+        createChord('V', 7, 'maj', '7', '', '7'),
+        createChord('VIø', 9, 'dim', 'm7b5', 'dim', 'm7b5')
+      ]
+    })
+
+    groups.push({
+      id: 'harmonic',
+      title: 'Menor Armónica & Melódica',
+      badge: 'Tensión Dominante',
+      chords: [
+        createChord('V7', 7, 'maj', '7', '', '7'),
+        createChord('vii°', 11, 'dim', 'dim7', 'dim', 'dim7'),
+        createChord('IV7', 5, 'maj', '7', '', '7')
+      ]
+    })
+
+    groups.push({
+      id: 'phrygian',
+      title: 'Frigio & Napolitano',
+      badge: 'Misterioso',
+      chords: [
+        createChord('♭II', 1, 'maj', 'maj7', '', 'maj7')
+      ]
+    })
+  }
+
+  return groups
+})
+
+const modalInterchangeChords = computed(() => {
+  return modalInterchangeGroups.value.flatMap(g => g.chords)
+})
 const getNextWrittenChord = (selectedBeatVal) => {
   if (!selectedBeatVal) return null
   const { measureIndex, beatIndex, subdivisionIndex } = selectedBeatVal
@@ -4291,6 +4463,7 @@ const openModal = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIn
   applyToAllSubslots.value = b ? isSubdivisionCollapsed(m, b, beatIndex) : false
   
   selectedBeat.value = { measureIndex, beatIndex, displayedMeasureIndex, subdivisionIndex: resolvedSubIndex }
+  selectedMeasureIndex.value = measureIndex
   
   let wasSet = false
   if (b) {
@@ -6190,27 +6363,37 @@ const toggleLocalObligado = (event) => {
   }
   tempShowObligado.value = on
 }
-const saveMeasureOptions = () => {
+const saveMeasureOptions = (onlyThisMeasure = true) => {
   if (selectedMeasureIndex.value !== null) {
     saveHistory()
-    const m = measures.value[selectedMeasureIndex.value]
-    m.sectionLabel = tempSectionLabel.value === 'Ninguna' ? null : tempSectionLabel.value
-    m.showSubdivisions = tempShowSubdivisions.value
-    m.showObligado = tempShowObligado.value
-    
-    // Save groove configuration
-    const prevGroove = m.groove || 'global'
-    if (tempMeasureGroove.value !== prevGroove) {
-      m.groove = tempMeasureGroove.value
+    const startIdx = selectedMeasureIndex.value
+    const endIdx = onlyThisMeasure ? startIdx : measures.value.length - 1
+
+    for (let i = startIdx; i <= endIdx; i++) {
+      const m = measures.value[i]
+      if (!m) continue
+
+      if (i === startIdx) {
+        m.sectionLabel = tempSectionLabel.value === 'Ninguna' ? null : tempSectionLabel.value
+      }
+      m.showSubdivisions = tempShowSubdivisions.value
+      m.showObligado = tempShowObligado.value
       
-      // If switching to global or neutral, reset all beat-level overrides in this measure
-      if (tempMeasureGroove.value === 'global' || tempMeasureGroove.value === 'neutral') {
-        m.beats.forEach(beat => {
-          beat.harmonicRhythm = 'auto'
-          delete beat.subdivisions
-        })
+      const prevGroove = m.groove || 'global'
+      if (tempMeasureGroove.value !== prevGroove) {
+        m.groove = tempMeasureGroove.value
+        
+        if (tempMeasureGroove.value === 'global' || tempMeasureGroove.value === 'neutral') {
+          m.beats.forEach(beat => {
+            beat.harmonicRhythm = 'auto'
+            delete beat.subdivisions
+          })
+        }
       }
     }
+    syncMeasuresBeats()
+    const scopeMsg = onlyThisMeasure ? "sólo a este compás" : "a partir de este compás"
+    showToast(`Opciones de compás aplicadas ${scopeMsg}`)
   }
   isMeasureOptionsOpen.value = false
 }
@@ -8155,12 +8338,31 @@ watch([showLyricsGlobal, hoveredChordId, hoveredAnchor], () => {
 watch(systems, () => {
   updateConnectors()
 }, { deep: true })
-function formatDisplayChord(beat) {
+const notationMode = ref('chords') // 'chords' | 'roman'
+
+const toggleNotationMode = () => {
+  if (currentPlan.value !== 'PRO') {
+    upgradeReason.value = 'roman_numerals'
+    isUpgradeModalOpen.value = true
+    return
+  }
+  notationMode.value = notationMode.value === 'roman' ? 'chords' : 'roman'
+  const modeName = notationMode.value === 'roman' ? 'Grados Romanos 🏛️' : 'Acordes 🔤'
+  showToast(`Modo notación: ${modeName}`)
+}
+
+function formatDisplayChord(beat, mIdx = null) {
   if (!beat || !beat.root) return '-'
+  if (notationMode.value === 'roman') {
+    const measureInfo = (mIdx !== null && measuresWithKey.value && measuresWithKey.value[mIdx]) ? measuresWithKey.value[mIdx] : null
+    const activeK = measureInfo ? measureInfo.activeKey : key.value
+    const activeS = measureInfo ? measureInfo.activeScale : scaleType.value
+    return getRomanNumeralForChord(beat, activeK, activeS)
+  }
   return formatChord(beat)
 }
-function splitChordDisplay(beat) {
-  const full = formatDisplayChord(beat)
+function splitChordDisplay(beat, mIdx = null) {
+  const full = formatDisplayChord(beat, mIdx)
   if (full === '-') return { main: '-', bass: '' }
   const parts = full.split('/')
   return {
@@ -8168,13 +8370,13 @@ function splitChordDisplay(beat) {
     bass: parts[1] ? `/${parts[1]}` : ''
   }
 }
-function getBeatDisplayChord(beat) {
+function getBeatDisplayChord(beat, mIdx = null) {
   if (!beat) return { main: '-', bass: '' }
   if (beat.subdivisions && beat.subdivisions.length > 0) {
     const active = beat.subdivisions.find(s => !s.isSilence && !s.isMerged && s.root)
-    if (active) return splitChordDisplay(active)
+    if (active) return splitChordDisplay(active, mIdx)
   }
-  return splitChordDisplay(beat)
+  return splitChordDisplay(beat, mIdx)
 }
 const openTransposeModal = () => {
   const activeM = selectedMeasureIndex.value !== -1 ? measuresWithKey.value[selectedMeasureIndex.value] : null
@@ -8310,8 +8512,12 @@ const confirmExportPdf = () => {
 let audioCtx = null
 const isPlaying = ref(false)
 const playbackBpm = ref(120)
+const playbackStartMeasure = ref(1)
+const playbackBassOnly = ref(false)
 const playbackMetronome = ref(false)
 const playbackMetronomeSound = ref('beep')
+const playbackInstrument = ref('rhodes')
+const playbackChordsActive = ref(true)
 const playbackContinuity = ref(true)
 const playbackFillChords = ref(true)
 const playbackTriadVoicing = ref('fundamental')
@@ -8322,6 +8528,182 @@ const currentPlayingOriginalMeasureIndex = ref(null)
 const currentPlayingBeatIndex = ref(null)
 const playheadProgress = ref(0)
 const isAudioSettingsOpen = ref(false)
+
+// --- CHORD VOICING & NOTE ORDER INSPECTOR ---
+const isVoicingInspectorOpen = ref(true)
+
+const getNoteIntervalLabel = (pc, rootPc, chordType, tensions = []) => {
+  const diff = (pc - rootPc + 12) % 12
+  switch (diff) {
+    case 0: return { interval: '1', label: '1 (Fundamental)', isRoot: true }
+    case 1: return { interval: '9b', label: '♭9 (Novena Menor)' }
+    case 2: return { interval: '9', label: '9 (Novena)' }
+    case 3: 
+      if (['sus2'].includes(chordType)) return { interval: '9', label: '9 (Novena)' }
+      return { interval: '3m', label: '3m (Tercera Menor)' }
+    case 4: return { interval: '3', label: '3 (Tercera Mayor)' }
+    case 5: 
+      if (['sus4'].includes(chordType)) return { interval: '4', label: '4 (Cuarta)' }
+      return { interval: '11', label: '11 (Oncena)' }
+    case 6: 
+      if (['dim', 'm7b5', 'dim7', 'b5'].includes(chordType) || (tensions && tensions.includes('b5'))) return { interval: '5b', label: '♭5 (Quinta Disminuida)' }
+      return { interval: '11#', label: '♯11 (Oncena Aum.)' }
+    case 7: return { interval: '5', label: '5 (Quinta Justa)' }
+    case 8: 
+      if (['aug', 'maj7#5', '7#5', '#5'].includes(chordType) || (tensions && tensions.includes('#5'))) return { interval: '#5', label: '♯5 (Quinta Aum.)' }
+      return { interval: '13b', label: '♭13 (Treceava Menor)' }
+    case 9: 
+      if (['dim7'].includes(chordType)) return { interval: 'dim7', label: 'dim7 (7ma Disminuida)' }
+      return { interval: '13', label: '13 (Treceava)' }
+    case 10: return { interval: '7m', label: '7m (Séptima Menor)' }
+    case 11: return { interval: '7', label: '7 (Séptima Mayor)' }
+    default: return { interval: `${diff}`, label: `Int. ${diff}` }
+  }
+}
+
+const activeChordVoicingList = computed(() => {
+  let chordObj = null
+  let activeMeasureIndex = (isPlaying.value && currentPlayingMeasureIndex.value !== null)
+    ? currentPlayingMeasureIndex.value
+    : (selectedBeat.value ? selectedBeat.value.measureIndex : (selectedMeasureIndex.value !== null ? selectedMeasureIndex.value : 0))
+
+  const targetSeq = isPlaying.value ? playbackSequence.value : measures.value
+  const m = targetSeq && targetSeq[activeMeasureIndex] ? targetSeq[activeMeasureIndex] : null
+
+  if (m && m.beats) {
+    if (isPlaying.value && currentPlayingBeatIndex.value !== null && m.beats[currentPlayingBeatIndex.value]?.root) {
+      chordObj = m.beats[currentPlayingBeatIndex.value]
+    } else if (selectedBeat.value && selectedBeat.value.measureIndex === activeMeasureIndex) {
+      const bIdx = selectedBeat.value.beatIndex
+      const b = m.beats[bIdx]
+      if (b && b.root) {
+        chordObj = b
+      } else {
+        chordObj = m.beats.find(x => x.root)
+      }
+    } else {
+      chordObj = m.beats.find(b => b.root)
+    }
+  }
+
+  if (!chordObj && measures.value) {
+    for (let me of measures.value) {
+      if (me && me.beats) {
+        const b = me.beats.find(x => x.root)
+        if (b) { chordObj = b; break }
+      }
+    }
+  }
+  if (!chordObj || !chordObj.root) return null
+
+  const rootPc = NOTE_TO_INDEX[chordObj.root]
+  if (rootPc === undefined) return null
+
+  let midiNotes = []
+  if (playbackContinuity.value) {
+    midiNotes = getVoiceLedMidi(chordObj, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
+  } else {
+    midiNotes = getRootPositionMidi(chordObj, playbackTriadVoicing.value, playbackTetradVoicing.value)
+  }
+  if (midiNotes.length === 0) return null
+
+  const mutedNotes = chordObj.mutedNotes || []
+  const notesInfo = midiNotes.map((midi, idx) => {
+    const pc = (midi % 12 + 12) % 12
+    const noteName = getNoteName(pc, chordObj.root)
+    const intervalData = getNoteIntervalLabel(pc, rootPc, chordObj.type, chordObj.tensions)
+    const isMuted = mutedNotes.includes(noteName)
+    return {
+      index: idx,
+      midi,
+      pc,
+      noteName,
+      interval: intervalData.interval,
+      label: intervalData.label,
+      isRoot: pc === rootPc,
+      isMuted
+    }
+  })
+
+  return {
+    chordObj,
+    root: chordObj.root,
+    type: chordObj.type,
+    formattedName: formatChord(chordObj),
+    notes: notesInfo,
+    bassNote: chordObj.bass || chordObj.root,
+    isSlashChord: !!chordObj.bass && chordObj.bass !== chordObj.root
+  }
+})
+
+const toggleVoicingNoteMute = (n) => {
+  const current = activeChordVoicingList.value
+  if (!current || !current.chordObj) return
+  const chordObj = current.chordObj
+  if (!chordObj.mutedNotes) {
+    chordObj.mutedNotes = []
+  }
+  const noteIdx = chordObj.mutedNotes.indexOf(n.noteName)
+  if (noteIdx !== -1) {
+    chordObj.mutedNotes.splice(noteIdx, 1)
+    showToast(`Nota ${n.noteName} activada (desmuteada)`)
+  } else {
+    chordObj.mutedNotes.push(n.noteName)
+    showToast(`Nota ${n.noteName} silenciada (muteada)`)
+  }
+}
+
+const reorderActiveChordVoicing = (fromIdx, toIdx) => {
+  const current = activeChordVoicingList.value
+  if (!current || !current.notes || current.notes.length <= 1) return
+  if (toIdx < 0 || toIdx >= current.notes.length) return
+
+  const notesCopy = [...current.notes]
+  const [moved] = notesCopy.splice(fromIdx, 1)
+  notesCopy.splice(toIdx, 0, moved)
+
+  const firstNote = notesCopy[0]
+  const targetChordObj = current.chordObj
+
+  if (!firstNote.isRoot) {
+    targetChordObj.bass = firstNote.noteName
+  } else {
+    targetChordObj.bass = null
+  }
+  showToast(`Voicing reorganizado: ${formatChord(targetChordObj)}`)
+}
+
+// Drag & Drop handlers for floating Voicing reordering
+const draggedVoicingIndex = ref(null)
+const dragOverVoicingIndex = ref(null)
+
+const onVoicingDragStart = (idx, event) => {
+  draggedVoicingIndex.value = idx
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', idx.toString())
+  }
+}
+
+const onVoicingDragOver = (idx, event) => {
+  event.preventDefault()
+  if (draggedVoicingIndex.value !== null && draggedVoicingIndex.value !== idx) {
+    dragOverVoicingIndex.value = idx
+  }
+}
+
+const onVoicingDrop = (idx, event) => {
+  event.preventDefault()
+  if (draggedVoicingIndex.value !== null && draggedVoicingIndex.value !== idx) {
+    reorderActiveChordVoicing(draggedVoicingIndex.value, idx)
+  }
+  onVoicingDragEnd()
+}
+
+const onVoicingDragEnd = () => {
+  draggedVoicingIndex.value = null
+  dragOverVoicingIndex.value = null
+}
 
 const initAudio = () => {
   if (!audioCtx) {
@@ -8341,126 +8723,30 @@ let lastVoicedNotes = null
 const visualQueue = []
 
 const playbackSequence = computed(() => {
-  const sortedRepeats = [...repeats.value].sort((a, b) => a.startMeasure - b.startMeasure)
-  const result = []
-  let i = 0
-  
-  while (i < measuresWithKey.value.length) {
-    const measureNum = i + 1
-    const r = sortedRepeats.find(rep => rep.startMeasure === measureNum)
-    
-    if (r) {
-      if (r.startMeasure > measuresWithKey.value.length) {
-        const origM = measuresWithKey.value[i]
-        result.push({
-          ...origM,
-          originalMeasureIndex: i,
-          isExpandedCopy: false,
-          displayPass: null
-        })
-        i++
-        continue
-      }
-      
-      if (r.type === 'casilla') {
-        const times = Number(r.times) || 2
-        const casilla1Start = Number(r.casilla1Start) || r.startMeasure
-        const casilla2Start = Number(r.casilla2Start) || (r.endMeasure + 1)
-        const casilla2End = Number(r.casilla2End) || casilla2Start
-        
-        if (casilla1Start < r.startMeasure || casilla1Start > r.endMeasure || casilla2Start > measuresWithKey.value.length || casilla2End < casilla2Start) {
-          const origM = measuresWithKey.value[i]
-          result.push({
-            ...origM,
-            originalMeasureIndex: i,
-            isExpandedCopy: false,
-            displayPass: null
-          })
-          i++
-          continue
-        }
-        
-        const pushRange = (start, end, pass) => {
-          for (let m = start; m <= end; m++) {
-            const origM = measuresWithKey.value[m - 1]
-            if (origM) {
-              result.push({
-                ...origM,
-                id: `${origM.id}-playback-${pass}-${m}`,
-                originalMeasureIndex: m - 1,
-                isExpandedCopy: true,
-                displayPass: pass
-              })
-            }
-          }
-        }
-        
-        for (let pass = 1; pass <= times; pass++) {
-          if (casilla1Start > r.startMeasure) {
-            pushRange(r.startMeasure, casilla1Start - 1, pass)
-          }
-          pushRange(casilla1Start, r.endMeasure, pass)
-        }
-        
-        const finalPass = times + 1
-        if (casilla1Start > r.startMeasure) {
-          pushRange(r.startMeasure, casilla1Start - 1, finalPass)
-        }
-        pushRange(casilla2Start, casilla2End, finalPass)
-        
-        i = Math.max(r.endMeasure, casilla2End)
-      } else {
-        const times = Number(r.times) || 2
-        const start = r.startMeasure
-        const end = r.endMeasure
-        
-        if (start > end || end > measuresWithKey.value.length) {
-          const origM = measuresWithKey.value[i]
-          result.push({
-            ...origM,
-            originalMeasureIndex: i,
-            isExpandedCopy: false,
-            displayPass: null
-          })
-          i++
-          continue
-        }
-        
-        for (let pass = 1; pass <= times; pass++) {
-          for (let m = start; m <= end; m++) {
-            const origM = measuresWithKey.value[m - 1]
-            if (origM) {
-              result.push({
-                ...origM,
-                id: `${origM.id}-playback-simple-${pass}-${m}`,
-                originalMeasureIndex: m - 1,
-                isExpandedCopy: true,
-                displayPass: pass
-              })
-            }
-          }
-        }
-        i = end
-      }
-    } else {
-      const origM = measuresWithKey.value[i]
-      result.push({
-        ...origM,
-        originalMeasureIndex: i,
-        isExpandedCopy: false,
-        displayPass: null
-      })
-      i++
-    }
-  }
-  return result.map((m, idx) => ({
-    ...m,
-    displayedMeasureIndex: idx
-  }))
+  return buildExpandedSequence(measuresWithKey.value, repeats.value)
 })
 
+const filterChordNotesForAudio = (slot, rawNotes) => {
+  if (!rawNotes || rawNotes.length === 0) return []
+  let notes = [...rawNotes]
+
+  if (slot && slot.mutedNotes && slot.mutedNotes.length > 0) {
+    notes = notes.filter(midi => {
+      const pc = (midi % 12 + 12) % 12
+      const name = getNoteName(pc, slot.root)
+      return !slot.mutedNotes.includes(name)
+    })
+  }
+
+  if (playbackBassOnly.value && notes.length > 0) {
+    notes = [notes[0]]
+  }
+
+  return notes
+}
+
 const scheduler = () => {
-  while (nextNoteTime < audioCtx.currentTime + 0.1) {
+  while (nextNoteTime < audioCtx.currentTime + 0.25) {
     if (scheduleMeasureIdx >= playbackSequence.value.length) {
       break
     }
@@ -8471,79 +8757,86 @@ const scheduler = () => {
     
     // Metrónomo
     if (playbackMetronome.value) {
-      playClick(audioCtx, nextNoteTime, playbackMetronomeSound.value, scheduleBeatIdx === 0)
+      let isAccent = scheduleBeatIdx === 0
+      if (sig.unit === 8) {
+        const grouping = measure.grouping || getDefaultGrouping(sig.beats, sig.unit)
+        let accum = 0
+        for (let g of grouping) {
+          if (scheduleBeatIdx === accum) {
+            isAccent = true
+            break
+          }
+          accum += g
+        }
+      }
+      playClick(audioCtx, nextNoteTime, playbackMetronomeSound.value, isAccent)
     }
     
     // Acordes
     const beat = measure.beats[scheduleBeatIdx]
     if (beat) {
-      if (measure.showObligado) {
-        if (shouldRenderAsSubdivided(measure, beat, scheduleBeatIdx)) {
-          const slots = getBeatSlots(measure, beat, scheduleBeatIdx)
-          const subCount = slots.length
-          const slotDuration = beatDuration / subCount
-          
-          for (let k = 0; k < subCount; k++) {
-            const slot = slots[k]
-            if (slot && slot.root && !slot.isSilence && !slot.isMerged) {
-              let durationSlots = 1
-              while (k + durationSlots < subCount && slots[k + durationSlots].isMerged) {
-                durationSlots++
-              }
-              const durationSeconds = durationSlots * slotDuration
-              
-              let notes = []
-              if (playbackContinuity.value) {
-                notes = getVoiceLedMidi(slot, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
-              } else {
-                notes = getRootPositionMidi(slot, playbackTriadVoicing.value, playbackTetradVoicing.value)
-              }
-              if (notes.length > 0) {
-                playChordNotes(audioCtx, nextNoteTime + k * slotDuration, notes, durationSeconds - 0.02)
-                lastVoicedNotes = notes
-              }
+      if (shouldPlaybackRenderAsSubdivided(measure, beat, scheduleBeatIdx)) {
+        const slots = getBeatSlots(measure, beat, scheduleBeatIdx)
+        const subCount = slots.length
+        const slotDuration = beatDuration / subCount
+        
+        for (let k = 0; k < subCount; k++) {
+          const slot = slots[k]
+          if (slot && slot.root && !slot.isSilence && !slot.isMerged) {
+            let durationSlots = 1
+            while (k + durationSlots < subCount && slots[k + durationSlots].isMerged) {
+              durationSlots++
             }
-          }
-        } else {
-          const states = getMergedBeats(measure)
-          const state = states.find(s => s.index === scheduleBeatIdx)
-          if (state && !state.isMerged && state.beat.root) {
-            const durationSeconds = state.durationSlots * beatDuration
-            let notes = []
+            const durationSeconds = durationSlots * slotDuration
+            
+            let rawNotes = []
             if (playbackContinuity.value) {
-              notes = getVoiceLedMidi(state.beat, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
+              rawNotes = getVoiceLedMidi(slot, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
             } else {
-              notes = getRootPositionMidi(state.beat, playbackTriadVoicing.value, playbackTetradVoicing.value)
+              rawNotes = getRootPositionMidi(slot, playbackTriadVoicing.value, playbackTetradVoicing.value)
             }
+            const notes = filterChordNotesForAudio(slot, rawNotes)
             if (notes.length > 0) {
-              playChordNotes(audioCtx, nextNoteTime, notes, durationSeconds - 0.02)
-              lastVoicedNotes = notes
+              if (playbackChordsActive.value) {
+                playChordNotes(audioCtx, nextNoteTime + k * slotDuration, notes, durationSeconds - 0.02, playbackInstrument.value)
+              }
+              lastVoicedNotes = rawNotes
             }
           }
         }
       } else {
-        if (beat.root) {
-          let durationBeats = 1
-          if (playbackFillChords.value) {
+        const states = getPlaybackMergedBeats(measure)
+        const state = states.find(s => s.index === scheduleBeatIdx)
+        if (state && !state.isMerged && state.beat.root) {
+          const isExplicitFigure = state.beat.harmonicRhythm && state.beat.harmonicRhythm !== 'auto'
+          let durationBeats = state.durationSlots
+          
+          if (!isExplicitFigure && playbackFillChords.value && !measure.showObligado) {
+            let fillBeats = 1
             for (let j = scheduleBeatIdx + 1; j < measure.beats.length; j++) {
               if (measure.beats[j] && measure.beats[j].root) {
-                durationBeats = j - scheduleBeatIdx
+                fillBeats = j - scheduleBeatIdx
                 break
               } else {
-                durationBeats = measure.beats.length - scheduleBeatIdx
+                fillBeats = measure.beats.length - scheduleBeatIdx
               }
             }
+            durationBeats = Math.max(durationBeats, fillBeats)
           }
+          
           const durationSeconds = durationBeats * beatDuration
-          let notes = []
+          let rawNotes = []
           if (playbackContinuity.value) {
-            notes = getVoiceLedMidi(beat, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
+            rawNotes = getVoiceLedMidi(state.beat, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
           } else {
-            notes = getRootPositionMidi(beat, playbackTriadVoicing.value, playbackTetradVoicing.value)
+            rawNotes = getRootPositionMidi(state.beat, playbackTriadVoicing.value, playbackTetradVoicing.value)
           }
+          const notes = filterChordNotesForAudio(state.beat, rawNotes)
           if (notes.length > 0) {
-            playChordNotes(audioCtx, nextNoteTime, notes, durationSeconds - 0.02)
-            lastVoicedNotes = notes
+            if (playbackChordsActive.value) {
+              playChordNotes(audioCtx, nextNoteTime, notes, durationSeconds - 0.02, playbackInstrument.value)
+            }
+            lastVoicedNotes = rawNotes
           }
         }
       }
@@ -8609,7 +8902,11 @@ const startPlayback = () => {
   
   isPlaying.value = true
   lastVoicedNotes = null
-  scheduleMeasureIdx = 0
+  
+  const targetMeasureNum = Math.max(1, Math.min(playbackStartMeasure.value || 1, measuresWithKey.value.length))
+  const startIdx = playbackSequence.value.findIndex(m => m.originalMeasureIndex === (targetMeasureNum - 1))
+  
+  scheduleMeasureIdx = startIdx !== -1 ? startIdx : 0
   scheduleBeatIdx = 0
   nextNoteTime = audioCtx.currentTime + 0.05
   visualQueue.length = 0
@@ -9183,6 +9480,24 @@ const togglePlayback = () => {
                   </span>
                 </button>
               </div>
+
+              <!-- Notation Mode Toggle (Grados Romanos vs Acordes - PRO) -->
+              <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+                <button 
+                  @click="toggleNotationMode"
+                  class="w-full flex items-center justify-between px-2 py-2 rounded-xl border transition-all shadow-sm active:scale-98"
+                  :class="notationMode === 'roman' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-violet-500 shadow-violet-500/20' : 'bg-gray-50/80 border-gray-200 hover:bg-gray-100 text-gray-700'"
+                  title="Cambiar entre notación de Acordes (Cmaj7, Dm7) y Grados Romanos (Imaj7, ii7) para estudio armónico"
+                >
+                  <div class="flex flex-col text-left leading-none">
+                    <span class="text-[9px] font-black uppercase tracking-wider">🏛️ Notación</span>
+                    <span class="text-[7.5px] font-bold mt-1 truncate" :class="notationMode === 'roman' ? 'text-violet-100' : 'text-gray-500'">
+                      {{ notationMode === 'roman' ? 'Grados Romanos' : 'Acordes / Notas' }}
+                    </span>
+                  </div>
+                  <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[7px] px-1 py-0.5 rounded font-black shrink-0 ml-1">PRO</span>
+                </button>
+              </div>
               
               <!-- Global Subdivisions Toggle (visible per-score in sidebar) -->
               <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
@@ -9256,6 +9571,228 @@ const togglePlayback = () => {
                     <span class="w-2.5 h-2.5 rounded-full transition-all" :class="allSuggestionsPool.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-gray-305'"></span>
                   </div>
                 </button>
+              </div>
+
+              <!-- SIDEBAR PLAYBACK & AUDIO CONTROLLER (Below Ideas) -->
+              <div class="w-28 md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-gray-200/90 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left">
+                <div class="flex items-center justify-between border-b border-gray-100 pb-1">
+                  <span class="text-[8.5px] md:text-[9px] font-black uppercase tracking-wider text-gray-500 flex items-center gap-1">
+                    <span>🎧</span> Audio & Play
+                  </span>
+                  <button 
+                    @click="isAudioSettingsOpen = !isAudioSettingsOpen"
+                    class="text-[10px] px-1.5 py-0.5 rounded-lg border transition-all"
+                    :class="isAudioSettingsOpen ? 'border-[#8EE000] bg-[#8EE000]/20 text-[#6CA600]' : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100'"
+                    title="Ajustes de Sonido, Voicings y Continuidad"
+                  >
+                    ⚙️
+                  </button>
+                </div>
+
+                <!-- Play/Stop & BPM Row -->
+                <div class="flex flex-col md:flex-row items-center gap-1.5">
+                  <button 
+                    @click="togglePlayback" 
+                    class="w-full md:flex-1 py-1.5 rounded-xl flex items-center justify-center gap-1 text-white font-bold text-[10px] md:text-xs transition-all active:scale-95 shadow-sm"
+                    :class="isPlaying ? 'bg-red-500 hover:bg-red-600 shadow-red-500/20' : 'bg-[#8EE000] hover:bg-[#7bc200] text-black shadow-[#8EE000]/20'"
+                    :title="isPlaying ? 'Detener Reproducción' : 'Reproducir'"
+                  >
+                    <span>{{ isPlaying ? '■' : '▶' }}</span>
+                    <span>{{ isPlaying ? 'Detener' : 'Play' }}</span>
+                  </button>
+                  <div class="flex items-center justify-between w-full md:w-auto bg-gray-50 border border-gray-200 rounded-xl px-2 py-0.5">
+                    <span class="text-[7.5px] font-black text-gray-400 uppercase tracking-tighter">BPM</span>
+                    <input 
+                      type="number" 
+                      v-model.number="playbackBpm" 
+                      min="40" 
+                      max="240" 
+                      class="w-8 md:w-10 bg-transparent text-center text-[10px] md:text-xs font-black text-gray-800 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <!-- Start From Measure Selector -->
+                <div class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-2 py-1">
+                  <span class="text-[8px] font-black text-gray-500 uppercase tracking-wider">Desde compás:</span>
+                  <input 
+                    type="number" 
+                    v-model.number="playbackStartMeasure" 
+                    min="1" 
+                    :max="measuresWithKey.length" 
+                    class="w-10 bg-white border border-gray-200 rounded text-center text-[10px] font-bold text-gray-800 focus:outline-none focus:border-[#8EE000]"
+                    title="Compás de inicio para la reproducción"
+                  />
+                </div>
+
+                <!-- Metrónomo Toggle & Sound Selector -->
+                <div class="flex flex-col gap-1 bg-gray-50/80 border border-gray-200/70 rounded-xl p-1.5">
+                  <div class="flex items-center justify-between">
+                    <button 
+                      @click="playbackMetronome = !playbackMetronome"
+                      class="px-1.5 py-0.5 rounded-lg text-[9.5px] md:text-[10px] font-black transition-all flex items-center gap-1"
+                      :class="playbackMetronome ? 'bg-[#8EE000]/20 text-[#6CA600]' : 'text-gray-400 hover:text-gray-600'"
+                      title="Activar/Desactivar Metrónomo"
+                    >
+                      <span>🔔</span>
+                      <span>Metrónomo</span>
+                    </button>
+                    <div class="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full" :class="playbackMetronome ? 'bg-[#8EE000] animate-pulse' : 'bg-gray-300'"></div>
+                  </div>
+                  <select 
+                    v-if="playbackMetronome"
+                    v-model="playbackMetronomeSound"
+                    class="w-full bg-white border border-gray-200 rounded-lg text-[9px] md:text-[9.5px] font-bold text-gray-700 py-0.5 px-1 focus:outline-none focus:border-[#8EE000]"
+                  >
+                    <option value="beep">Beep</option>
+                    <option value="woodblock">Madera</option>
+                    <option value="cowbell">Cencerro</option>
+                    <option value="rimshot">Rimshot</option>
+                  </select>
+                </div>
+
+                <!-- Acordes (Sonido) Toggle & Instrument Selector -->
+                <div class="flex flex-col gap-1 bg-gray-50/80 border border-gray-200/70 rounded-xl p-1.5">
+                  <div class="flex items-center justify-between">
+                    <button 
+                      @click="playbackChordsActive = !playbackChordsActive"
+                      class="px-1.5 py-0.5 rounded-lg text-[9.5px] md:text-[10px] font-black transition-all flex items-center gap-1"
+                      :class="playbackChordsActive ? 'bg-[#8EE000]/20 text-[#6CA600]' : 'text-gray-400 hover:text-gray-600'"
+                      title="Activar/Silenciar Acordes"
+                    >
+                      <span>🎹</span>
+                      <span>Sonido</span>
+                    </button>
+                    <div class="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full" :class="playbackChordsActive ? 'bg-[#8EE000] animate-pulse' : 'bg-gray-300'"></div>
+                  </div>
+                  <select 
+                    v-if="playbackChordsActive"
+                    v-model="playbackInstrument"
+                    class="w-full bg-white border border-gray-200 rounded-lg text-[9px] md:text-[9.5px] font-bold text-gray-700 py-0.5 px-1 focus:outline-none focus:border-[#8EE000]"
+                  >
+                    <option value="rhodes">Rhodes</option>
+                    <option value="piano">Piano</option>
+                    <option value="guitar">Guitarra</option>
+                    <option value="organ">Órgano</option>
+                  </select>
+                </div>
+
+                <!-- AUDIO SETTINGS EXPANDABLE PANEL (⚙️) -->
+                <transition name="fade">
+                  <div v-if="isAudioSettingsOpen" class="pt-2 border-t border-gray-200 space-y-2 text-[9px]">
+                    <div class="flex items-center justify-between">
+                      <span class="font-bold text-gray-700">Continuidad Armónica</span>
+                      <input type="checkbox" v-model="playbackContinuity" class="accent-[#8EE000]">
+                    </div>
+                    <div class="flex items-center justify-between">
+                      <span class="font-bold text-gray-700">Rellenar compás</span>
+                      <input type="checkbox" v-model="playbackFillChords" class="accent-[#8EE000]">
+                    </div>
+                    <div class="flex items-center justify-between pt-1 border-t border-gray-100">
+                      <span class="font-black text-violet-900 flex items-center gap-1">
+                        <span>🎸</span> Solo Bajo (Línea de bajo)
+                      </span>
+                      <input type="checkbox" v-model="playbackBassOnly" class="accent-violet-600">
+                    </div>
+                    <div class="space-y-0.5">
+                      <span class="font-bold text-gray-500 block">Voicing Tétradas:</span>
+                      <select v-model="playbackTetradVoicing" class="w-full bg-gray-50 border border-gray-200 rounded text-[9px] p-1 font-bold">
+                        <option value="fundamental">Fundamental</option>
+                        <option value="drop2">Drop 2 (5-1-3-7)</option>
+                        <option value="inversion1">1ª Inversión (3-5-7-1)</option>
+                        <option value="inversion2">2ª Inversión (5-7-1-3)</option>
+                        <option value="inversion3">3ª Inversión (7-1-3-5)</option>
+                      </select>
+                    </div>
+                    <div class="space-y-0.5">
+                      <span class="font-bold text-gray-500 block">Voicing Tríadas:</span>
+                      <select v-model="playbackTriadVoicing" class="w-full bg-gray-50 border border-gray-200 rounded text-[9px] p-1 font-bold">
+                        <option value="fundamental">Fundamental</option>
+                        <option value="inversion1">1ª Inversión (3-5-1)</option>
+                        <option value="inversion2">2ª Inversión (5-1-3)</option>
+                      </select>
+                    </div>
+                  </div>
+                </transition>
+              </div>
+
+              <!-- SIDEBAR VOICING & NOTE ORDER INSPECTOR -->
+              <div 
+                v-if="activeChordVoicingList" 
+                class="w-28 md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-violet-200/80 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left animate-scale-up"
+              >
+                <div class="flex items-center justify-between border-b border-violet-100 pb-1">
+                  <div class="flex items-center gap-1">
+                    <span class="text-xs">🎼</span>
+                    <span class="text-[8.5px] md:text-[9px] font-black uppercase tracking-wider text-violet-900">Voicing & Notas</span>
+                  </div>
+                  
+                  <select 
+                    :value="selectedMeasureIndex !== null ? selectedMeasureIndex : 0"
+                    @change="selectedMeasureIndex = Number($event.target.value)"
+                    class="text-[8.5px] font-bold text-violet-900 bg-violet-100/80 border border-violet-200 rounded-lg px-1 py-0.5 focus:outline-none cursor-pointer"
+                    title="Seleccionar compás para inspeccionar y editar voicing"
+                  >
+                    <option 
+                      v-for="(m, mIdx) in measures" 
+                      :key="mIdx" 
+                      :value="mIdx"
+                    >
+                      Compás #{{ mIdx + 1 }} {{ m.beats && m.beats.find(b => b.root) ? '(' + formatChord(m.beats.find(b => b.root)) + ')' : '' }}
+                    </option>
+                  </select>
+                </div>
+
+                <div class="flex items-center justify-between bg-violet-50/70 rounded-xl px-2 py-1">
+                  <span class="text-[9px] font-medium text-violet-800">Acorde:</span>
+                  <span class="text-xs md:text-sm font-black text-violet-950">{{ activeChordVoicingList.formattedName }}</span>
+                </div>
+
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between">
+                    <span class="text-[8px] font-extrabold text-violet-900/70 uppercase tracking-wider">Orden de notas (Voicing):</span>
+                    <span class="text-[7.5px] font-bold text-gray-400" title="Arrastra cualquier nota hacia arriba o abajo">✋ Arrastra para ordenar</span>
+                  </div>
+                  <div class="flex flex-col gap-1">
+                    <div 
+                      v-for="(n, idx) in activeChordVoicingList.notes" 
+                      :key="n.noteName + idx" 
+                      draggable="true"
+                      @dragstart="onVoicingDragStart(idx, $event)"
+                      @dragover.prevent="onVoicingDragOver(idx, $event)"
+                      @drop="onVoicingDrop(idx, $event)"
+                      @dragend="onVoicingDragEnd"
+                      class="flex items-center justify-between border rounded-xl px-1.5 py-1 text-[9px] font-bold transition-all cursor-grab active:cursor-grabbing select-none shadow-2xs"
+                      :class="[
+                        n.isMuted ? 'opacity-50 line-through bg-gray-100 border-gray-300' :
+                        (draggedVoicingIndex === idx ? 'opacity-40 scale-95 border-dashed border-violet-500 bg-violet-50' : 
+                        (dragOverVoicingIndex === idx ? 'border-violet-600 ring-2 ring-violet-300 bg-violet-50/80 scale-102 shadow-md' : 'bg-white border-gray-200 hover:border-violet-300 hover:bg-violet-50/30'))
+                      ]"
+                    >
+                      <div class="flex items-center gap-1 min-w-0">
+                        <span class="text-gray-400 hover:text-violet-600 text-[10px] font-black cursor-grab shrink-0 tracking-tighter" title="Arrastra esta nota arriba o abajo">⣿</span>
+                        <span 
+                          class="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-black text-white shrink-0"
+                          :class="idx === 0 && activeChordVoicingList.isSlashChord ? 'bg-amber-500' : (n.isRoot ? 'bg-violet-600' : 'bg-gray-500')"
+                        >
+                          {{ idx === 0 && activeChordVoicingList.isSlashChord ? 'B' : (n.isRoot ? '1' : idx + 1) }}
+                        </span>
+                        <span class="font-black text-gray-800 truncate text-[10px]">{{ n.noteName }}</span>
+                        <span class="text-[8px] text-gray-400 font-normal">({{ n.interval }})</span>
+                      </div>
+                      
+                      <!-- Mute / Unmute Note Button -->
+                      <button 
+                        @click.stop="toggleVoicingNoteMute(n)" 
+                        class="w-5 h-5 rounded-lg border flex items-center justify-center text-[10px] transition-all active:scale-90 shrink-0"
+                        :class="n.isMuted ? 'bg-red-50 border-red-200 text-red-600' : 'bg-gray-50 border-gray-200 text-gray-500 hover:text-violet-600 hover:border-violet-300'"
+                        :title="n.isMuted ? 'Activar nota ' + n.noteName : 'Silenciar (mutear) nota ' + n.noteName"
+                      >
+                        {{ n.isMuted ? '🔇' : '🔊' }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
             
@@ -9416,7 +9953,7 @@ const togglePlayback = () => {
                     <!-- Playhead Line (Reproducción) -->
                     <div 
                       v-if="isPlaying && currentPlayingMeasureIndex === measure.displayedMeasureIndex" 
-                      class="absolute top-0 bottom-0 w-[3px] bg-[#8EE000] z-40 pointer-events-none shadow-[0_0_8px_#8EE000] transition-[left] duration-75"
+                      class="absolute top-0 bottom-0 w-[3px] bg-[#8EE000] z-40 pointer-events-none shadow-[0_0_8px_#8EE000]"
                       :style="{ left: (playheadProgress * 100) + '%' }"
                     ></div>
                     <!-- Selection Mode Overlay -->
@@ -9877,9 +10414,9 @@ const togglePlayback = () => {
                                     class="flex flex-col items-center justify-center leading-none px-1 py-0.5 rounded border border-transparent transition-all"
                                     :class="{ 'border-violet-500 bg-violet-50 text-violet-750 font-black shadow-sm ring-1 ring-violet-100': currentPlan === 'PRO' && (hoveredChordId === sub.id || (hoveredAnchor && isChordIdRelatedToBeat(hoveredAnchor.chordId, sub.id, measure))) }"
                                   >
-                                    <span>{{ splitChordDisplay(sub).main }}</span>
-                                    <span v-if="splitChordDisplay(sub).bass" class="text-[9px] text-gray-500 font-semibold mt-0.5">
-                                      {{ splitChordDisplay(sub).bass }}
+                                    <span>{{ splitChordDisplay(sub, measure.originalMeasureIndex).main }}</span>
+                                    <span v-if="splitChordDisplay(sub, measure.originalMeasureIndex).bass" class="text-[9px] text-gray-500 font-semibold mt-0.5">
+                                      {{ splitChordDisplay(sub, measure.originalMeasureIndex).bass }}
                                     </span>
                                   </span>
                                   <span 
@@ -11002,6 +11539,22 @@ const togglePlayback = () => {
                   <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 </button>
               </div>
+
+              <!-- Botones de Aplicación -->
+              <div class="pt-2 flex flex-col gap-2">
+                <button 
+                  @click="saveMeasureOptions(true)"
+                  class="w-full py-3 bg-[#8EE000] hover:bg-[#7bc200] text-black font-extrabold rounded-xl transition-all active:scale-98 text-sm shadow-sm"
+                >
+                  Aplicar sólo a este compás
+                </button>
+                <button 
+                  @click="saveMeasureOptions(false)"
+                  class="w-full py-3 bg-white border border-gray-200 hover:bg-gray-50 text-gray-800 font-bold rounded-xl transition-all active:scale-98 text-sm shadow-sm"
+                >
+                  Aplicar a todos a partir de este compás
+                </button>
+              </div>
             </div>
           </template>
           
@@ -11298,6 +11851,41 @@ const togglePlayback = () => {
                   <span class="text-[11px] text-gray-400 font-bold mb-0.5 uppercase tracking-widest group-active:text-[#6CA600]/50">{{ chord.degreeNumeral }}</span>
                   <span class="text-lg font-black text-gray-800 group-active:text-[#6CA600]">{{ chord.label }}</span>
                 </button>
+              </div>
+
+              <!-- 4b. PRÉSTAMOS MODALES (Intercambio Modal Multimodal) -->
+              <div v-if="modalInterchangeGroups && modalInterchangeGroups.length > 0" class="mt-4 pt-4 border-t border-amber-200/60 space-y-3">
+                <div class="flex items-center justify-between">
+                  <span class="block text-[11px] font-black text-amber-900 uppercase tracking-wider flex items-center gap-1">
+                    <span>🎨</span> Préstamos Modales (Intercambio Modal)
+                  </span>
+                  <span class="text-[8.5px] bg-amber-100 text-amber-900 font-extrabold px-2 py-0.5 rounded-full border border-amber-200">
+                    {{ translateNoteToSpanish(activeModalKeyAndScale.key) }} {{ SCALES[activeModalKeyAndScale.scale]?.name || activeModalKeyAndScale.scale }}
+                  </span>
+                </div>
+                
+                <div v-for="group in modalInterchangeGroups" :key="group.id" class="bg-amber-50/60 border border-amber-200/80 p-3 rounded-2xl space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-[10px] font-black text-amber-900 uppercase tracking-wide flex items-center gap-1">
+                      <span>✨</span> {{ group.title }}
+                    </span>
+                    <span class="text-[8px] bg-white text-amber-800 font-bold px-1.5 py-0.5 rounded border border-amber-200">
+                      {{ group.badge }}
+                    </span>
+                  </div>
+                  
+                  <div class="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    <button 
+                      v-for="chord in group.chords" 
+                      :key="chord.degreeNumeral + chord.label"
+                      @click="selectChord(chord)"
+                      class="bg-white border border-amber-200 hover:border-amber-400 rounded-xl py-2.5 flex flex-col items-center justify-center shadow-sm active:scale-95 transition-all group"
+                    >
+                      <span class="text-[9.5px] text-amber-700 font-extrabold mb-0.5 uppercase tracking-widest">{{ chord.degreeNumeral }}</span>
+                      <span class="text-base font-black text-gray-900 group-hover:text-amber-950">{{ chord.label }}</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
             
@@ -12649,151 +13237,7 @@ const togglePlayback = () => {
       </div>
     </transition>
     
-    <!-- ==================== FLOATING PLAYBACK CONTROLLER ==================== -->
-    <div 
-      v-if="!isSetupMode" 
-      class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-white/85 backdrop-blur-md border border-gray-200/80 px-5 py-3 rounded-full shadow-2xl transition-all duration-300 hover:shadow-black/10 select-none max-w-[95dvw] overflow-visible"
-      :class="{ 'bottom-20': toastMessage }"
-    >
-      <!-- Play/Stop Button -->
-      <button 
-        @click="togglePlayback" 
-        class="w-10 h-10 rounded-full flex items-center justify-center text-white transition-all transform active:scale-95 shadow-md"
-        :class="isPlaying ? 'bg-red-500 hover:bg-red-605 shadow-red-500/20' : 'bg-[#8EE000] hover:bg-[#7bc200] text-black shadow-[#8EE000]/30'"
-        :title="isPlaying ? 'Detener Reproducción' : 'Reproducir'"
-      >
-        <span v-if="isPlaying" class="text-xs">■</span>
-        <span v-else class="text-xs ml-0.5">▶</span>
-      </button>
 
-      <!-- BPM Control -->
-      <div class="flex items-center gap-1.5 border-r border-gray-200 pr-3 mr-1">
-        <span class="text-[9px] font-black text-gray-400 uppercase tracking-wider">BPM</span>
-        <input 
-          type="number" 
-          v-model.number="playbackBpm" 
-          min="40" 
-          max="240" 
-          class="w-12 bg-gray-50 border border-gray-200 rounded-lg text-center text-xs font-bold text-gray-800 focus:outline-none focus:border-[#8EE000] py-1"
-        />
-      </div>
-
-      <!-- Metronome Toggle -->
-      <div class="flex items-center gap-1 border-r border-gray-200 pr-3 mr-1">
-        <button 
-          @click="playbackMetronome = !playbackMetronome"
-          class="px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all flex items-center gap-1"
-          :class="playbackMetronome ? 'bg-[#8EE000]/20 text-[#6CA600]' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'"
-          title="Activar/Desactivar Metrónomo"
-        >
-          <span>🔔</span>
-          <span class="hidden sm:inline">Metrónomo</span>
-        </button>
-
-        <!-- Metronome Sound Selector (only visible if metronome is ON) -->
-        <select 
-          v-model="playbackMetronomeSound"
-          v-if="playbackMetronome"
-          class="bg-gray-50 border border-gray-250 rounded-lg text-[10px] font-bold text-gray-700 py-1 px-1 focus:outline-none focus:border-[#8EE000]"
-          title="Sonido del Metrónomo"
-        >
-          <option value="beep">Beep</option>
-          <option value="woodblock">Madera</option>
-          <option value="cowbell">Cencerro</option>
-          <option value="rimshot">Rimshot</option>
-        </select>
-      </div>
-
-      <!-- Sound Settings Gear -->
-      <div class="relative">
-        <button 
-          @click="isAudioSettingsOpen = !isAudioSettingsOpen"
-          class="w-8 h-8 rounded-full bg-gray-50 border border-gray-205 hover:bg-gray-100 flex items-center justify-center text-xs shadow-sm transition-all"
-          :class="{ 'border-[#8EE000] text-[#6CA600] bg-[#8EE000]/10': isAudioSettingsOpen }"
-          title="Ajustes de Sonido y Armonización"
-        >
-          ⚙️
-        </button>
-
-        <!-- Settings Dropup Panel -->
-        <transition name="dropdown">
-          <div 
-            v-if="isAudioSettingsOpen" 
-            class="absolute bottom-full right-0 mb-3 w-72 bg-white rounded-2xl border border-gray-200/90 shadow-2xl p-4 flex flex-col gap-3.5 text-left font-sans z-50 animate-scale-up"
-          >
-            <div class="flex items-center justify-between border-b border-gray-100 pb-2">
-              <span class="text-[10px] font-black text-gray-500 uppercase tracking-wider">Ajustes de Sonido</span>
-              <button @click="isAudioSettingsOpen = false" class="text-gray-400 hover:text-gray-600 text-xs">✕</button>
-            </div>
-
-            <!-- Continuity Voice Leading Switch -->
-            <div class="flex items-center justify-between">
-              <div>
-                <span class="block text-xs font-bold text-gray-800">Continuidad Armónica</span>
-                <span class="block text-[9px] text-gray-400 mt-0.5">Movimientos de acordes fluidos paso a paso</span>
-              </div>
-              <label class="relative inline-flex items-center cursor-pointer select-none">
-                <input 
-                  type="checkbox" 
-                  v-model="playbackContinuity"
-                  class="sr-only peer"
-                >
-                <div class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#8EE000]"></div>
-              </label>
-            </div>
-
-            <!-- Fill Chords Switch (only shown if not in Ritmo Armónico mode) -->
-            <div class="flex items-center justify-between border-t border-gray-100 pt-2.5">
-              <div>
-                <span class="block text-xs font-bold text-gray-800">Rellenar compás con acordes</span>
-                <span class="block text-[9px] text-gray-400 mt-0.5">Llena compases vacíos con el acorde anterior (sin Ritmo Armónico)</span>
-              </div>
-              <label class="relative inline-flex items-center cursor-pointer select-none">
-                <input 
-                  type="checkbox" 
-                  v-model="playbackFillChords"
-                  class="sr-only peer"
-                >
-                <div class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#8EE000]"></div>
-              </label>
-            </div>
-
-            <!-- Voicings selection per structure -->
-            <div class="border-t border-gray-100 pt-2.5 space-y-2">
-              <span class="block text-[9px] font-black text-gray-400 uppercase tracking-wider">Estructura Armónica / Voicings</span>
-              
-              <!-- Tetrads voicing -->
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-xs font-semibold text-gray-750">Tétradas (7ª):</span>
-                <select 
-                  v-model="playbackTetradVoicing"
-                  class="bg-gray-50 border border-gray-200 rounded-lg text-xs font-bold text-gray-800 py-1 px-1.5 focus:outline-none focus:border-[#8EE000]"
-                >
-                  <option value="fundamental">Estado Fundamental</option>
-                  <option value="drop2">Drop 2 (5-1-3-7)</option>
-                  <option value="inversion1">1ª Inversión (3-5-7-1)</option>
-                  <option value="inversion2">2ª Inversión (5-7-1-3)</option>
-                  <option value="inversion3">3ª Inversión (7-1-3-5)</option>
-                </select>
-              </div>
-
-              <!-- Triads voicing -->
-              <div class="flex items-center justify-between gap-2 border-t border-gray-100 pt-2">
-                <span class="text-xs font-semibold text-gray-750">Tríadas (3ª):</span>
-                <select 
-                  v-model="playbackTriadVoicing"
-                  class="bg-gray-50 border border-gray-200 rounded-lg text-xs font-bold text-gray-800 py-1 px-1.5 focus:outline-none focus:border-[#8EE000]"
-                >
-                  <option value="fundamental">Estado Fundamental</option>
-                  <option value="inversion1">1ª Inversión (3-5-1)</option>
-                  <option value="inversion2">2ª Inversión (5-1-3)</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        </transition>
-      </div>
-    </div>
 
     <!-- ==================== TOAST NOTIFICATION ==================== -->
     <transition name="toast-fade">
