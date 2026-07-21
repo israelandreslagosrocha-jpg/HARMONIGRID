@@ -18,7 +18,11 @@ export const CHORD_TYPE_INTERVALS = {
   'maj7#5': [0, 4, 8, 11],
   'maj7(#5)': [0, 4, 8, 11],
   '7#5': [0, 4, 8, 10],
-  '7(#5)': [0, 4, 8, 10]
+  '7(#5)': [0, 4, 8, 10],
+  '6': [0, 4, 7, 9],
+  'm6': [0, 3, 7, 9],
+  '69': [0, 4, 7, 9, 14],
+  'm69': [0, 3, 7, 9, 14]
 }
 
 export const TENSION_INTERVALS = {
@@ -31,7 +35,9 @@ export const TENSION_INTERVALS = {
   '13': [21],
   'add9': [14],
   'b5': [6],
-  '#5': [8]
+  '#5': [8],
+  '6': [9],
+  '6/9': [9, 14]
 }
 
 /**
@@ -97,6 +103,13 @@ export function getRootPositionMidi(chordObj, triadVoicingStyle = 'fundamental',
     const tInt = TENSION_INTERVALS[chordObj.tension]
     if (tInt) allIntervals.push(...tInt)
   }
+
+  // Si tiene 'omit3', remover intervalos de 3ra (3 y 4 semitonos)
+  const isOmit3 = (chordObj.tensions && chordObj.tensions.includes('omit3')) || chordObj.tension === 'omit3'
+  if (isOmit3) {
+    allIntervals = allIntervals.filter(i => i !== 3 && i !== 4)
+  }
+
   allIntervals = [...new Set(allIntervals)].sort((a, b) => a - b)
 
   // Aplicar estilo de voicing según la cantidad de notas

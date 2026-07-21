@@ -1224,6 +1224,8 @@ export function generatePDF(project, exportOption = 'chords-only') {
     doc.setDrawColor(210, 210, 210)
     doc.line(marginX, pageHeight - 20, pageWidth - 15, pageHeight - 20)
     
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(9)
     const textWidth = doc.getTextWidth("HarmoniGrid by TeoMusicRecords")
     const circleRadius = 3
     const gap = 2
@@ -1577,7 +1579,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       const h = getMeasureLyricsHeight(doc, measure, exportOption, actualMeasureWidth, sig)
       if (h > maxLyricsHeight) maxLyricsHeight = h
     })
-    const currentRowHeight = 25 + maxLyricsHeight
+    const currentRowHeight = 35 + maxLyricsHeight
 
     if (currentY + currentRowHeight > pageHeight - 30) {
       doc.addPage()
@@ -1629,8 +1631,13 @@ export function generatePDF(project, exportOption = 'chords-only') {
       doc.text((project.timeSignatureUnit || 4).toString(), marginX - 12, lineY + 6.5)
     }
 
-    // Pre-calculate measure widths and start positions for this row
-    const measureWidths = rowMeasures.map(() => usableWidth / rowMeasures.length)
+    // Pre-calculate measure widths and start positions for this row (proportional layout)
+    const rowMinWidths = rowMeasures.map(measure => {
+      const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      return getMeasureMinWidthPDF(measure, sig, exportOption)
+    })
+    const totalRowMinWidth = rowMinWidths.reduce((sum, w) => sum + w, 0) || 1
+    const measureWidths = rowMinWidths.map(minW => (minW / totalRowMinWidth) * usableWidth)
 
     // Líneas horizontales del sistema (dibujadas antes de las notas para que queden por detrás)
     const endX = startX + rowMeasures.reduce((sum, _, cIdx) => sum + measureWidths[cIdx], 0)
@@ -1854,19 +1861,32 @@ export function generatePDF(project, exportOption = 'chords-only') {
             }
             
             if (sub.root) {
-              const chordStr = formatChord(sub)
-              const split = splitChordDisplayPDF(chordStr)
-              const fontSizes = getChordFontSizes(measure, sig)
+              let shouldPrintChord = true
+              const activeSlots = slots.filter(s => s && s.root && !s.isSilence)
+              const allActiveEqual = activeSlots.length > 0 && activeSlots.every(s => areChordsEqual(s, activeSlots[0]))
               
-              doc.setFont("helvetica", "bold")
-              doc.setFontSize(fontSizes.main)
-              if (split.bass) {
-                doc.text(split.main, subX, currentY + 5.5, { align: "center" })
-                doc.setFont("helvetica", "normal")
-                doc.setFontSize(fontSizes.bass)
-                doc.text(split.bass, subX, currentY + 9, { align: "center" })
-              } else {
-                doc.text(split.main, subX, currentY + 7, { align: "center" })
+              if (allActiveEqual) {
+                const firstActiveIndex = slots.findIndex(s => s && s.root && !s.isSilence)
+                if (sub.originalIndex !== firstActiveIndex) {
+                  shouldPrintChord = false
+                }
+              }
+              
+              if (shouldPrintChord) {
+                const chordStr = formatChord(sub)
+                const split = splitChordDisplayPDF(chordStr)
+                const fontSizes = getChordFontSizes(measure, sig)
+                
+                doc.setFont("helvetica", "bold")
+                doc.setFontSize(fontSizes.main)
+                if (split.bass) {
+                  doc.text(split.main, subX, currentY + 5.5, { align: "center" })
+                  doc.setFont("helvetica", "normal")
+                  doc.setFontSize(fontSizes.bass)
+                  doc.text(split.bass, subX, currentY + 9, { align: "center" })
+                } else {
+                  doc.text(split.main, subX, currentY + 7, { align: "center" })
+                }
               }
             }
           })

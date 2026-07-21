@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import logoUrl from './assets/logo.jpg'
 import { getDiatonicChords, SCALES, getScaleNotes } from './core/scales.js'
 import { formatChord, getRomanNumeralForChord } from './core/chords.js'
@@ -909,6 +909,121 @@ const showToast = (msg) => {
     toastMessage.value = ''
   }, 1500)
 }
+// --- CONSTRUCTOR DE ACORDE (CUSTOM CHORD BUILDER) ---
+const builderState = reactive({
+  rootBase: '',       // 'C', 'D', 'E', 'F', 'G', 'A', 'B' (Casilla 1 - Obligatoria)
+  accidental: '',     // '', '#', 'b' (Casilla 2 - Alteración)
+  quality: 'maj',     // 'maj', 'min', 'dim', 'aug' (Casilla 3 - Tríada Base)
+  seventh: '',        // '', 'maj7', 'm7', '7', 'dim7' (Casilla 4 - Séptima)
+  ext9: '',           // '', '9', 'b9', '#9' (Casilla 5 - Novena)
+  ext11: '',          // '', '11', '#11' (Casilla 6 - Oncena)
+  ext13: '',          // '', '13', 'b13', '#13' (Casilla 7 - Trecena)
+  specialModifier: '' // '', '6', '69', 'sus4', 'sus2', 'omit3' (Casilla 8 - Modificadores)
+})
+
+const constructedChord = computed(() => {
+  if (!builderState.rootBase) {
+    return { root: '', type: '', tensions: [] }
+  }
+  const root = builderState.rootBase + builderState.accidental
+  let type = builderState.quality
+
+  // 7ma
+  if (builderState.seventh === 'maj7') {
+    type = builderState.quality === 'min' ? 'mM7' : 'maj7'
+  } else if (builderState.seventh === 'm7' || builderState.seventh === '7') {
+    if (builderState.quality === 'min') type = 'm7'
+    else if (builderState.quality === 'dim') type = 'm7b5'
+    else type = '7'
+  } else if (builderState.seventh === 'dim7') {
+    type = 'dim7'
+  }
+
+  // Modificadores especiales
+  if (builderState.specialModifier === '6') {
+    type = builderState.quality === 'min' ? 'm6' : '6'
+  } else if (builderState.specialModifier === '69') {
+    type = builderState.quality === 'min' ? 'm69' : '69'
+  } else if (builderState.specialModifier === 'sus4') {
+    type = 'sus4'
+  } else if (builderState.specialModifier === 'sus2') {
+    type = 'sus2'
+  }
+
+  const tensions = []
+  if (builderState.ext9) tensions.push(builderState.ext9)
+  if (builderState.ext11) tensions.push(builderState.ext11)
+  if (builderState.ext13) tensions.push(builderState.ext13)
+  if (builderState.specialModifier === 'omit3') tensions.push('omit3')
+
+  return { root, type, tensions }
+})
+
+const loadChordIntoBuilder = (chordObj) => {
+  if (!chordObj || !chordObj.root) {
+    builderState.rootBase = ''
+    builderState.accidental = ''
+    builderState.quality = 'maj'
+    builderState.seventh = ''
+    builderState.ext9 = ''
+    builderState.ext11 = ''
+    builderState.ext13 = ''
+    builderState.specialModifier = ''
+    return
+  }
+
+  const r = chordObj.root
+  if (r.includes('#')) {
+    builderState.rootBase = r.replace('#', '')
+    builderState.accidental = '#'
+  } else if (r.includes('b')) {
+    builderState.rootBase = r.replace('b', '')
+    builderState.accidental = 'b'
+  } else {
+    builderState.rootBase = r
+    builderState.accidental = ''
+  }
+
+  const type = chordObj.type || 'maj'
+  if (['min', 'm7', 'm6', 'm69', 'mM7'].includes(type)) {
+    builderState.quality = 'min'
+  } else if (['dim', 'dim7', 'm7b5'].includes(type)) {
+    builderState.quality = 'dim'
+  } else if (['aug', 'maj7#5', '7#5'].includes(type)) {
+    builderState.quality = 'aug'
+  } else {
+    builderState.quality = 'maj'
+  }
+
+  if (['maj7', 'mM7'].includes(type)) builderState.seventh = 'maj7'
+  else if (['m7', '7'].includes(type)) builderState.seventh = 'm7'
+  else if (['dim7', 'm7b5'].includes(type)) builderState.seventh = 'dim7'
+  else builderState.seventh = ''
+
+  if (['6', 'm6'].includes(type)) builderState.specialModifier = '6'
+  else if (['69', 'm69'].includes(type)) builderState.specialModifier = '69'
+  else if (type === 'sus4') builderState.specialModifier = 'sus4'
+  else if (type === 'sus2') builderState.specialModifier = 'sus2'
+  else builderState.specialModifier = ''
+
+  const tensions = chordObj.tensions || (chordObj.tension ? [chordObj.tension] : [])
+  builderState.ext9 = tensions.find(t => ['9', 'b9', '#9'].includes(t)) || ''
+  builderState.ext11 = tensions.find(t => ['11', '#11'].includes(t)) || ''
+  builderState.ext13 = tensions.find(t => ['13', 'b13', '#13'].includes(t)) || ''
+  if (tensions.includes('omit3')) {
+    builderState.specialModifier = 'omit3'
+  }
+}
+
+const previewBuilderAudio = () => {
+  if (!constructedChord.value || !constructedChord.value.root) return
+  initAudio()
+  const midiNotes = getRootPositionMidi(constructedChord.value, 'fundamental', 'fundamental')
+  if (audioCtx && midiNotes.length > 0) {
+    playChordNotes(audioCtx, audioCtx.currentTime, midiNotes, 1.2, playbackInstrument.value || 'rhodes')
+  }
+}
+
 // --- DETECCION DE SUGERENCIAS Y EDICIÓN AVANZADA ---
 const activeTensionExplanation = ref(null)
 const activeEditingBeat = computed(() => {
@@ -921,6 +1036,7 @@ const activeEditingBeat = computed(() => {
   }
   return beat || null
 })
+
 const SCALE_EXTENSIONS_DB = {
   major: {
     'I': { available: ['9', '13', '#11'], avoid: ['11'], reason: 'Choque de semitono con la tercera mayor (Mi).' },
@@ -1132,9 +1248,44 @@ const suggestedBassNotes = computed(() => {
   
   return suggestions
 })
+const isSlotIdTiedToNextDirect = (measureIndex, beatIndex, sIdx, measure, beat) => {
+  const slots = getBeatSlots(measure, beat, beatIndex)
+  if (sIdx < slots.length - 1) {
+    return tiedSlots.value.has(`${measureIndex}_${beatIndex}_${sIdx + 1}`)
+  }
+  
+  if (beatIndex + 1 < measure.beats.length) {
+    const nextBeat = measure.beats[beatIndex + 1]
+    const nextRhythm = getEffectiveRhythm(measure, nextBeat, beatIndex + 1)
+    const sig = getMeasureTimeSignature(measure)
+    if (measure.showObligado && isSubdividedRhythm(nextRhythm, sig.unit === 8, nextBeat)) {
+      return tiedSlots.value.has(`${measureIndex}_${beatIndex + 1}_0`)
+    } else {
+      return tiedSlots.value.has(`${measureIndex}_${beatIndex + 1}`)
+    }
+  }
+  
+  if (measureIndex + 1 < measures.value.length) {
+    const nextMeasure = measures.value[measureIndex + 1]
+    const nextBeat = nextMeasure?.beats[0]
+    if (nextBeat) {
+      const nextRhythm = getEffectiveRhythm(nextMeasure, nextBeat, 0)
+      const sig = getMeasureTimeSignature(nextMeasure)
+      if (nextMeasure.showObligado && isSubdividedRhythm(nextRhythm, sig.unit === 8, nextBeat)) {
+        return tiedSlots.value.has(`${measureIndex + 1}_0_0`)
+      } else {
+        return tiedSlots.value.has(`${measureIndex + 1}_0`)
+      }
+    }
+  }
+  
+  return false
+}
+
 const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
   if (!measure || !beat) return false
   if (beat.forceSeparated) return false
+  
   const rhythm = getEffectiveRhythm(measure, beat, beatIdx)
   const sig = getMeasureTimeSignature(measure)
   const isSub = measure.showObligado && isSubdividedRhythm(rhythm, sig.unit === 8, beat)
@@ -1142,6 +1293,14 @@ const isSubdivisionCollapsed = (measure, beat, beatIdx) => {
   
   const slots = getBeatSlots(measure, beat, beatIdx)
   if (slots.length <= 1) return false
+  
+  // No colapsar si algún slot en esta subdivisión tiene un ligado (entrante o saliente)
+  const origMIdx = measure.originalMeasureIndex
+  for (let sIdx = 0; sIdx < slots.length; sIdx++) {
+    const slotId = `${origMIdx}_${beatIdx}_${sIdx}`
+    if (tiedSlots.value.has(slotId)) return false
+    if (isSlotIdTiedToNextDirect(origMIdx, beatIdx, sIdx, measure, beat)) return false
+  }
   
   const activeSlots = slots.filter(s => !s.isSilence && !s.isMerged)
   if (activeSlots.length === 0) return true
@@ -3807,6 +3966,7 @@ const getVisibleSlotsForRender = (measure, beat, beatIdx) => {
   
   const states = slots.map((s, idx) => ({
     ...s,
+    id: `${origMIdx}_${beatIdx}_${idx}`,
     originalIndex: idx,
     flexGrow: 1,
     isMerged: s.isMerged || false
@@ -3814,7 +3974,6 @@ const getVisibleSlotsForRender = (measure, beat, beatIdx) => {
   
   let visible = []
   if (rhythm === 'sixteenth' || rhythm === 'triplet') {
-    const visibleSub = []
     for (let i = 0; i < states.length; i++) {
       if (states[i].isMerged) continue
       
@@ -3826,61 +3985,10 @@ const getVisibleSlotsForRender = (measure, beat, beatIdx) => {
       }
       
       states[i].flexGrow = flexGrow
-      visibleSub.push(states[i])
+      visible.push(states[i])
     }
-    
-    // Fuse adjacent identical tied slots
-    const fused = []
-    for (let i = 0; i < visibleSub.length; i++) {
-      let current = visibleSub[i]
-      let j = i + 1
-      while (j < visibleSub.length) {
-        const next = visibleSub[j]
-        const nextSlotId = `${origMIdx}_${beatIdx}_${next.originalIndex}`
-        if (areChordsEqual(current, next) && tiedSlots.value.has(nextSlotId)) {
-          current.flexGrow += next.flexGrow
-          j++
-        } else {
-          break
-        }
-      }
-      fused.push(current)
-      i = j - 1
-    }
-    visible = fused
   } else {
-    const visibleNonSixteenth = []
-    for (let i = 0; i < states.length; i++) {
-      let current = states[i]
-      let j = i + 1
-      while (j < states.length) {
-        const next = states[j]
-        const nextSlotId = `${origMIdx}_${beatIdx}_${next.originalIndex}`
-        if (areChordsEqual(current, next) && tiedSlots.value.has(nextSlotId)) {
-          current.flexGrow += next.flexGrow
-          j++
-        } else {
-          break
-        }
-      }
-      visibleNonSixteenth.push(current)
-      i = j - 1
-    }
-    visible = visibleNonSixteenth
-  }
-  
-  // Collapse logic: if all visible slots are non-silence, have a chord, and are identical:
-  if (
-    visible.length > 1 &&
-    visible.every(s => !s.isSilence && s.root) &&
-    visible.every(s => areChordsEqual(s, visible[0]))
-  ) {
-    return [{
-      ...visible[0],
-      originalIndex: 0,
-      flexGrow: visible.reduce((sum, s) => sum + s.flexGrow, 0),
-      isCollapsedSubdivision: true
-    }]
+    visible = states
   }
   
   return visible
@@ -4477,6 +4585,7 @@ const openModal = (measureIndex, beatIndex, displayedMeasureIndex, subdivisionIn
   
   wasBeatAlreadySet.value = wasSet
   activeTensionExplanation.value = null // Reset explanation
+  loadChordIntoBuilder(activeEditingBeat.value)
   isModalOpen.value = true
 }
 const selectChord = (chordObj) => {
@@ -4525,9 +4634,9 @@ const selectChord = (chordObj) => {
       beat.subdivisions[subdivisionIndex] = {
         root: chordObj.root,
         type: chordObj.type,
-        tensions: [],
-        tension: null,
-        bass: null,
+        tensions: chordObj.tensions ? [...chordObj.tensions] : [],
+        tension: chordObj.tension || null,
+        bass: chordObj.bass || null,
         isSilence: !chordObj.root
       }
       
@@ -4535,9 +4644,9 @@ const selectChord = (chordObj) => {
       if ((subdivisionIndex === 0 && !isOffbeat) || (subdivisionIndex === 1 && isOffbeat)) {
         beat.root = chordObj.root
         beat.type = chordObj.type
-        beat.tensions = []
-        beat.tension = null
-        beat.bass = null
+        beat.tensions = chordObj.tensions ? [...chordObj.tensions] : []
+        beat.tension = chordObj.tension || null
+        beat.bass = chordObj.bass || null
       }
       
       m.groove = 'custom'
@@ -4545,9 +4654,9 @@ const selectChord = (chordObj) => {
       m.beats[beatIndex] = {
         root: chordObj.root,
         type: chordObj.type,
-        tensions: [],
-        tension: null,
-        bass: null
+        tensions: chordObj.tensions ? [...chordObj.tensions] : [],
+        tension: chordObj.tension || null,
+        bass: chordObj.bass || null
       }
     }
     activeTensionExplanation.value = null
@@ -4556,9 +4665,9 @@ const selectChord = (chordObj) => {
       const newChord = {
         root: chordObj.root,
         type: chordObj.type,
-        tension: null,
-        bass: null,
-        tensions: [],
+        tension: chordObj.tension || null,
+        bass: chordObj.bass || null,
+        tensions: chordObj.tensions ? [...chordObj.tensions] : [],
         isSilence: !chordObj.root
       }
       if (subdivisionIndex !== undefined) {
@@ -6114,10 +6223,20 @@ const isNextSlotTied = () => {
   if (!selectedBeat.value) return false
   const linearBlocks = getLinearBlocks()
   const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
-  const slotId = subdivisionIndex !== undefined
-    ? `${measureIndex}_${beatIndex}_${subdivisionIndex}`
-    : `${measureIndex}_${beatIndex}`
-    
+  
+  const m = measures.value[measureIndex]
+  const b = m ? m.beats[beatIndex] : null
+  
+  let slotId = ''
+  if (b && isSubdivisionCollapsed(m, b, beatIndex)) {
+    const slots = getBeatSlots(m, b, beatIndex)
+    slotId = `${measureIndex}_${beatIndex}_${slots.length - 1}`
+  } else {
+    slotId = subdivisionIndex !== undefined
+      ? `${measureIndex}_${beatIndex}_${subdivisionIndex}`
+      : `${measureIndex}_${beatIndex}`
+  }
+     
   const idx = linearBlocks.findIndex(b => b.id === slotId)
   if (idx === -1 || idx === linearBlocks.length - 1) return false
   
@@ -6129,10 +6248,20 @@ const toggleTieActiveSlot = () => {
   saveHistory()
   const linearBlocks = getLinearBlocks()
   const { measureIndex, beatIndex, subdivisionIndex } = selectedBeat.value
-  const slotId = subdivisionIndex !== undefined
-    ? `${measureIndex}_${beatIndex}_${subdivisionIndex}`
-    : `${measureIndex}_${beatIndex}`
-    
+  
+  const m = measures.value[measureIndex]
+  const b = m ? m.beats[beatIndex] : null
+  
+  let slotId = ''
+  if (b && isSubdivisionCollapsed(m, b, beatIndex)) {
+    const slots = getBeatSlots(m, b, beatIndex)
+    slotId = `${measureIndex}_${beatIndex}_${slots.length - 1}`
+  } else {
+    slotId = subdivisionIndex !== undefined
+      ? `${measureIndex}_${beatIndex}_${subdivisionIndex}`
+      : `${measureIndex}_${beatIndex}`
+  }
+     
   const idx = linearBlocks.findIndex(b => b.id === slotId)
   const currentBlock = linearBlocks[idx]
   const nextBlock = linearBlocks[idx + 1]
@@ -6164,6 +6293,61 @@ const toggleTieActiveSlot = () => {
     
     tiedSlots.value.add(nextBlock.id)
     showToast("Ligado creado con éxito")
+  }
+}
+
+const isSlotTiedFromPrev = (slotId) => {
+  return tiedSlots.value.has(slotId)
+}
+
+const isSlotTiedToNext = (slotId) => {
+  const linearBlocks = getLinearBlocks()
+  const idx = linearBlocks.findIndex(b => b.id === slotId)
+  if (idx === -1 || idx === linearBlocks.length - 1) return false
+  const nextBlock = linearBlocks[idx + 1]
+  return nextBlock && tiedSlots.value.has(nextBlock.id)
+}
+
+const toggleTieBySlotId = (slotId) => {
+  if (currentPlan.value !== 'PRO') {
+    upgradeReason.value = 'feature'
+    isUpgradeModalOpen.value = true
+    return
+  }
+  saveHistory()
+  const linearBlocks = getLinearBlocks()
+  const idx = linearBlocks.findIndex(b => b.id === slotId)
+  if (idx === -1 || idx === linearBlocks.length - 1) return
+  
+  const currentBlock = linearBlocks[idx]
+  const nextBlock = linearBlocks[idx + 1]
+  if (!nextBlock) return
+  
+  if (tiedSlots.value.has(nextBlock.id)) {
+    tiedSlots.value.delete(nextBlock.id)
+    showToast("Ligado eliminado")
+  } else {
+    // Copy chord details if next block is a rest/silence (UX helper)
+    if (!nextBlock.chord.root || nextBlock.chord.isSilence) {
+      nextBlock.chord.root = currentBlock.chord.root
+      nextBlock.chord.type = currentBlock.chord.type
+      nextBlock.chord.tensions = currentBlock.chord.tensions ? [...currentBlock.chord.tensions] : []
+      nextBlock.chord.tension = currentBlock.chord.tension
+      nextBlock.chord.bass = currentBlock.chord.bass
+      nextBlock.chord.isSilence = false
+      
+      if (nextBlock.type === 'beat') {
+        const parentBeat = measures.value[nextBlock.measureIndex].beats[nextBlock.beatIndex]
+        parentBeat.root = currentBlock.chord.root
+        parentBeat.type = currentBlock.chord.type
+        parentBeat.tensions = currentBlock.chord.tensions ? [...currentBlock.chord.tensions] : []
+        parentBeat.tension = currentBlock.chord.tension
+        parentBeat.bass = currentBlock.chord.bass
+      }
+    }
+    
+    tiedSlots.value.add(nextBlock.id)
+    showToast("Ligado creado")
   }
 }
 const getBeatSlots = (measure, beat, beatIdx) => {
@@ -8783,11 +8967,43 @@ const scheduler = () => {
         for (let k = 0; k < subCount; k++) {
           const slot = slots[k]
           if (slot && slot.root && !slot.isSilence && !slot.isMerged) {
+            const slotId = `${measure.originalMeasureIndex}_${scheduleBeatIdx}_${slot.originalIndex !== undefined ? slot.originalIndex : k}`
+            
+            // Si la figura actual recibe un ligado de la figura anterior, no se vuelve a atacar en audio
+            if (tiedSlots.value.has(slotId)) {
+              continue
+            }
+            
             let durationSlots = 1
             while (k + durationSlots < subCount && slots[k + durationSlots].isMerged) {
               durationSlots++
             }
-            const durationSeconds = durationSlots * slotDuration
+            let durationSeconds = durationSlots * slotDuration
+            
+            // Extender la duración sosteniendo la nota a través de las figuras ligadas consecutivas
+            const allLinearBlocks = getLinearBlocks()
+            const blockIdx = allLinearBlocks.findIndex(b => b.id === slotId)
+            if (blockIdx !== -1) {
+              let nextBIdx = blockIdx + 1
+              while (nextBIdx < allLinearBlocks.length && tiedSlots.value.has(allLinearBlocks[nextBIdx].id)) {
+                const nextB = allLinearBlocks[nextBIdx]
+                const nextM = measures.value[nextB.measureIndex]
+                const nextBt = nextM?.beats[nextB.beatIndex]
+                const nextSig = getMeasureTimeSignature(nextB.measureIndex)
+                const nextBpm = playbackBpm.value || 120
+                const nextBtDur = (60 / nextBpm) * (4 / (nextSig?.unit || 4))
+                
+                let addSecs = nextBtDur
+                if (nextB.type === 'subdivision') {
+                  const nextSlots = getBeatSlots(nextM, nextBt, nextB.beatIndex)
+                  addSecs = (nextBtDur / Math.max(nextSlots.length, 1)) * (nextB.durationSlots || 1)
+                } else {
+                  addSecs = nextBtDur * (nextB.durationSlots || 1)
+                }
+                durationSeconds += addSecs
+                nextBIdx++
+              }
+            }
             
             let rawNotes = []
             if (playbackContinuity.value) {
@@ -8808,42 +9024,71 @@ const scheduler = () => {
         const states = getPlaybackMergedBeats(measure)
         const state = states.find(s => s.index === scheduleBeatIdx)
         if (state && !state.isMerged && state.beat.root) {
-          const isExplicitFigure = state.beat.harmonicRhythm && state.beat.harmonicRhythm !== 'auto'
-          let durationBeats = state.durationSlots
-          
-          if (!isExplicitFigure && playbackFillChords.value && !measure.showObligado) {
-            let fillBeats = 1
-            for (let j = scheduleBeatIdx + 1; j < measure.beats.length; j++) {
-              if (measure.beats[j] && measure.beats[j].root) {
-                fillBeats = j - scheduleBeatIdx
-                break
-              } else {
-                fillBeats = measure.beats.length - scheduleBeatIdx
+          const beatId = `${measure.originalMeasureIndex}_${scheduleBeatIdx}`
+          if (!tiedSlots.value.has(beatId)) {
+            const isExplicitFigure = state.beat.harmonicRhythm && state.beat.harmonicRhythm !== 'auto'
+            let durationBeats = state.durationSlots
+            
+            if (!isExplicitFigure && playbackFillChords.value && !measure.showObligado) {
+              let fillBeats = 1
+              for (let j = scheduleBeatIdx + 1; j < measure.beats.length; j++) {
+                if (measure.beats[j] && measure.beats[j].root) {
+                  fillBeats = j - scheduleBeatIdx
+                  break
+                } else {
+                  fillBeats = measure.beats.length - scheduleBeatIdx
+                }
+              }
+              durationBeats = Math.max(durationBeats, fillBeats)
+            }
+            
+            let durationSeconds = durationBeats * beatDuration
+            
+            // Extender la duración por ligaduras consecutivas
+            const allLinearBlocks = getLinearBlocks()
+            const blockIdx = allLinearBlocks.findIndex(b => b.id === beatId)
+            if (blockIdx !== -1) {
+              let nextBIdx = blockIdx + 1
+              while (nextBIdx < allLinearBlocks.length && tiedSlots.value.has(allLinearBlocks[nextBIdx].id)) {
+                const nextB = allLinearBlocks[nextBIdx]
+                const nextM = measures.value[nextB.measureIndex]
+                const nextBt = nextM?.beats[nextB.beatIndex]
+                const nextSig = getMeasureTimeSignature(nextB.measureIndex)
+                const nextBpm = playbackBpm.value || 120
+                const nextBtDur = (60 / nextBpm) * (4 / (nextSig?.unit || 4))
+                
+                let addSecs = nextBtDur
+                if (nextB.type === 'subdivision') {
+                  const nextSlots = getBeatSlots(nextM, nextBt, nextB.beatIndex)
+                  addSecs = (nextBtDur / Math.max(nextSlots.length, 1)) * (nextB.durationSlots || 1)
+                } else {
+                  addSecs = nextBtDur * (nextB.durationSlots || 1)
+                }
+                durationSeconds += addSecs
+                nextBIdx++
               }
             }
-            durationBeats = Math.max(durationBeats, fillBeats)
-          }
-          
-          const durationSeconds = durationBeats * beatDuration
-          let rawNotes = []
-          if (playbackContinuity.value) {
-            rawNotes = getVoiceLedMidi(state.beat, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
-          } else {
-            rawNotes = getRootPositionMidi(state.beat, playbackTriadVoicing.value, playbackTetradVoicing.value)
-          }
-          const notes = filterChordNotesForAudio(state.beat, rawNotes)
-          if (notes.length > 0) {
-            if (playbackChordsActive.value) {
-              playChordNotes(audioCtx, nextNoteTime, notes, durationSeconds - 0.02, playbackInstrument.value)
+
+            let rawNotes = []
+            if (playbackContinuity.value) {
+              rawNotes = getVoiceLedMidi(state.beat, lastVoicedNotes, playbackTriadVoicing.value, playbackTetradVoicing.value)
+            } else {
+              rawNotes = getRootPositionMidi(state.beat, playbackTriadVoicing.value, playbackTetradVoicing.value)
             }
-            lastVoicedNotes = rawNotes
+            const notes = filterChordNotesForAudio(state.beat, rawNotes)
+            if (notes.length > 0) {
+              if (playbackChordsActive.value) {
+                playChordNotes(audioCtx, nextNoteTime, notes, durationSeconds - 0.02, playbackInstrument.value)
+              }
+              lastVoicedNotes = rawNotes
+            }
           }
         }
       }
     }
     
     visualQueue.push({
-      measureIdx: viewMode.value === 'expanded' && currentPlan.value === 'PRO' ? scheduleMeasureIdx : measure.displayedMeasureIndex,
+      measureIdx: viewMode.value === 'expanded' && currentPlan.value === 'PRO' ? scheduleMeasureIdx : measure.originalMeasureIndex,
       origMeasureIdx: measure.originalMeasureIndex,
       beatIdx: scheduleBeatIdx,
       beatDuration: beatDuration,
@@ -10375,7 +10620,7 @@ const togglePlayback = () => {
                                 :key="sub.originalIndex"
                                 :disabled="getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0"
                                 @click.stop="clickBeat(measure.originalMeasureIndex, state.index, measure.displayedMeasureIndex, sub.originalIndex)"
-                                class="h-full flex flex-col items-center justify-center relative transition-colors"
+                                class="h-full flex flex-col items-center justify-center relative transition-colors group/subslot"
                                 :style="{ flexGrow: sub.flexGrow }"
                                 :class="[
                                   getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0 
@@ -10383,6 +10628,24 @@ const togglePlayback = () => {
                                     : 'active:bg-[#8EE000]/10 hover:bg-[#8EE000]/5 text-gray-800'
                                 ]"
                               >
+                                <!-- Botón para alternar ligado con la siguiente figura -->
+                                <button 
+                                  v-if="getEffectiveRhythm(measure, state.beat, state.index) !== 'offbeat' || sub.originalIndex !== 0"
+                                  @click.stop="toggleTieBySlotId(`${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`)"
+                                  class="absolute -top-1 -right-1 text-[8px] px-1 py-0.2 rounded-full transition-all font-bold z-20 shadow-sm flex items-center justify-center bg-gray-100 hover:bg-violet-100 text-gray-400 hover:text-violet-750 opacity-0 group-hover/subslot:opacity-100"
+                                  :class="{ 'bg-violet-600 text-white !opacity-100 shadow-violet-200': isSlotTiedToNext(`${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`) }"
+                                  title="Ligar a la siguiente figura"
+                                >
+                                  🔗
+                                </button>
+
+                                <!-- Arco de ligado curvo (TIE) a la siguiente figura -->
+                                <div v-if="isSlotTiedToNext(`${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`)" class="absolute -bottom-2 right-0 translate-x-1/2 z-30 pointer-events-none flex items-center justify-center">
+                                  <svg class="w-8 h-3.5 text-violet-600 drop-shadow-sm" viewBox="0 0 32 14">
+                                    <path d="M 2 2 Q 16 14 30 2" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                                  </svg>
+                                </div>
+
                                 <!-- Mini override rhythm indicator over chord -->
                                 <span 
                                   v-if="hasBeatRhythmOverride(measure, state.beat, state.index) && !sub.isSilence"
@@ -12345,6 +12608,265 @@ const togglePlayback = () => {
                     <div class="text-[10px] text-gray-400 mt-1 leading-normal font-medium select-none">{{ alt.description }}</div>
                   </div>
                 </button>
+              </div>
+            </div>
+            
+            <!-- 4c. CONSTRUCTOR DE ACORDE (CUSTOM CHORD BUILDER) -->
+            <div class="mt-6 pt-5 border-t-2 border-emerald-100/80 space-y-4">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <span class="text-lg">🛠️</span>
+                  <div>
+                    <span class="block text-xs font-black text-emerald-900 uppercase tracking-wider">
+                      Constructor de Acorde (Personalizado)
+                    </span>
+                    <span class="block text-[10px] text-gray-500 font-medium">
+                      Crea sustituciones armónicas, tensiones no diatónicas y acordes de jazz paso a paso
+                    </span>
+                  </div>
+                </div>
+                <button 
+                  v-if="activeEditingBeat && activeEditingBeat.root"
+                  @click="loadChordIntoBuilder(activeEditingBeat)"
+                  class="text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 px-2.5 py-1 rounded-xl transition-all active:scale-95 shrink-0"
+                >
+                  🔄 Recargar Actual
+                </button>
+              </div>
+
+              <div class="bg-white border border-emerald-200/80 p-4 rounded-2xl space-y-4 shadow-sm">
+                <!-- GRID DE CASILLAS DEL CONSTRUCTOR -->
+                <div class="space-y-3.5">
+                  
+                  <!-- CASILLA 1: Nota Raíz (Obligatoria) -->
+                  <div>
+                    <div class="flex items-center justify-between mb-1.5">
+                      <span class="text-[11px] font-black text-gray-700 uppercase tracking-wider flex items-center gap-1">
+                        <span class="w-4 h-4 rounded-full bg-emerald-600 text-white text-[9px] flex items-center justify-center font-bold">1</span>
+                        Nota Raíz (Obligatoria)
+                      </span>
+                      <span v-if="!builderState.rootBase" class="text-[10px] text-amber-600 font-bold animate-pulse">Selecciona una nota para comenzar</span>
+                    </div>
+                    <div class="grid grid-cols-7 gap-1.5">
+                      <button 
+                        v-for="note in ['C', 'D', 'E', 'F', 'G', 'A', 'B']" 
+                        :key="note"
+                        @click="builderState.rootBase = note"
+                        :class="builderState.rootBase === note 
+                          ? 'bg-emerald-600 text-white font-black shadow-md border-emerald-600' 
+                          : 'bg-gray-50 hover:bg-gray-100 text-gray-800 font-bold border-gray-200'"
+                        class="py-2 rounded-xl text-xs sm:text-sm border transition-all text-center"
+                      >
+                        {{ translateNoteToSpanish(note) }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- CASILLA 2: Alteración (Opcional) -->
+                  <div :class="{ 'opacity-40 pointer-events-none': !builderState.rootBase }">
+                    <span class="block text-[11px] font-black text-gray-700 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                      <span class="w-4 h-4 rounded-full bg-emerald-600 text-white text-[9px] flex items-center justify-center font-bold">2</span>
+                      Alteración (Opcional)
+                    </span>
+                    <div class="grid grid-cols-3 gap-2">
+                      <button 
+                        @click="builderState.accidental = ''"
+                        :class="builderState.accidental === '' ? 'bg-emerald-600 text-white font-black' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-1.5 rounded-xl text-xs border transition-all"
+                      >
+                        Natural (♮)
+                      </button>
+                      <button 
+                        @click="builderState.accidental = '#'"
+                        :class="builderState.accidental === '#' ? 'bg-emerald-600 text-white font-black' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-1.5 rounded-xl text-xs border transition-all"
+                      >
+                        Sostenido (♯)
+                      </button>
+                      <button 
+                        @click="builderState.accidental = 'b'"
+                        :class="builderState.accidental === 'b' ? 'bg-emerald-600 text-white font-black' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-1.5 rounded-xl text-xs border transition-all"
+                      >
+                        Bemol (♭)
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- CASILLA 3: Tríada Base (Obligatoria) -->
+                  <div :class="{ 'opacity-40 pointer-events-none': !builderState.rootBase }">
+                    <span class="block text-[11px] font-black text-gray-700 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                      <span class="w-4 h-4 rounded-full bg-emerald-600 text-white text-[9px] flex items-center justify-center font-bold">3</span>
+                      Tríada Base (Obligatoria)
+                    </span>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <button 
+                        v-for="q in [
+                          { id: 'maj', label: 'Mayor' },
+                          { id: 'min', label: 'Menor' },
+                          { id: 'dim', label: 'Disminuido' },
+                          { id: 'aug', label: 'Aumentado' }
+                        ]" 
+                        :key="q.id"
+                        @click="builderState.quality = q.id"
+                        :class="builderState.quality === q.id ? 'bg-emerald-600 text-white font-black shadow-sm' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-2 rounded-xl text-xs border transition-all"
+                      >
+                        {{ q.label }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- CASILLA 4: Séptima (Opcional) -->
+                  <div :class="{ 'opacity-40 pointer-events-none': !builderState.rootBase }">
+                    <span class="block text-[11px] font-black text-gray-700 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                      <span class="w-4 h-4 rounded-full bg-emerald-600 text-white text-[9px] flex items-center justify-center font-bold">4</span>
+                      Séptima (Opcional)
+                    </span>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <button 
+                        v-for="s in [
+                          { id: '', label: 'Ninguna' },
+                          { id: 'maj7', label: '7ma Mayor (maj7)' },
+                          { id: 'm7', label: '7ma Menor / Dom (7)' },
+                          { id: 'dim7', label: '7ma Disminuida' }
+                        ]" 
+                        :key="s.id"
+                        @click="builderState.seventh = s.id"
+                        :class="builderState.seventh === s.id ? 'bg-emerald-600 text-white font-black shadow-sm' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-1.5 rounded-xl text-[11px] border transition-all"
+                      >
+                        {{ s.label }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- CASILLA 5: Extensión 1 - Novena (Opcional) -->
+                  <div :class="{ 'opacity-40 pointer-events-none': !builderState.rootBase }">
+                    <span class="block text-[11px] font-black text-gray-700 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                      <span class="w-4 h-4 rounded-full bg-emerald-600 text-white text-[9px] flex items-center justify-center font-bold">5</span>
+                      Extensión 1: Novena (Opcional)
+                    </span>
+                    <div class="grid grid-cols-4 gap-2">
+                      <button 
+                        v-for="n in [
+                          { id: '', label: 'Ninguna' },
+                          { id: '9', label: '9na (9)' },
+                          { id: 'b9', label: '9na Bemol (♭9)' },
+                          { id: '#9', label: '9na Sost. (♯9)' }
+                        ]" 
+                        :key="n.id"
+                        @click="builderState.ext9 = n.id"
+                        :class="builderState.ext9 === n.id ? 'bg-emerald-600 text-white font-black shadow-sm' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-1.5 rounded-xl text-[10.5px] border transition-all"
+                      >
+                        {{ n.label }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- CASILLA 6: Extensión 2 - Oncena (Opcional) -->
+                  <div :class="{ 'opacity-40 pointer-events-none': !builderState.rootBase }">
+                    <span class="block text-[11px] font-black text-gray-700 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                      <span class="w-4 h-4 rounded-full bg-emerald-600 text-white text-[9px] flex items-center justify-center font-bold">6</span>
+                      Extensión 2: Oncena (Opcional)
+                    </span>
+                    <div class="grid grid-cols-3 gap-2">
+                      <button 
+                        v-for="o in [
+                          { id: '', label: 'Ninguna' },
+                          { id: '11', label: '11na (11)' },
+                          { id: '#11', label: '11na Sost. (♯11)' }
+                        ]" 
+                        :key="o.id"
+                        @click="builderState.ext11 = o.id"
+                        :class="builderState.ext11 === o.id ? 'bg-emerald-600 text-white font-black shadow-sm' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-1.5 rounded-xl text-[11px] border transition-all"
+                      >
+                        {{ o.label }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- CASILLA 7: Extensión 3 - Trecena (Opcional) -->
+                  <div :class="{ 'opacity-40 pointer-events-none': !builderState.rootBase }">
+                    <span class="block text-[11px] font-black text-gray-700 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                      <span class="w-4 h-4 rounded-full bg-emerald-600 text-white text-[9px] flex items-center justify-center font-bold">7</span>
+                      Extensión 3: Trecena (Opcional)
+                    </span>
+                    <div class="grid grid-cols-4 gap-2">
+                      <button 
+                        v-for="t in [
+                          { id: '', label: 'Ninguna' },
+                          { id: '13', label: '13na (13)' },
+                          { id: 'b13', label: '13na Bemol (♭13)' },
+                          { id: '#13', label: '13na Sost. (♯13)' }
+                        ]" 
+                        :key="t.id"
+                        @click="builderState.ext13 = t.id"
+                        :class="builderState.ext13 === t.id ? 'bg-emerald-600 text-white font-black shadow-sm' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-1.5 rounded-xl text-[10.5px] border transition-all"
+                      >
+                        {{ t.label }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- CASILLA 8: Extensión 4 / Modificadores (Opcional) -->
+                  <div :class="{ 'opacity-40 pointer-events-none': !builderState.rootBase }">
+                    <span class="block text-[11px] font-black text-gray-700 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                      <span class="w-4 h-4 rounded-full bg-emerald-600 text-white text-[9px] flex items-center justify-center font-bold">8</span>
+                      Extensión 4 / Modificadores (Opcional)
+                    </span>
+                    <div class="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                      <button 
+                        v-for="m in [
+                          { id: '', label: 'Ninguno' },
+                          { id: '6', label: '6 (Sexta)' },
+                          { id: '69', label: '6/9' },
+                          { id: 'sus4', label: 'sus4' },
+                          { id: 'sus2', label: 'sus2' },
+                          { id: 'omit3', label: 'omit3' }
+                        ]" 
+                        :key="m.id"
+                        @click="builderState.specialModifier = m.id"
+                        :class="builderState.specialModifier === m.id ? 'bg-emerald-600 text-white font-black shadow-sm' : 'bg-gray-50 text-gray-700 font-bold border-gray-200'"
+                        class="py-1.5 rounded-xl text-[11px] border transition-all"
+                      >
+                        {{ m.label }}
+                      </button>
+                    </div>
+                  </div>
+
+                </div>
+
+                <!-- VISTA PREVIA Y ACCIÓN -->
+                <div v-if="builderState.rootBase" class="pt-3 border-t border-emerald-100 space-y-3">
+                  <div class="bg-emerald-50/70 border border-emerald-200/80 rounded-2xl p-3.5 flex items-center justify-between">
+                    <div>
+                      <span class="block text-[10px] text-emerald-800 font-black uppercase tracking-wider">Acorde Construido</span>
+                      <span class="text-2xl font-black text-gray-900 tracking-tight block">
+                        {{ formatChord(constructedChord) }}
+                      </span>
+                      <span class="text-[11px] font-extrabold text-emerald-700 block">
+                        Grado: {{ getRomanNumeralForChord(constructedChord, activeModalKeyAndScale.key, activeModalKeyAndScale.scale) }}
+                      </span>
+                    </div>
+                    <button 
+                      @click="previewBuilderAudio" 
+                      class="px-3.5 py-2 bg-white border border-emerald-300 hover:bg-emerald-100 text-emerald-800 font-black text-xs rounded-xl transition-all shadow-sm flex items-center gap-1.5 active:scale-95 shrink-0"
+                    >
+                      <span>🔊</span> <span>Probar Sonido</span>
+                    </button>
+                  </div>
+
+                  <button 
+                    @click="selectChord(constructedChord)"
+                    class="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-black rounded-2xl shadow-lg shadow-emerald-200/60 text-sm tracking-wide transition-all active:scale-98 flex items-center justify-center gap-2"
+                  >
+                    <span>✨</span> <span>Agregar / Aplicar Acorde a la Partitura</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>

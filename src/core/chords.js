@@ -1,4 +1,5 @@
 // src/core/chords.js
+import { NOTE_TO_INDEX } from './notes.js'
 
 export const CHORD_TYPES = [
   // Triadas
@@ -9,7 +10,7 @@ export const CHORD_TYPES = [
   { id: 'sus4', label: 'Sus 4', suffix: 'sus4' },
   { id: 'sus2', label: 'Sus 2', suffix: 'sus2' },
   
-  // Tetradas
+  // Tetradas y extensiones
   { id: 'maj7', label: 'Maj 7', suffix: 'maj7' },
   { id: 'm7', label: 'Menor 7', suffix: 'm7' },
   { id: '7', label: 'Dominante 7', suffix: '7' },
@@ -17,14 +18,19 @@ export const CHORD_TYPES = [
   { id: 'dim7', label: 'Disminuido 7', suffix: 'dim7' },
   { id: 'mM7', label: 'Menor Maj 7', suffix: 'mM7' },
   { id: 'maj7#5', label: 'Maj 7 (#5)', suffix: 'maj7(#5)' },
-  { id: '7#5', label: '7 (#5)', suffix: '7(#5)' }
+  { id: '7#5', label: '7 (#5)', suffix: '7(#5)' },
+  { id: '6', label: 'Sexta', suffix: '6' },
+  { id: 'm6', label: 'Menor 6', suffix: 'm6' },
+  { id: '69', label: '6/9', suffix: '6/9' },
+  { id: 'm69', label: 'Menor 6/9', suffix: 'm6/9' }
 ]
 
 export const TENSIONS = [
   'b9', '9', '#9',
   '11', '#11',
   'b13', '13',
-  'add9', 'b5', '#5'
+  'add9', 'b5', '#5',
+  '6', '6/9', 'omit3'
 ]
 
 /**
@@ -87,14 +93,14 @@ export function getRomanNumeralForChord(chordObj, activeKey = 'C', activeScale =
     11: { upper: 'VII', lower: 'vii' }
   }
 
-  const isMinorType = ['min', 'minor', 'm', 'm7', 'dim', 'dim7', 'm7b5', 'mM7'].includes(chordObj.type)
+  const isMinorType = ['min', 'minor', 'm', 'm7', 'dim', 'dim7', 'm7b5', 'mM7', 'm6', 'm69'].includes(chordObj.type)
   const mapEntry = ROMAN_SEMITONE_MAP[semitones] || { upper: 'I', lower: 'i' }
   let romanBase = isMinorType ? mapEntry.lower : mapEntry.upper
 
   let typeSuffix = ''
   if (chordObj.type) {
     if (['maj7'].includes(chordObj.type)) typeSuffix = 'maj7'
-    else if (['m7'].includes(chordObj.type)) typeSuffix = '7'
+    else if (['m7'].includes(chordObj.type)) typeSuffix = 'm7'
     else if (['7'].includes(chordObj.type)) typeSuffix = '7'
     else if (['m7b5'].includes(chordObj.type)) typeSuffix = 'm7b5'
     else if (['dim'].includes(chordObj.type)) typeSuffix = 'dim'
@@ -103,6 +109,11 @@ export function getRomanNumeralForChord(chordObj, activeKey = 'C', activeScale =
     else if (['sus4'].includes(chordObj.type)) typeSuffix = 'sus4'
     else if (['sus2'].includes(chordObj.type)) typeSuffix = 'sus2'
     else if (['mM7'].includes(chordObj.type)) typeSuffix = 'mM7'
+    else if (['6'].includes(chordObj.type)) typeSuffix = '6'
+    else if (['m6'].includes(chordObj.type)) typeSuffix = 'm6'
+    else if (['69'].includes(chordObj.type)) typeSuffix = '6/9'
+    else if (['m69'].includes(chordObj.type)) typeSuffix = 'm6/9'
+    else if (['min', 'm', 'minor'].includes(chordObj.type)) typeSuffix = 'm'
   }
 
   let result = `${romanBase}${typeSuffix}`
