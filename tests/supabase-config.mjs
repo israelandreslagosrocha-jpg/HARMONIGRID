@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {validateSupabaseConfig} from '../src/services/supabase.js';
+const valid={VITE_SUPABASE_URL:'https://wvkldhkgznersewjmhzo.supabase.co',VITE_SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test_public'};
+assert.equal(validateSupabaseConfig(valid).url,valid.VITE_SUPABASE_URL);
+const jwt=role=>`e30.${Buffer.from(JSON.stringify({role})).toString('base64url')}.signature`;
+assert.equal(validateSupabaseConfig({...valid,VITE_SUPABASE_PUBLISHABLE_KEY:jwt('anon')}).key,jwt('anon'));
+for(const key of ['sb_secret_private',jwt('service_role'),jwt('authenticated'),'invalid',''])assert.throws(()=>validateSupabaseConfig({...valid,VITE_SUPABASE_PUBLISHABLE_KEY:key}));
+for(const url of ['http://example.com','https://user:pass@example.com','https://example.com/path','https://example.com?key=private','https://example.com#private',''])assert.throws(()=>validateSupabaseConfig({...valid,VITE_SUPABASE_URL:url}));
+assert.throws(()=>validateSupabaseConfig({}));
+console.log('14 Supabase configuration checks passed');

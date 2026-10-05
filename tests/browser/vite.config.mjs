@@ -1,0 +1,8 @@
+import {defineConfig} from 'vite';
+import fs from 'node:fs';
+import {createHash} from 'node:crypto';
+import vue from '@vitejs/plugin-vue';
+import {fileURLToPath} from 'node:url';
+const resultsMiddleware=server=>{server.middlewares.use('/HARMONIGRID/__test-result',(req,res)=>{let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{fs.appendFileSync(process.env.HG_BROWSER_RESULTS || 'docs/stabilization/browser-results.ndjson',body+'\n');res.end('ok')})})};
+const sourceHash=createHash('sha256').update(['src/App.vue','src/components/ScoreSystem.vue','src/components/ScoreViewport.vue','src/components/PlaybackCursor.vue'].map(p=>fs.readFileSync(p,'utf8')).join('\n')).digest('hex');
+export default defineConfig({define:{__HG_SOURCE_SHA__:JSON.stringify(sourceHash)},build:{outDir:'/private/tmp/harmonigrid-browser-tests',emptyOutDir:true,rollupOptions:{input:fileURLToPath(new URL('./index.html',import.meta.url))}},root:fileURLToPath(new URL('../../',import.meta.url)),base:'/HARMONIGRID/',plugins:[{name:'test-only-editor-exposure',configureServer:resultsMiddleware,configurePreviewServer:resultsMiddleware,enforce:'pre',transform(code,id){if(id.endsWith('/src/App.vue'))return code.replace('</script>','defineExpose({measures,currentPlan,isSetupMode,title,showLyricsGlobal,saveHistory,undoStack,startPlayback,stopPlayback,isPlaying,currentPlayingMeasureIndex,currentPlayingBeatIndex,activateLyricsForMeasure,handleLyricsKeydown,tiedSlots,lyricsTiedSlots,repeats,viewMode,notationMode,undo,systems,getMeasureTiesPaths,getMeasureLyricsTiesPaths})\n</script>')}},vue()],resolve:{alias:{'@':fileURLToPath(new URL('../../src',import.meta.url))}}});

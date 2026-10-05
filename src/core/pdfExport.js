@@ -1259,7 +1259,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
     doc.setTextColor(60, 60, 60)
     
     const lines = doc.splitTextToSize(text, measureWidth - 4)
-    let ly = currentY + 22
+    let ly = currentY + 31
     lines.forEach((line) => {
       doc.text(line, mStartX + 2, ly)
       ly += 3.5
@@ -1483,20 +1483,24 @@ export function generatePDF(project, exportOption = 'chords-only') {
 
   let currentY = marginY + 20
 
-  // --- CABECERA ---
+  // Header elements occupy separate bands; preserve the full title when wrapping.
   doc.setFont("helvetica", "bold")
-  doc.setFontSize(24)
-  doc.text(project.title || "Sin Título", pageWidth / 2, marginY, { align: "center" })
-
   doc.setFontSize(12)
-  doc.setFont("helvetica", "bold")
-  doc.text("Esquema Armonico", marginX, marginY - 5)
-
+  doc.text("Esquema Armonico", marginX, marginY - 12)
+  let headerBottom = marginY - 8
   if (project.globalGroove && project.globalGroove !== 'Ninguno') {
     doc.setFontSize(10)
     doc.setFont("helvetica", "normal")
-    doc.text(`Groove Global: ${project.globalGroove}`, pageWidth - 15, marginY - 5, { align: "right" })
+    const grooveLines = doc.splitTextToSize(`Groove Global: ${project.globalGroove}`, 70)
+    doc.text(grooveLines, pageWidth - 15, marginY - 12, { align: "right" })
+    headerBottom = Math.max(headerBottom, marginY - 12 + grooveLines.length * 4.1)
   }
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(24)
+  const titleLines = doc.splitTextToSize(project.title || "Sin Título", usableWidth)
+  const titleY = Math.max(marginY, headerBottom + 10)
+  doc.text(titleLines, pageWidth / 2, titleY, { align: "center" })
+  currentY = titleY + (titleLines.length - 1) * 9.74 + 20
 
   // --- PIE DE PÁGINA ---
   drawFooter(doc, pageHeight, pageWidth)
@@ -1570,16 +1574,72 @@ export function generatePDF(project, exportOption = 'chords-only') {
     return null
   }
 
+  const getRhythmLabel = (measure) => {
+    let rhythmLabel = ""
+    const mGroove = measure.groove || 'global'
+    if (mGroove === 'neutral') {
+      rhythmLabel = "neutral"
+    } else {
+      const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      const isDenom8 = sig.unit === 8
+      const overrides = []
+      const translateRhythmNameLocal = (rhythm) => {
+        const base = rhythm && rhythm.startsWith('rest-') ? rhythm.substring(5) : rhythm
+        if (base === 'eighth') return isDenom8 ? "Semicorcheas (x2)" : "Corcheas (x2)"
+        if (base === 'sixteenth') return isDenom8 ? "Fusas (x4)" : "Semicorcheas (x4)"
+        if (base === 'offbeat') return isDenom8 ? "Contratiempo de Semicorchea" : "Contratiempo"
+        if (base === 'triplet') return isDenom8 ? "Tresillo de Semicorcheas (x3)" : "Tresillo (x3)"
+        if (base === 'quintuplet') return isDenom8 ? "Quintillo de Semicorcheas (x5)" : "Quintillo (x5)"
+        return ""
+      }
+
+      const measureBeats = measure.beats.slice(0, sig.beats)
+      measureBeats.forEach((b, bIdx) => {
+        if (b.harmonicRhythm && b.harmonicRhythm !== 'auto') {
+          const inherited = GROOVE_PATTERNS[project.globalGroove || 'Ninguno']?.[bIdx] || 'quarter'
+          if (b.harmonicRhythm !== inherited) {
+            const name = translateRhythmNameLocal(b.harmonicRhythm)
+            if (name && !overrides.includes(name)) {
+              overrides.push(name)
+            }
+          }
+        }
+      })
+      if (overrides.length > 0) {
+        rhythmLabel = overrides.join(", ")
+      }
+    }
+
+    return rhythmLabel
+  }
+
   rows.forEach((rowMeasures, rowIdx) => {
     // Si nos pasamos del alto de página, creamos una nueva
-    const actualMeasureWidth = usableWidth / rowMeasures.length
-    let maxLyricsHeight = 0
-    rowMeasures.forEach((measure) => {
+    // Reserve a band above chords for section and rhythm annotations.
+    const rowMinWidths = rowMeasures.map(measure => {
       const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
-      const h = getMeasureLyricsHeight(doc, measure, exportOption, actualMeasureWidth, sig)
-      if (h > maxLyricsHeight) maxLyricsHeight = h
+      return getMeasureMinWidthPDF(measure, sig, exportOption)
     })
-    const currentRowHeight = 35 + maxLyricsHeight
+    const totalRowMinWidth = rowMinWidths.reduce((sum, w) => sum + w, 0) || 1
+    const measureWidths = rowMinWidths.map(minW => (minW / totalRowMinWidth) * usableWidth)
+    const maxLyricsHeight = Math.max(0, ...rowMeasures.map((measure, index) => {
+      const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
+      return getMeasureLyricsHeight(doc, measure, exportOption, measureWidths[index], sig)
+    }))
+    const annotations = rowMeasures.map((measure, index) => {
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(10)
+      const section = measure.sectionLabel ? doc.splitTextToSize(measure.sectionLabel, Math.max(4, measureWidths[index] - 4)) : []
+      doc.setFont("helvetica", "italic")
+      doc.setFontSize(7)
+      const rhythmLabel = getRhythmLabel(measure)
+      const rhythm = rhythmLabel ? doc.splitTextToSize(rhythmLabel, Math.max(4, measureWidths[index] - 4)) : []
+      const sectionHeight = section.length ? section.length * 4.1 + 2 : 0
+      return {section, rhythm, sectionHeight, height: sectionHeight + rhythm.length * 2.9}
+    })
+    const annotationHeight = Math.max(0, ...annotations.map(a => a.height))
+    const annotationBand = annotationHeight ? annotationHeight + 8 : 0
+    const currentRowHeight = 35 + maxLyricsHeight + annotationBand
 
     if (currentY + currentRowHeight > pageHeight - 30) {
       doc.addPage()
@@ -1588,6 +1648,8 @@ export function generatePDF(project, exportOption = 'chords-only') {
       doc.setLineWidth(0.5)
     }
 
+    const annotationY = currentY
+    currentY += annotationBand
     const startX = marginX
     const lineY = currentY + lineYOffset
     // Since rows might not be equal width if systems have variable measure count, absoluteRowStartIndex is computed by summing previous measures
@@ -1604,14 +1666,15 @@ export function generatePDF(project, exportOption = 'chords-only') {
         doc.saveGraphicsState && doc.saveGraphicsState();
         doc.setFont("helvetica", "bold")
         doc.setFontSize(8)
-        const textWidth = doc.getTextWidth(boxText);
+        const boxLines = doc.splitTextToSize(boxText, 18);
+        const textWidth = Math.max(...boxLines.map(line => doc.getTextWidth(line)));
         const boxPaddingX = 2.0;
         const boxWidth = textWidth + (boxPaddingX * 2);
-        const boxHeight = 5.0;
+        const boxHeight = boxLines.length * 3.3 + 1.7;
         
         // Centrar horizontalmente sobre el área de la métrica (centro aproximado x = 15)
-        const boxX = 15 - (boxWidth / 2);
-        const boxY = lineY - 23;
+        const boxX = Math.max(3, 15 - (boxWidth / 2));
+        const boxY = lineY - 18 - boxHeight;
         
         // Dibujar recuadro con borde y fondo blanco
         doc.setLineWidth(0.4)
@@ -1621,7 +1684,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
         
         // Dibujar texto
         doc.setTextColor(80, 80, 80)
-        doc.text(boxText, boxX + boxPaddingX, boxY + 3.6)
+        doc.text(boxLines, boxX + boxPaddingX, boxY + 3.2)
         doc.restoreGraphicsState && doc.restoreGraphicsState();
       }
       
@@ -1630,14 +1693,6 @@ export function generatePDF(project, exportOption = 'chords-only') {
       doc.text(project.timeSignature.toString(), marginX - 12, lineY - 0.5)
       doc.text((project.timeSignatureUnit || 4).toString(), marginX - 12, lineY + 6.5)
     }
-
-    // Pre-calculate measure widths and start positions for this row (proportional layout)
-    const rowMinWidths = rowMeasures.map(measure => {
-      const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
-      return getMeasureMinWidthPDF(measure, sig, exportOption)
-    })
-    const totalRowMinWidth = rowMinWidths.reduce((sum, w) => sum + w, 0) || 1
-    const measureWidths = rowMinWidths.map(minW => (minW / totalRowMinWidth) * usableWidth)
 
     // Líneas horizontales del sistema (dibujadas antes de las notas para que queden por detrás)
     const endX = startX + rowMeasures.reduce((sum, _, cIdx) => sum + measureWidths[cIdx], 0)
@@ -1682,62 +1737,20 @@ export function generatePDF(project, exportOption = 'chords-only') {
         }
       }
 
-      // Sección Label
-      if (measure.sectionLabel) {
+      const annotation = annotations[colIdx]
+      if (annotation.section.length) {
         doc.setFont("helvetica", "bold")
         doc.setFontSize(10)
-        
-        // Caja alrededor del texto
-        const textWidth = doc.getTextWidth(measure.sectionLabel)
-        const boxPadding = 2
+        doc.setTextColor(0, 0, 0)
         doc.setFillColor(255, 255, 255)
-        doc.rect(mStartX, currentY + 2, textWidth + (boxPadding * 2), 6, "FD")
-        
-        doc.text(measure.sectionLabel, mStartX + boxPadding, currentY + 6.5)
+        doc.rect(mStartX, annotationY, currentMeasureWidth, annotation.sectionHeight, "FD")
+        doc.text(annotation.section, mStartX + 2, annotationY + 4.1)
       }
-
-      // Ritmo Armónico Label above measure (only if it differs from the global groove)
-      let rhythmLabel = ""
-      const mGroove = measure.groove || 'global'
-      if (mGroove === 'neutral') {
-        rhythmLabel = "neutral"
-      } else {
-        const sig = measure.activeTimeSignature || { beats: project.timeSignature, unit: project.timeSignatureUnit || 4 }
-        const isDenom8 = sig.unit === 8
-        const overrides = []
-        const translateRhythmNameLocal = (rhythm) => {
-          const base = rhythm && rhythm.startsWith('rest-') ? rhythm.substring(5) : rhythm
-          if (base === 'eighth') return isDenom8 ? "Semicorcheas (x2)" : "Corcheas (x2)"
-          if (base === 'sixteenth') return isDenom8 ? "Fusas (x4)" : "Semicorcheas (x4)"
-          if (base === 'offbeat') return isDenom8 ? "Contratiempo de Semicorchea" : "Contratiempo"
-          if (base === 'triplet') return isDenom8 ? "Tresillo de Semicorcheas (x3)" : "Tresillo (x3)"
-          if (base === 'quintuplet') return isDenom8 ? "Quintillo de Semicorcheas (x5)" : "Quintillo (x5)"
-          return ""
-        }
-        
-        const measureBeats = measure.beats.slice(0, sig.beats)
-        measureBeats.forEach((b, bIdx) => {
-          if (b.harmonicRhythm && b.harmonicRhythm !== 'auto') {
-            const inherited = GROOVE_PATTERNS[project.globalGroove || 'Ninguno']?.[bIdx] || 'quarter'
-            if (b.harmonicRhythm !== inherited) {
-              const name = translateRhythmNameLocal(b.harmonicRhythm)
-              if (name && !overrides.includes(name)) {
-                overrides.push(name)
-              }
-            }
-          }
-        })
-        if (overrides.length > 0) {
-          rhythmLabel = overrides.join(", ")
-        }
-      }
-      
-      if (rhythmLabel) {
-        doc.setFont("Helvetica", "Oblique")
+      if (annotation.rhythm.length) {
+        doc.setFont("helvetica", "italic")
         doc.setFontSize(7)
         doc.setTextColor(120, 120, 120)
-        const rhythmY = measure.sectionLabel ? currentY + 10.5 : currentY + 6.5
-        doc.text(rhythmLabel, mStartX + 2, rhythmY)
+        doc.text(annotation.rhythm, mStartX + 2, annotationY + annotation.sectionHeight + 2.9)
         doc.setTextColor(0, 0, 0)
       }
 
@@ -2008,7 +2021,7 @@ export function generatePDF(project, exportOption = 'chords-only') {
       }
     })
 
-    currentY += currentRowHeight
+    currentY += currentRowHeight - annotationBand
   })
 
   // Guardar PDF

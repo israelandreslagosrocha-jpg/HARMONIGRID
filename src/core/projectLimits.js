@@ -1,0 +1,3 @@
+export const FREE_MEASURE_LIMIT = 20
+export const PRO_MEASURE_LIMIT = 999
+export const MAX_EXPANDED_MEASURES = 10000

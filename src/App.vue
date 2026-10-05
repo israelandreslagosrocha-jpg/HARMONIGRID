@@ -1,10 +1,18 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, shallowRef, reactive, computed, nextTick, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
+import { cloneMeasuresForPaste, pasteInternalTies } from './core/copyMeasures.js'
+import { validateProjectDocument } from './core/projectDocument.js'
+const CloudWorkspace = defineAsyncComponent(() => import('./components/CloudWorkspace.vue'))
+import ScoreViewport from './components/ScoreViewport.vue'
+import ScoreSystem from './components/ScoreSystem.vue'
+import LaunchNotice from './components/LaunchNotice.vue'
 import logoUrl from './assets/logo.jpg'
 import { getDiatonicChords, SCALES, getScaleNotes } from './core/scales.js'
 import { formatChord, getRomanNumeralForChord } from './core/chords.js'
 import { playClick, playChordNotes, getVoiceLedMidi, getRootPositionMidi } from './core/audio.js'
 import { generatePDF } from './core/pdfExport.js'
+import { buildExpandedSequence } from './core/repeatSequence.js'
+import { FREE_MEASURE_LIMIT, PRO_MEASURE_LIMIT } from './core/projectLimits.js'
 import { getKeySignatureString, getKeySignature, getParentKeyRoot, SCALE_PARENTS } from './core/keySignatures.js'
 import { getSuggestionsForSystem, applySuggestion, getChordDegree, analyzeModulationRelationship } from './core/suggestions.js'
 import { NOTE_TO_INDEX, transposeNote, getNoteName } from './core/notes.js'
@@ -13,6 +21,8 @@ const generateUniqueId = () => {
   return `${Date.now()}-${Math.floor(Math.random() * 1000000)}`
 }
 // --- FREE vs PRO STATE ---
+// Public MVP: advanced tools remain in the engine for a future development branch.
+const isFreeLaunch = true
 const currentPlan = ref('FREE')
 const viewMode = ref('compact')
 const isUpgradeModalOpen = ref(false)
@@ -52,6 +62,7 @@ const pendingSelection = ref(null)
 const hoveredChordId = ref(null)
 const hoveredAnchor = ref(null)
 const activeConnectors = ref([])
+let connectorUpdateTimer = null
 const activeSyllableSelection = ref(null)
 const lyricsTiedSlots = ref(new Set())
 // --- RESPONSIVE STATE FOR AUTO-ORDERING ---
@@ -107,22 +118,34 @@ const keysSharp = ['C#', 'D#', 'F#', 'G#', 'A#']
 const keysFlat = ['Db', 'Eb', 'Gb', 'Ab', 'Bb']
 const SECTIONS = ['Ninguna', 'INTRO', 'A', 'B', 'C', 'PRE CORO', 'CORO', 'PUENTE', 'OUTRO', 'SOLO']
 // --- PROJECT STATE ---
+const cloudProjectGeneration = ref(0)
 const title = ref('')
 const timeSignature = ref(4)
 const timeSignatureUnit = ref(4)
 const key = ref('C')
 const scaleType = ref('major')
 const measures = ref([])
+const measureWidthCache = new WeakMap()
 const repeats = ref([])
 const globalGroove = ref('Ninguno')
 const globalShowObligado = ref(false)
 const globalShowSubdivisions = ref(false)
 const tempMeasureGroove = ref('global')
 // --- UNDO HISTORY STATE & OPERATIONS ---
-const undoStack = ref([])
+// Snapshots remain immutable plain data, shared only while a measure is unchanged.
+const undoStack = shallowRef([])
+const measureHistorySnapshots = new WeakMap()
+const getMeasureHistorySnapshot = (measure) => {
+  let snapshot = measureHistorySnapshots.get(measure)
+  if (!snapshot) {
+    snapshot = computed(() => JSON.parse(JSON.stringify(measure)))
+    measureHistorySnapshots.set(measure, snapshot)
+  }
+  return snapshot.value
+}
 const saveHistory = () => {
   const stateCopy = {
-    measures: JSON.parse(JSON.stringify(measures.value)),
+    measures: measures.value.map(getMeasureHistorySnapshot),
     timeSignature: timeSignature.value,
     timeSignatureUnit: timeSignatureUnit.value,
     globalGrouping: globalGrouping.value ? [...globalGrouping.value] : null,
@@ -134,17 +157,16 @@ const saveHistory = () => {
     repeats: JSON.parse(JSON.stringify(repeats.value))
   }
   
-  if (undoStack.value.length >= 50) {
-    undoStack.value.shift()
-  }
-  undoStack.value.push(stateCopy)
+  undoStack.value = [...undoStack.value.slice(-49), stateCopy]
 }
 const undo = () => {
   if (undoStack.value.length === 0) return
   
-  const prevState = undoStack.value.pop()
+  const prevState = undoStack.value[undoStack.value.length - 1]
+  undoStack.value = undoStack.value.slice(0, -1)
   
-  measures.value = prevState.measures
+  // Restore editable copies so later edits cannot mutate shared history snapshots.
+  measures.value = JSON.parse(JSON.stringify(prevState.measures))
   timeSignature.value = prevState.timeSignature
   timeSignatureUnit.value = prevState.timeSignatureUnit
   globalGrouping.value = prevState.globalGrouping
@@ -166,20 +188,12 @@ const selectKey = (k) => {
 const isKeyInfoOpen = ref(false)
 const isVerMasExpanded = ref(false)
 const setPlan = (plan) => {
+  if (isFreeLaunch && plan !== 'FREE') return
   currentPlan.value = plan
   if (plan === 'FREE') {
     viewMode.value = 'compact'
-    repeats.value = repeats.value.filter(r => r.type !== 'casilla')
-    if (measures.value.length > 20) {
-      measures.value = measures.value.slice(0, 20)
-    }
     if (configMeasuresCount.value > 20) {
       configMeasuresCount.value = 20
-    }
-    // Si la escala seleccionada en el editor es PRO, revertir a Major
-    const mainScaleDef = SCALES[scaleType.value]
-    if (mainScaleDef && mainScaleDef.isPro) {
-      scaleType.value = 'major'
     }
     // Si la escala seleccionada en el wizard es PRO, revertir a Major
     const configScaleDef = SCALES[configScale.value]
@@ -187,22 +201,15 @@ const setPlan = (plan) => {
       configScale.value = 'major'
     }
     
-    // Reset global groove and rhythmic overrides under FREE plan
-    globalGroove.value = 'Ninguno'
-    globalShowObligado.value = false
-    globalShowSubdivisions.value = false
-    measures.value.forEach(m => {
-      m.groove = 'global'
-      m.showObligado = false
-      m.showSubdivisions = false
-      m.beats.forEach(b => {
-        b.harmonicRhythm = 'auto'
-        delete b.subdivisions
-      })
-    })
+    // Preserve the composition; plan gates control tools, not deletion of data.
   }
 }
 const startProject = () => {
+  if (!Number.isSafeInteger(Number(configMeasuresCount.value)) || Number(configMeasuresCount.value) < 1) {
+    showToast('Introduce una cantidad entera de compases válida.')
+    return
+  }
+  cloudProjectGeneration.value++
   title.value = configTitle.value || 'Sin Título'
   timeSignature.value = configTimeSignature.value
   timeSignatureUnit.value = configTimeSignatureUnit.value
@@ -218,7 +225,7 @@ const startProject = () => {
   globalShowSubdivisions.value = false
   showLyricsGlobal.value = false
   
-  const limit = currentPlan.value === 'PRO' ? 999 : 20
+  const limit = currentPlan.value === 'PRO' ? PRO_MEASURE_LIMIT : FREE_MEASURE_LIMIT
   const count = Math.min(Math.max(configMeasuresCount.value, 1), limit)
   const emptyMeasures = []
   for(let i = 0; i < count; i++) {
@@ -420,11 +427,12 @@ const groupedScales = computed(() => {
   }
   
   for (const [key, val] of Object.entries(SCALES)) {
+    if (isFreeLaunch && val.isPro) continue
     if (groups[val.category]) {
       groups[val.category].items.push({ id: key, ...val })
     }
   }
-  return Object.values(groups)
+  return Object.values(groups).filter(group => group.items.length)
 })
 const keySignatureFormatted = computed(() => {
   const sig = getKeySignature(key.value, scaleType.value)
@@ -669,103 +677,6 @@ const measuresWithKey = computed(() => {
     }
   })
 })
-const buildExpandedSequence = (measuresArray, repeatsArray) => {
-  if (!measuresArray || measuresArray.length === 0) return []
-  const sortedRepeats = [...(repeatsArray || [])].sort((a, b) => a.startMeasure - b.startMeasure)
-  const result = []
-  let i = 0
-
-  while (i < measuresArray.length) {
-    const measureNum = i + 1
-    const r = sortedRepeats.find(rep => rep.startMeasure === measureNum)
-
-    if (!r) {
-      const origM = measuresArray[i]
-      result.push({
-        ...origM,
-        originalMeasureIndex: i,
-        isExpandedCopy: false,
-        displayPass: null
-      })
-      i++
-      continue
-    }
-
-    if (r.type === 'simple') {
-      const times = Number(r.times) || 2
-      const start = r.startMeasure
-      const end = Math.min(r.endMeasure, measuresArray.length)
-
-      if (start > end) {
-        result.push({ ...measuresArray[i], originalMeasureIndex: i, isExpandedCopy: false, displayPass: null })
-        i++
-        continue
-      }
-
-      for (let pass = 1; pass <= times; pass++) {
-        for (let m = start; m <= end; m++) {
-          const origM = measuresArray[m - 1]
-          if (origM) {
-            result.push({
-              ...origM,
-              id: `${origM.id}-rep-${pass}-${m}`,
-              originalMeasureIndex: m - 1,
-              isExpandedCopy: true,
-              displayPass: pass
-            })
-          }
-        }
-      }
-      i = end
-    } else if (r.type === 'casilla') {
-      const times = Number(r.times) || 2
-      const start = r.startMeasure
-      const c1Start = Number(r.casilla1Start) || start
-      const c1End = Number(r.endMeasure)
-      const c2Start = Number(r.casilla2Start) || (c1End + 1)
-      const c2End = Number(r.casilla2End) || c2Start
-
-      const pushMeasureRange = (sM, eM, passNum) => {
-        for (let m = sM; m <= eM; m++) {
-          const origM = measuresArray[m - 1]
-          if (origM) {
-            result.push({
-              ...origM,
-              id: `${origM.id}-casilla-${passNum}-${m}`,
-              originalMeasureIndex: m - 1,
-              isExpandedCopy: true,
-              displayPass: passNum
-            })
-          }
-        }
-      }
-
-      // Passes 1 to (times - 1): Common section + Casilla 1
-      for (let pass = 1; pass < times; pass++) {
-        if (c1Start > start) {
-          pushMeasureRange(start, c1Start - 1, pass)
-        }
-        pushMeasureRange(c1Start, c1End, pass)
-      }
-
-      // Final pass (times): Common section + Casilla 2
-      const finalPass = times
-      if (c1Start > start) {
-        pushMeasureRange(start, c1Start - 1, finalPass)
-      }
-      if (c2Start <= measuresArray.length) {
-        pushMeasureRange(c2Start, Math.min(c2End, measuresArray.length), finalPass)
-      }
-
-      i = Math.max(c1End, c2End)
-    }
-  }
-
-  return result.map((m, idx) => ({
-    ...m,
-    displayedMeasureIndex: idx
-  }))
-}
 
 const displayedMeasures = computed(() => {
   if (currentPlan.value === 'FREE' || viewMode.value === 'compact') {
@@ -1492,7 +1403,7 @@ const systems = computed(() => {
   const gap = 12 // gap-x-3 = 12px
   
   displayedMeasures.value.forEach((measure, idx) => {
-    const measureWidth = getMeasureMinWidth(measure)
+    const measureWidth = getCachedMeasureMinWidth(measure)
     const isPro = currentPlan.value === 'PRO'
     const maxPerSystem = isPro ? defaultMeasuresPerSystem.value : 4
     
@@ -2010,17 +1921,33 @@ const getGenericSuggestions = () => {
 
   return list
 }
+// Rule windows only depend on their four measures and inherited key context.
+const suggestionKeyContext = computed(() => {
+  let activeKey = key.value
+  let activeScale = scaleType.value
+  return measures.value.map(m => {
+    if (currentPlan.value === 'PRO' && m.keyChange) {
+      activeKey = m.keyChange.key
+      activeScale = m.keyChange.scaleType || 'major'
+    }
+    return { key: activeKey, scale: activeScale }
+  })
+})
+const suggestionWindows = []
 const updateSuggestionsPool = () => {
   if (!measures.value) return
   const pool = []
   const len = measures.value.length
   
+  suggestionWindows.length = Math.min(suggestionWindows.length, Math.max(0, len - 3))
   for (let i = 0; i <= len - 4; i++) {
-    const windowMeasures = measures.value.slice(i, i + 4)
-    const sysKey = measuresWithKey.value[i]?.activeKey || key.value
-    const sysScale = measuresWithKey.value[i]?.activeScale || scaleType.value
-    const windowSuggestions = getSuggestionsForSystem(windowMeasures, i, sysKey, sysScale)
-    
+    if (!suggestionWindows[i]) {
+      suggestionWindows[i] = computed(() => {
+        const context = suggestionKeyContext.value[i]
+        return getSuggestionsForSystem(measures.value.slice(i, i + 4), i, context.key || key.value, context.scale || scaleType.value)
+      })
+    }
+    const windowSuggestions = suggestionWindows[i].value
     windowSuggestions.forEach(s => {
       pool.push({
         title: s.title,
@@ -2070,12 +1997,20 @@ const refreshSuggestions = () => {
   suggestionOffset.value = (suggestionOffset.value + 3) % poolSize
   showToast("Sugerencias actualizadas 🔄")
 }
-watch([key, scaleType, measures], (newVal, oldVal) => {
+// Suggestions inspect harmonic fields, not lyric text, anchors or UI metadata.
+const suggestionInputs = computed(() => measures.value.map(m => ({
+  keyChange: m.keyChange ? { key: m.keyChange.key, scaleType: m.keyChange.scaleType } : null,
+  beats: m.beats.map(b => ({
+    root: b.root, type: b.type, tension: b.tension,
+    tensions: b.tensions ? [...b.tensions] : [], bass: b.bass
+  }))
+})))
+watch([key, scaleType, suggestionInputs, currentPlan], (newVal, oldVal) => {
   if (oldVal && (newVal[0] !== oldVal[0] || newVal[1] !== oldVal[1])) {
     suggestionOffset.value = 0
   }
   updateSuggestionsPool()
-}, { deep: true, immediate: true })
+}, { immediate: true })
 const runSuggestion = (suggestion) => {
   if (currentPlan.value !== 'PRO') {
     upgradeReason.value = 'suggestions'
@@ -2430,7 +2365,7 @@ const getMeasureMinWidth = (measure) => {
     if (measure.keyChange) {
       totalMinWidth += 120
     }
-    const idx = measures.value.findIndex(m => m.id === measure.id)
+    const idx = measureMetricContext.value.indexById.get(measure.id) ?? -1
     if (idx > 0) {
       const prevSig = getMeasureTimeSignature(idx - 1)
       if (measure.timeSignature && (measure.timeSignature.beats !== prevSig.beats || measure.timeSignature.unit !== prevSig.unit)) {
@@ -2441,10 +2376,19 @@ const getMeasureMinWidth = (measure) => {
   
   return totalMinWidth
 }
+// Projections keep identity during nested edits, so only affected widths recompute.
+const getCachedMeasureMinWidth = (measure) => {
+  let width = measureWidthCache.get(measure)
+  if (!width) {
+    width = computed(() => getMeasureMinWidth(measure))
+    measureWidthCache.set(measure, width)
+  }
+  return width.value
+}
 const getMeasureFlexStyle = (measure) => {
   const sig = getMeasureTimeSignature(measure)
   const beats = sig.beats
-  const minWidth = getMeasureMinWidth(measure)
+  const minWidth = getCachedMeasureMinWidth(measure)
   
   return {
     flex: `${beats} 0 0%`,
@@ -3072,65 +3016,60 @@ const getDefaultGrouping = (beats, unit) => {
   }
   return Array.from({ length: beats }, () => 1)
 }
-const getMeasureTimeSignature = (measureOrIdx) => {
-  let idx = measureOrIdx
-  if (measureOrIdx && typeof measureOrIdx === 'object') {
-    idx = measureOrIdx.originalMeasureIndex !== undefined 
-      ? measureOrIdx.originalMeasureIndex 
-      : measures.value.findIndex(m => m.id === measureOrIdx.id)
-  }
-  
-  if (idx === null || idx === undefined || idx < 0) {
-    return { beats: timeSignature.value, unit: timeSignatureUnit.value }
-  }
-  
-  for (let i = idx; i >= 0; i--) {
-    const m = measures.value[i]
-    if (m && m.timeSignature) {
-      return {
-        beats: m.timeSignature.beats,
-        unit: m.timeSignature.unit
-      }
+// Build inherited metric context once. Chord/lyric edits do not invalidate it.
+const measureMetricContext = computed(() => {
+  const indexById = new Map()
+  const signatures = []
+  const groupings = []
+  let signature = { beats: timeSignature.value, unit: timeSignatureUnit.value }
+  let grouping = null
+  measures.value.forEach((measure, index) => {
+    // Match findIndex's first-match behavior for legacy projects with repeated IDs.
+    if (!indexById.has(measure.id)) indexById.set(measure.id, index)
+    if (measure.timeSignature) {
+      signature = { beats: measure.timeSignature.beats, unit: measure.timeSignature.unit }
     }
+    if (measure.grouping) grouping = measure.grouping
+    signatures.push(signature)
+    groupings.push(grouping)
+  })
+  return { indexById, signatures, groupings }
+})
+const getMeasureIndex = (measureOrIdx) => {
+  if (measureOrIdx && typeof measureOrIdx === 'object') {
+    return measureOrIdx.originalMeasureIndex !== undefined
+      ? measureOrIdx.originalMeasureIndex
+      : (measureMetricContext.value.indexById.get(measureOrIdx.id) ?? -1)
   }
-  return {
-    beats: timeSignature.value,
-    unit: timeSignatureUnit.value
-  }
+  return measureOrIdx
+}
+const getMeasureTimeSignature = (measureOrIdx) => {
+  const idx = getMeasureIndex(measureOrIdx)
+  const signatures = measureMetricContext.value.signatures
+  const signature = idx !== null && idx !== undefined && idx >= 0
+    ? signatures[Math.min(idx, signatures.length - 1)]
+    : null
+  return signature
+    ? { ...signature }
+    : { beats: timeSignature.value, unit: timeSignatureUnit.value }
 }
 const getMeasureGrouping = (measureOrIdx) => {
-  let idx = measureOrIdx
-  let m = null
-  if (measureOrIdx && typeof measureOrIdx === 'object') {
-    m = measureOrIdx
-    idx = measureOrIdx.originalMeasureIndex !== undefined 
-      ? measureOrIdx.originalMeasureIndex 
-      : measures.value.findIndex(item => item.id === measureOrIdx.id)
-  } else if (measureOrIdx !== null && measureOrIdx !== undefined && measureOrIdx >= 0) {
-    idx = measureOrIdx
-    m = measures.value[idx]
-  }
-  
+  const idx = getMeasureIndex(measureOrIdx)
+  const m = measureOrIdx && typeof measureOrIdx === 'object'
+    ? measureOrIdx
+    : measures.value[idx]
   if (!m) {
     return getDefaultGrouping(timeSignature.value, timeSignatureUnit.value)
   }
-  
   const sig = getMeasureTimeSignature(m)
   if (sig.unit === 8) {
     const analysis = analyzeMeasureSubdivision(m)
-    if (analysis.type === 'match') {
-      return analysis.pattern
-    }
+    if (analysis.type === 'match') return analysis.pattern
   }
-  
-  // Fallback to manual/inherited grouping
-  for (let i = idx; i >= 0; i--) {
-    const prevM = measures.value[i]
-    if (prevM && prevM.grouping) {
-      return prevM.grouping
-    }
-  }
-  return getDefaultGrouping(sig.beats, sig.unit)
+  const grouping = idx !== null && idx !== undefined && idx >= 0
+    ? measureMetricContext.value.groupings[Math.min(idx, measures.value.length - 1)]
+    : null
+  return grouping || getDefaultGrouping(sig.beats, sig.unit)
 }
 const resizeMeasureBeats = (measure, targetBeats) => {
   if (!measure || !measure.beats) return
@@ -3426,102 +3365,33 @@ const clearSelection = () => {
 }
 
 const copiedMeasures = ref(null)
-
+const copiedMeasureIndexes = ref([])
+const copiedMusicalTies = ref([])
+const copiedLyricsTies = ref([])
 const copySelectedMeasures = () => {
   if (selectedRangeStart.value === null || selectedRangeEnd.value === null) return
-  const start = minSelectedMeasure.value - 1
-  const end = maxSelectedMeasure.value - 1
-  
-  const range = []
-  for (let i = start; i <= end; i++) {
-    const m = measures.value[i]
-    if (m) {
-      // Deep copy all content-related properties of the measure
-      range.push({
-        beats: JSON.parse(JSON.stringify(m.beats)),
-        sectionLabel: m.sectionLabel || null,
-        showObligado: m.showObligado !== false,
-        showSubdivisions: m.showSubdivisions !== false,
-        lyrics: JSON.parse(JSON.stringify(m.lyrics || { rawText: '', mode: 'free' })),
-        timeSignature: m.timeSignature ? JSON.parse(JSON.stringify(m.timeSignature)) : null,
-        grouping: m.grouping ? JSON.parse(JSON.stringify(m.grouping)) : null,
-        keyChange: m.keyChange ? JSON.parse(JSON.stringify(m.keyChange)) : null
-      })
-    }
-  }
-  
-  copiedMeasures.value = range
-  showToast(`${range.length} ${range.length === 1 ? 'compás copiado' : 'compases copiados'}`)
+  const start = minSelectedMeasure.value - 1, end = maxSelectedMeasure.value - 1
+  copiedMeasureIndexes.value = Array.from({length:end-start+1},(_,i)=>start+i)
+  copiedMeasures.value = JSON.parse(JSON.stringify(measures.value.slice(start,end+1)))
+  copiedMusicalTies.value = [...tiedSlots.value]
+  copiedLyricsTies.value = [...lyricsTiedSlots.value]
+  showToast(`${copiedMeasures.value.length} compases copiados`)
 }
-
 const pasteCopiedMeasures = () => {
-  if (!copiedMeasures.value || copiedMeasures.value.length === 0) return
-  if (selectedRangeStart.value === null || selectedRangeEnd.value === null) return
-  
-  const targetStartIdx = minSelectedMeasure.value - 1
+  if (!copiedMeasures.value?.length || selectedRangeStart.value === null || selectedRangeEnd.value === null) return
+  const targetStartIdx = minSelectedMeasure.value - 1, count = copiedMeasures.value.length
+  if (!canGrowProjectTo(Math.max(measures.value.length,targetStartIdx+count))) return
+  const copies = cloneMeasuresForPaste(copiedMeasures.value,copiedMeasureIndexes.value,targetStartIdx,()=>crypto.randomUUID())
   saveHistory()
-  
-  const totalCopied = copiedMeasures.value.length
-  
-  // Enforce plan limit of 20 measures for FREE users
-  if (currentPlan.value === 'FREE') {
-    const finalLength = Math.max(measures.value.length, targetStartIdx + totalCopied)
-    if (finalLength > 20) {
-      upgradeReason.value = 'limit'
-      isUpgradeModalOpen.value = true
-      return
-    }
-  }
-
-  for (let i = 0; i < totalCopied; i++) {
-    const copiedM = copiedMeasures.value[i]
-    const destIdx = targetStartIdx + i
-    
-    if (destIdx < measures.value.length) {
-      // Overwrite existing measure
-      const destM = measures.value[destIdx]
-      destM.beats = JSON.parse(JSON.stringify(copiedM.beats))
-      destM.sectionLabel = copiedM.sectionLabel
-      destM.showObligado = copiedM.showObligado
-      destM.showSubdivisions = copiedM.showSubdivisions
-      destM.lyrics = JSON.parse(JSON.stringify(copiedM.lyrics))
-      
-      if (copiedM.timeSignature) {
-        destM.timeSignature = JSON.parse(JSON.stringify(copiedM.timeSignature))
-      } else {
-        delete destM.timeSignature
-      }
-      
-      if (copiedM.grouping) {
-        destM.grouping = JSON.parse(JSON.stringify(copiedM.grouping))
-      } else {
-        delete destM.grouping
-      }
-      
-      if (copiedM.keyChange) {
-        destM.keyChange = JSON.parse(JSON.stringify(copiedM.keyChange))
-      } else {
-        delete destM.keyChange
-      }
-    } else {
-      // Append new measure
-      measures.value.push({
-        id: generateUniqueId(),
-        beats: JSON.parse(JSON.stringify(copiedM.beats)),
-        sectionLabel: copiedM.sectionLabel,
-        showObligado: copiedM.showObligado,
-        showSubdivisions: copiedM.showSubdivisions,
-        lyrics: JSON.parse(JSON.stringify(copiedM.lyrics)),
-        ...(copiedM.timeSignature ? { timeSignature: JSON.parse(JSON.stringify(copiedM.timeSignature)) } : {}),
-        ...(copiedM.grouping ? { grouping: JSON.parse(JSON.stringify(copiedM.grouping)) } : {}),
-        ...(copiedM.keyChange ? { keyChange: JSON.parse(JSON.stringify(copiedM.keyChange)) } : {})
-      })
-    }
-  }
-  
-  syncMeasuresBeats()
-  clearSelection()
-  showToast(`Compases pegados con éxito`)
+  copies.forEach((copy,i)=>{
+    const index=targetStartIdx+i
+    // Keep the destination measure identity so repeat/layout references survive.
+    if(index<measures.value.length)copy.id=measures.value[index].id
+    measures.value[index]=copy
+  })
+  tiedSlots.value=pasteInternalTies(tiedSlots.value,copiedMusicalTies.value,copiedMeasureIndexes.value,targetStartIdx,count)
+  lyricsTiedSlots.value=pasteInternalTies(lyricsTiedSlots.value,copiedLyricsTies.value,copiedMeasureIndexes.value,targetStartIdx,count)
+  syncMeasuresBeats();clearSelection();showToast('Compases pegados con éxito')
 }
 let wasAlreadySelectedBeforeMousedown = false
 const toggleMeasureSelection = (index) => {
@@ -4108,6 +3978,7 @@ onMounted(() => {
   updateConnectors()
 })
 onUnmounted(() => {
+  if (connectorUpdateTimer !== null) clearTimeout(connectorUpdateTimer)
   document.removeEventListener('click', closeDropdowns)
   window.removeEventListener('mouseup', handleGlobalMouseUp)
   window.removeEventListener('resize', handleResize)
@@ -5921,6 +5792,8 @@ const getLinearBlocks = () => {
   })
   return list
 }
+// Read-only render/audio views share one traversal; mutation tools keep fresh lists.
+const musicalRenderBlocks = computed(() => getLinearBlocks())
 const getSlotNoteX = (rhythm, slotIdx, startX, blockWidth) => {
   let relativeOffset = 0.5
   
@@ -6024,11 +5897,11 @@ const getMeasureBlockCoordinates = (measure) => {
 }
 const getMeasureTiesPaths = (measure) => {
   const paths = []
-  if (!measure) return paths
+  if (!measure || tiedSlots.value.size === 0) return paths
   const origMIdx = measure.originalMeasureIndex
   
   const coords = getMeasureBlockCoordinates(measure)
-  const linearBlocks = getLinearBlocks()
+  const linearBlocks = musicalRenderBlocks.value
   
   coords.forEach((coord) => {
     const currentLinearIdx = linearBlocks.findIndex(b => b.id === coord.id)
@@ -6116,11 +5989,11 @@ const getMeasureLyricsSlotCoordinates = (measure) => {
 }
 const getMeasureLyricsTiesPaths = (measure) => {
   const paths = []
-  if (!measure) return paths
+  if (!measure || lyricsTiedSlots.value.size === 0) return paths
   const origMIdx = measure.originalMeasureIndex
   
   const coords = getMeasureLyricsSlotCoordinates(measure)
-  const linearBlocks = getLyricsLinearBlocks()
+  const linearBlocks = lyricRenderBlocks.value
   
   coords.forEach((coord) => {
     const currentLinearIdx = linearBlocks.findIndex(b => b.id === coord.id)
@@ -6162,6 +6035,7 @@ const getMeasureLyricsTiesPaths = (measure) => {
   return paths
 }
 const validateTies = () => {
+  if (tiedSlots.value.size === 0) return
   const linearBlocks = getLinearBlocks()
   const newTies = new Set()
   
@@ -6179,9 +6053,26 @@ const validateTies = () => {
       }
     }
   })
-  tiedSlots.value = newTies
+  const currentIds = [...tiedSlots.value]
+  if (newTies.size !== currentIds.length || [...newTies].some((id, index) => id !== currentIds[index])) {
+    tiedSlots.value = newTies
+  }
 }
-watch(measures, () => {
+// Track musical structure, not syllable text; do not validate merely on tie creation.
+const measureTieInputCache = new WeakMap()
+const tieValidationInputs = computed(() => measures.value.map(m => {
+  let input = measureTieInputCache.get(m)
+  if (!input) {
+    input = computed(() => JSON.stringify({
+      id: m.id, timeSignature: m.timeSignature, grouping: m.grouping,
+      showObligado: m.showObligado, showSubdivisions: m.showSubdivisions,
+      groove: m.groove, beats: m.beats, lyricsBeats: m.lyrics?.beats
+    }))
+    measureTieInputCache.set(m, input)
+  }
+  return input.value
+}))
+watch(tieValidationInputs, () => {
   const beforeCount = tiedSlots.value.size
   validateTies()
   const afterCount = tiedSlots.value.size
@@ -6190,7 +6081,7 @@ watch(measures, () => {
   }
   
   validateLyricsTies()
-}, { deep: true })
+})
 watch([timeSignature, timeSignatureUnit], () => {
   syncMeasuresBeats()
   const beforeCount = tiedSlots.value.size
@@ -6301,7 +6192,8 @@ const isSlotTiedFromPrev = (slotId) => {
 }
 
 const isSlotTiedToNext = (slotId) => {
-  const linearBlocks = getLinearBlocks()
+  if (tiedSlots.value.size === 0) return false
+  const linearBlocks = musicalRenderBlocks.value
   const idx = linearBlocks.findIndex(b => b.id === slotId)
   if (idx === -1 || idx === linearBlocks.length - 1) return false
   const nextBlock = linearBlocks[idx + 1]
@@ -6587,22 +6479,23 @@ const openTimesSelector = () => {
   isTimesModalOpen.value = true
 }
 const confirmTimes = (timesVal) => {
+  if (selectedRangeStart.value === null || selectedRangeEnd.value === null) return
   const times = Number(timesVal)
-  if (isNaN(times) || times < 2) {
-    alert("Por favor, introduce un número de repeticiones válido (2 o más).")
+  const start = minSelectedMeasure.value
+  const end = maxSelectedMeasure.value
+  const retainedRepeats = repeats.value.filter(r => {
+    const rEnd = r.type === 'casilla' ? Math.max(r.endMeasure, r.casilla2End) : r.endMeasure
+    return !(Math.max(r.startMeasure, start) <= Math.min(rEnd, end))
+  })
+  try {
+    buildExpandedSequence(measuresWithKey.value, [...retainedRepeats, {type: 'simple', startMeasure: start, endMeasure: end, times}])
+  } catch (error) {
+    showToast(error.message)
     return
   }
   saveHistory()
-  const start = minSelectedMeasure.value
-  const end = maxSelectedMeasure.value
-  
-  // Clean overlapping repeats
-  repeats.value = repeats.value.filter(r => {
-    const rStart = r.startMeasure
-    const rEnd = r.type === 'casilla' ? Math.max(r.endMeasure, r.casilla2End) : r.endMeasure
-    return !(Math.max(rStart, start) <= Math.min(rEnd, end))
-  })
-  
+  repeats.value = retainedRepeats
+
   repeats.value.push({
     id: generateUniqueId(),
     type: 'simple',
@@ -6621,7 +6514,6 @@ const convertRepeatToCasilla = () => {
     isUpgradeModalOpen.value = true
     return
   }
-  saveHistory()
   if (selectedRangeStart.value === null || selectedRangeEnd.value === null) return
   
   const start = minSelectedMeasure.value
@@ -6630,6 +6522,16 @@ const convertRepeatToCasilla = () => {
   // Find repeat that covers the selected end measure (handles both full range and single-last-measure selection)
   const rep = repeats.value.find(r => r.type === 'simple' && r.startMeasure <= end && r.endMeasure >= end)
   if (!rep) return
+  if (!canGrowProjectTo(Math.max(measures.value.length, rep.endMeasure + 1))) return
+  const candidate = {...rep, type: 'casilla', casilla1Start: start, casilla2Start: rep.endMeasure + 1, casilla2End: rep.endMeasure + 1}
+  try {
+    const previewMeasures = measures.value.length < candidate.casilla2End ? [...measuresWithKey.value, {id: 'pending-casilla'}] : measuresWithKey.value
+    buildExpandedSequence(previewMeasures, repeats.value.map(r => r === rep ? candidate : r))
+  } catch (error) {
+    showToast(error.message)
+    return
+  }
+  saveHistory()
   
   rep.type = 'casilla'
   rep.casilla1Start = start  // Use the selected start measure for casilla 1
@@ -6661,12 +6563,21 @@ const removeRepeat = (id) => {
   saveHistory()
   repeats.value = repeats.value.filter(r => r.id !== id)
 }
-const addMeasure = () => {
-  if (currentPlan.value === 'FREE' && measures.value.length >= 20) {
-    upgradeReason.value = 'limit'
-    isUpgradeModalOpen.value = true
-    return
+const canGrowProjectTo = (length) => {
+  // Existing larger projects are preserved; an overwrite need not grow them.
+  if (length <= measures.value.length) return true
+  const limit = currentPlan.value === 'PRO' ? PRO_MEASURE_LIMIT : FREE_MEASURE_LIMIT
+  if (!Number.isSafeInteger(length) || length > limit) {
+    if (currentPlan.value === 'FREE') {
+      upgradeReason.value = 'limit'
+      isUpgradeModalOpen.value = true
+    } else showToast(`El proyecto admite hasta ${limit} compases. Tu composición se conserva.`)
+    return false
   }
+  return true
+}
+const addMeasure = () => {
+  if (!canGrowProjectTo(measures.value.length + 1)) return
   saveHistory()
   const nextIdx = measures.value.length
   const sig = getMeasureTimeSignature(nextIdx)
@@ -7346,6 +7257,7 @@ const getLyricsLinearBlocks = () => {
   })
   return list
 }
+const lyricRenderBlocks = computed(() => getLyricsLinearBlocks())
 const syncRhythmLyricsTimeline = (measure) => {
   if (!measure || !measure.lyrics || measure.lyrics.mode !== 'rhythm') return
   if (!measure.lyrics.syllables) measure.lyrics.syllables = []
@@ -7353,7 +7265,7 @@ const syncRhythmLyricsTimeline = (measure) => {
   const slots = getMeasureLyricsRhythmSlots(measure)
   const nonSilenceSlots = slots.filter(s => !s.isSilence)
   const slotMap = new Map(nonSilenceSlots.map(s => [s.id, s]))
-  const linearBlocks = getLyricsLinearBlocks()
+  const linearBlocks = lyricsTiedSlots.value.size > 0 ? getLyricsLinearBlocks() : []
   
   measure.lyrics.syllables.forEach((syl) => {
     if (syl.rhythmEventId) {
@@ -7525,7 +7437,8 @@ const toggleLyricsTieSlot = (slotId) => {
   if (m2 && m1 !== m2) syncRhythmLyricsTimeline(m2)
 }
 const isLyricsNextSlotTied = (slotId) => {
-  const linearBlocks = getLyricsLinearBlocks()
+  if (lyricsTiedSlots.value.size === 0) return false
+  const linearBlocks = lyricRenderBlocks.value
   const idx = linearBlocks.findIndex(b => b.id === slotId)
   if (idx === -1 || idx === linearBlocks.length - 1) return false
   const currentBlock = linearBlocks[idx]
@@ -7665,7 +7578,9 @@ const getSyllableAtSlot = (measure, beatIdx, subIdx) => {
     return { text: joinedText, isRoot: true, tied: hasTied }
   }
   
-  const linearBlocks = getLyricsLinearBlocks()
+  // An unassigned slot can inherit text only when it continues a lyric tie.
+  if (!lyricsTiedSlots.value.has(slotId)) return null
+  const linearBlocks = lyricRenderBlocks.value
   const curIdx = linearBlocks.findIndex(b => b.id === slotId)
   if (curIdx === -1 || linearBlocks[curIdx].isSilence) return null
   
@@ -7687,6 +7602,7 @@ const getSyllableAtSlot = (measure, beatIdx, subIdx) => {
   return null
 }
 const validateLyricsTies = () => {
+  if (lyricsTiedSlots.value.size === 0) return
   const linearBlocks = getLyricsLinearBlocks()
   const newTies = new Set()
   linearBlocks.forEach((block, idx) => {
@@ -7697,7 +7613,10 @@ const validateLyricsTies = () => {
       }
     }
   })
-  lyricsTiedSlots.value = newTies
+  const currentIds = [...lyricsTiedSlots.value]
+  if (newTies.size !== currentIds.length || [...newTies].some((id, index) => id !== currentIds[index])) {
+    lyricsTiedSlots.value = newTies
+  }
 }
 // --- LYRICS HELPERS & NAVIGATION ---
 const getMeasureLyricsRef = (measure) => {
@@ -7709,132 +7628,142 @@ const getMeasureLyricsRef = (measure) => {
   }
   return measure.lyrics
 }
-watch(measures, (newMeasures) => {
-  if (!newMeasures) return
-  newMeasures.forEach(m => {
-    if (!m.lyrics) {
-      m.lyrics = {
-        rawText: '',
-        mode: 'free',
-        anchors: [],
-        syllableSuggestion: null,
-        lastTextForSuggestion: '',
-        lastText: '',
-        lastMode: 'free'
-      }
-    } else {
-      if (!m.lyrics.anchors) m.lyrics.anchors = []
-      if (m.lyrics.lastText === undefined) m.lyrics.lastText = ''
-      if (m.lyrics.lastMode === undefined) m.lyrics.lastMode = m.lyrics.mode || 'free'
+const normalizeMeasureLyrics = (m) => {
+  if (!m.lyrics) {
+    m.lyrics = {
+      rawText: '',
+      mode: 'free',
+      anchors: [],
+      syllableSuggestion: null,
+      lastTextForSuggestion: '',
+      lastText: '',
+      lastMode: 'free'
     }
-    
-    // Cache syllable suggestions when text changes
-    if (m.lyrics.lastTextForSuggestion !== m.lyrics.rawText) {
-      m.lyrics.syllableSuggestion = getSyllableSuggestionsForMeasure(m)
-      m.lyrics.lastTextForSuggestion = m.lyrics.rawText
+  } else {
+    if (!m.lyrics.anchors) m.lyrics.anchors = []
+    if (m.lyrics.lastText === undefined) m.lyrics.lastText = ''
+    if (m.lyrics.lastMode === undefined) m.lyrics.lastMode = m.lyrics.mode || 'free'
+  }
+
+  // Cache syllable suggestions when text changes
+  if (m.lyrics.lastTextForSuggestion !== m.lyrics.rawText) {
+    m.lyrics.syllableSuggestion = getSyllableSuggestionsForMeasure(m)
+    m.lyrics.lastTextForSuggestion = m.lyrics.rawText
+  }
+
+  // Rhythm mode reconciliation & sync
+  if (m.lyrics.mode === 'rhythm') {
+    if (!m.lyrics.syllables) {
+      m.lyrics.syllables = []
     }
-    
-    // Rhythm mode reconciliation & sync
-    if (m.lyrics.mode === 'rhythm') {
-      if (!m.lyrics.syllables) {
-        m.lyrics.syllables = []
+
+    // Initialize independent lyrics beats according to metric
+    const sig = getMeasureTimeSignature(m)
+    if (!m.lyrics.beats || m.lyrics.beats.length !== sig.beats) {
+      const oldBeats = m.lyrics.beats || []
+      m.lyrics.beats = Array.from({ length: sig.beats }, (_, i) => {
+        if (oldBeats[i]) return oldBeats[i]
+        return {
+          id: generateUniqueId(),
+          harmonicRhythm: 'auto',
+          subdivisions: []
+        }
+      })
+    }
+
+    m.lyrics.beats.forEach(b => {
+      if (!b.id) b.id = generateUniqueId()
+    })
+
+    const textChanged = m.lyrics.lastText !== m.lyrics.rawText
+    const modeChanged = m.lyrics.lastMode !== m.lyrics.mode
+    const syllablesEmpty = !m.lyrics.syllables || m.lyrics.syllables.length === 0
+
+    if (textChanged || modeChanged || syllablesEmpty) {
+      if (textChanged) {
+        m.lyrics.ignoreSuggestion = false
+        m.lyrics.lastText = m.lyrics.rawText
       }
-      
-      // Initialize independent lyrics beats according to metric
-      const sig = getMeasureTimeSignature(m)
-      if (!m.lyrics.beats || m.lyrics.beats.length !== sig.beats) {
-        const oldBeats = m.lyrics.beats || []
-        m.lyrics.beats = Array.from({ length: sig.beats }, (_, i) => {
-          if (oldBeats[i]) return oldBeats[i]
+      m.lyrics.lastMode = m.lyrics.mode
+
+      const parsedSyllables = getSyllableListForMeasure(m)
+      const currentSyllables = m.lyrics.syllables
+
+      const reconciled = parsedSyllables.map((ps, idx) => {
+        const existing = currentSyllables[idx]
+        if (existing) {
+          return {
+            ...existing,
+            text: ps.text,
+            wordId: ps.wordId
+          }
+        } else {
           return {
             id: generateUniqueId(),
-            harmonicRhythm: 'auto',
-            subdivisions: []
+            text: ps.text,
+            wordId: ps.wordId,
+            startTick: null,
+            durationTicks: null,
+            rhythmEventId: null,
+            tied: false,
+            linkedEvents: []
           }
-        })
-      }
-      
-      m.lyrics.beats.forEach(b => {
-        if (!b.id) b.id = generateUniqueId()
-      })
-      
-      const textChanged = m.lyrics.lastText !== m.lyrics.rawText
-      const modeChanged = m.lyrics.lastMode !== m.lyrics.mode
-      const syllablesEmpty = !m.lyrics.syllables || m.lyrics.syllables.length === 0
-      
-      if (textChanged || modeChanged || syllablesEmpty) {
-        if (textChanged) {
-          m.lyrics.ignoreSuggestion = false
-          m.lyrics.lastText = m.lyrics.rawText
         }
-        m.lyrics.lastMode = m.lyrics.mode
-        
-        const parsedSyllables = getSyllableListForMeasure(m)
-        const currentSyllables = m.lyrics.syllables
-        
-        const reconciled = parsedSyllables.map((ps, idx) => {
-          const existing = currentSyllables[idx]
-          if (existing) {
-            return {
-              ...existing,
-              text: ps.text,
-              wordId: ps.wordId
-            }
-          } else {
-            return {
-              id: generateUniqueId(),
-              text: ps.text,
-              wordId: ps.wordId,
-              startTick: null,
-              durationTicks: null,
-              rhythmEventId: null,
-              tied: false,
-              linkedEvents: []
-            }
-          }
-        })
-        
+      })
+
+      if (reconciled.length > 0 || currentSyllables.length > 0) {
         m.lyrics.syllables = reconciled
-        syncRhythmLyricsTimeline(m)
       }
-    } else {
-      m.lyrics.lastMode = m.lyrics.mode || 'free'
+      syncRhythmLyricsTimeline(m)
     }
-    
-    const validChordIds = new Set()
-    if (m.beats) {
-      m.beats.forEach(b => {
-        if (!b.id) {
-          b.id = generateUniqueId()
-        }
-        const isBeatActive = b.root && !b.isSilence
-        const hasActiveSub = b.subdivisions && b.subdivisions.some(s => s.root && !s.isSilence)
-        if (isBeatActive || hasActiveSub) {
-          validChordIds.add(b.id)
-        }
-        if (b.subdivisions) {
-          b.subdivisions.forEach(s => {
-            if (!s.id) {
-              s.id = generateUniqueId()
-            }
-            if (s.root && !s.isSilence) {
-              validChordIds.add(s.id) // Support legacy anchors pointing to subdivisions
-            }
-          })
-        }
-      })
-    }
-    
-    // Cleanup invalid anchors only if they change to avoid recursive updates
-    const filtered = m.lyrics.anchors.filter(anchor => validChordIds.has(anchor.chordId))
-    if (filtered.length !== m.lyrics.anchors.length) {
-      m.lyrics.anchors = filtered
-    }
-  })
-  
-  // Update connectors since chords or measures changed
+  } else {
+    m.lyrics.lastMode = m.lyrics.mode || 'free'
+  }
+
+  const validChordIds = new Set()
+  if (m.beats) {
+    m.beats.forEach(b => {
+      if (!b.id) {
+        b.id = generateUniqueId()
+      }
+      const isBeatActive = b.root && !b.isSilence
+      const hasActiveSub = b.subdivisions && b.subdivisions.some(s => s.root && !s.isSilence)
+      if (isBeatActive || hasActiveSub) {
+        validChordIds.add(b.id)
+      }
+      if (b.subdivisions) {
+        b.subdivisions.forEach(s => {
+          if (!s.id) {
+            s.id = generateUniqueId()
+          }
+          if (s.root && !s.isSilence) {
+            validChordIds.add(s.id) // Support legacy anchors pointing to subdivisions
+          }
+        })
+      }
+    })
+  }
+
+  // Cleanup invalid anchors only if they change to avoid recursive updates
+  const filtered = m.lyrics.anchors.filter(anchor => validChordIds.has(anchor.chordId))
+  if (filtered.length !== m.lyrics.anchors.length) {
+    m.lyrics.anchors = filtered
+  }
+
+}
+// Structural edits rebuild the subscriptions; ordinary edits normalize one measure.
+watch(() => measures.value.slice(), (newMeasures, previous, onCleanup) => {
+  const stops = newMeasures.map(m => watch(
+    () => [m, getMeasureTimeSignature(m).beats],
+    () => {
+      normalizeMeasureLyrics(m)
+      updateConnectors()
+    },
+    { immediate: true, deep: true }
+  ))
+  onCleanup(() => stops.forEach(stop => stop()))
   updateConnectors()
-}, { immediate: true, deep: true })
+}, { immediate: true })
 const hasSpacerBefore = (measure) => {
   if (!measure) return false
   if (currentPlan.value !== 'PRO') return false
@@ -7868,12 +7797,12 @@ const handleLyricsKeydown = (event, currentIndex) => {
       }
       
       // We wait for Vue to render the elements in nextTick
-      setTimeout(() => {
+      ensureMeasureRendered(targetIndex).then(() => setTimeout(() => {
         const targetEl = document.getElementById(`lyrics-textarea-${targetIndex}`)
         if (targetEl) {
           targetEl.focus()
         }
-      }, 50)
+      }, 50))
     }
   }
 }
@@ -7892,12 +7821,12 @@ const shouldShowLyricsRow = (system) => {
 }
 const activateLyricsForMeasure = (measureOriginalIndex) => {
   showLyricsGlobal.value = true
-  setTimeout(() => {
+  ensureMeasureRendered(measureOriginalIndex).then(() => setTimeout(() => {
     const el = document.getElementById(`lyrics-textarea-${measureOriginalIndex}`)
     if (el) {
       el.focus()
     }
-  }, 50)
+  }, 50))
 }
 const getSelectionCharacterOffsetWithin = (element) => {
   let start = 0
@@ -7989,12 +7918,17 @@ const isChordIdRelatedToBeat = (id1, id2, measure) => {
   return false
 }
 function updateConnectors() {
+  if (connectorUpdateTimer !== null) {
+    clearTimeout(connectorUpdateTimer)
+    connectorUpdateTimer = null
+  }
   if (currentPlan.value !== 'PRO' || !showLyricsGlobal.value) {
     activeConnectors.value = []
     return
   }
   
-  setTimeout(() => {
+  connectorUpdateTimer = setTimeout(() => {
+    connectorUpdateTimer = null
     const connectors = []
     
     systems.value.forEach(system => {
@@ -8519,7 +8453,7 @@ const handleSlotLyricsDblClick = (event, measure) => {
 watch([showLyricsGlobal, hoveredChordId, hoveredAnchor], () => {
   updateConnectors()
 })
-watch(systems, () => {
+watch(() => currentPlan.value === 'PRO' && showLyricsGlobal.value ? systems.value : null, () => {
   updateConnectors()
 }, { deep: true })
 const notationMode = ref('chords') // 'chords' | 'roman'
@@ -8646,9 +8580,15 @@ const applyTranspose = () => {
   syncMeasuresBeats()
 }
 const exportPdf = () => {
+  if (isFreeLaunch && isProOptionSelected.value) selectedPdfExportOption.value = 'chords-only'
   isPdfExportModalOpen.value = true
 }
 const confirmExportPdf = () => {
+  if (isFreeLaunch && isProOptionSelected.value) {
+    selectedPdfExportOption.value = 'chords-only'
+    showToast('Elige un formato de exportación disponible.')
+    return
+  }
   isPdfExportModalOpen.value = false
   const option = selectedPdfExportOption.value
   
@@ -8660,7 +8600,7 @@ const confirmExportPdf = () => {
         scaleType: scaleType.value,
         timeSignature: timeSignature.value,
         timeSignatureUnit: timeSignatureUnit.value,
-        measures: displayedMeasures.value,
+        measures: buildExpandedSequence(measuresWithKey.value, repeats.value),
         repeats: [],
         keySignatureStr: keySignatureStr.value,
         viewMode: 'expanded',
@@ -8981,7 +8921,7 @@ const scheduler = () => {
             let durationSeconds = durationSlots * slotDuration
             
             // Extender la duración sosteniendo la nota a través de las figuras ligadas consecutivas
-            const allLinearBlocks = getLinearBlocks()
+            const allLinearBlocks = tiedSlots.value.size > 0 ? musicalRenderBlocks.value : []
             const blockIdx = allLinearBlocks.findIndex(b => b.id === slotId)
             if (blockIdx !== -1) {
               let nextBIdx = blockIdx + 1
@@ -9045,7 +8985,7 @@ const scheduler = () => {
             let durationSeconds = durationBeats * beatDuration
             
             // Extender la duración por ligaduras consecutivas
-            const allLinearBlocks = getLinearBlocks()
+            const allLinearBlocks = tiedSlots.value.size > 0 ? musicalRenderBlocks.value : []
             const blockIdx = allLinearBlocks.findIndex(b => b.id === beatId)
             if (blockIdx !== -1) {
               let nextBIdx = blockIdx + 1
@@ -9143,6 +9083,7 @@ const updatePlayhead = () => {
 
 const startPlayback = () => {
   if (measuresWithKey.value.length === 0) return
+  try { void playbackSequence.value } catch (error) { showToast(error.message); return }
   initAudio()
   
   isPlaying.value = true
@@ -9187,10 +9128,220 @@ const togglePlayback = () => {
     startPlayback()
   }
 }
+// Offscreen systems keep their data; reveal before keyboard focus targets their DOM.
+const systemViewportControls = new Map()
+const registerSystemViewport = (id, control) => {
+  if (control) systemViewportControls.set(id, control)
+  else systemViewportControls.delete(id)
+}
+const ensureMeasureRendered = async (originalIndex) => {
+  const system = systems.value.find(s => s.measures.some(m => m.originalMeasureIndex === originalIndex))
+  if (system) await systemViewportControls.get(system.id)?.reveal()
+  await nextTick()
+}
+const isSystemPinned = (system) => system.measures.some(m =>
+  m.originalMeasureIndex === activeEditingLyricsIndex.value ||
+  m.originalMeasureIndex === activeRhythmSelector.value?.measureIndex ||
+  m.originalMeasureIndex === activeLyricsRhythmSelector.value?.measureIndex ||
+  (isPlaying.value && m.displayedMeasureIndex === currentPlayingMeasureIndex.value)
+)
+const playbackRenderState = {isPlaying, measure: currentPlayingMeasureIndex, beat: currentPlayingBeatIndex, progress: playheadProgress}
+// Keep refs intact: child systems track only the data their template reads.
+const scoreRenderContext = {
+  isFreeLaunch,
+  isSystemPinned,
+  playbackRenderState,
+  SCALES,
+  currentPlan,
+  viewMode,
+  isUpgradeModalOpen,
+  upgradeReason,
+  showLyricsGlobal,
+  hoveredMeasureIndex,
+  activeEditingLyricsIndex,
+  pendingSelection,
+  hoveredChordId,
+  hoveredAnchor,
+  activeConnectors,
+  activeSyllableSelection,
+  title,
+  timeSignature,
+  key,
+  scaleType,
+  measures,
+  translateNoteToSpanish,
+  getRepeatStart,
+  getRepeatEnd,
+  getCasillaData,
+  autoCompleteMeasure,
+  shouldRenderAsSubdivided,
+  isOrderingModeActive,
+  toggleSystemBreak,
+  systems,
+  getSuggestionsForSystemLocal,
+  openSystemSuggestions,
+  getKeyAccidentalsStr,
+  getBeatMinWidth,
+  getMeasureFlexStyle,
+  getAddButtonFlexStyle,
+  isFigureValid,
+  isPatternActive,
+  getMeasureRemainingBeats,
+  getMergedBeats,
+  analyzeMeasureSubdivision,
+  getBeatGroupInfo,
+  getAvailableRhythmFigures,
+  getRhythmDisplayIconSVG,
+  openKeyChangeInfo,
+  getMeasureTimeSignature,
+  isSelectionMode,
+  toggleMeasureSelection,
+  startSelectionDrag,
+  continueSelectionDrag,
+  isMeasureSelected,
+  activeRhythmSelector,
+  SIXTEENTH_PATTERNS,
+  EIGHTH_PATTERNS,
+  TRIPLET_PATTERNS,
+  clickBeat,
+  isRhythmSelectorActiveForMeasure,
+  isSystemActive,
+  isSystemActiveOrHasActiveLyrics,
+  openLocalMetricInfo,
+  openRhythmSelector,
+  selectRhythmFigure,
+  selectSixteenthPatternWrapper,
+  getVisibleSlotsForRender,
+  getBeatPatternKey,
+  getPatternLabel,
+  getLyricsBeatPatternKey,
+  getDynamicRhythmSVG,
+  getRhythmIconSVG,
+  getMeasureFontSizeClass,
+  openMeasureOptions,
+  getEffectiveRhythm,
+  getBeatFlexGrow,
+  getMeasureTiesPaths,
+  getMeasureLyricsTiesPaths,
+  isSlotTiedToNext,
+  toggleTieBySlotId,
+  getBeatSlots,
+  hasBeatRhythmOverride,
+  getActiveMeasureRhythms,
+  getSubdivisionIcon,
+  getSubdivisionFontSizeClass,
+  addMeasure,
+  applySyllableSuggestion,
+  hasHyphensOrCommas,
+  applySyllableSuggestionToAllMeasures,
+  getMeasureCapacityExceededMessage,
+  isLyricsFigureValid,
+  getLyricsEffectiveRhythm,
+  getLyricsBeatSlots,
+  getLyricsVisibleSlotsForRender,
+  toggleSyncWithHarmonic,
+  getLyricsMergedBeats,
+  isLyricsSlotSilence,
+  activeLyricsRhythmSelector,
+  openLyricsRhythmSelector,
+  selectLyricsRhythmFigure,
+  selectLyricsSixteenthPatternWrapper,
+  isLyricsPatternActive,
+  toggleLyricsTieSlot,
+  isLyricsNextSlotTied,
+  selectSyllablePill,
+  clearSyllableAssignment,
+  clearAllSyllableAssignments,
+  resetLyricsSyllables,
+  getSyllableSlotDisplayLabel,
+  assignSyllableToSlot,
+  isSlotSelectedForSyllable,
+  getSyllableAtSlot,
+  isFirstOfGroup,
+  isLastOfGroup,
+  handleLyricsKeydown,
+  shouldShowLyricsRow,
+  activateLyricsForMeasure,
+  isChordIdRelatedToBeat,
+  getNextUnusedChord,
+  assignPendingSelection,
+  handleSegmentClick,
+  getSlotLayout,
+  handleSlotLyricsMouseUp,
+  handleSlotLyricsDblClick,
+  formatDisplayChord,
+  splitChordDisplay,
+  getBeatDisplayChord,
+  isPlaying,
+  currentPlayingMeasureIndex,
+  currentPlayingBeatIndex,
+  playheadProgress
+}
+
+// Only composition changes invalidate this snapshot; playback frames do not.
+const cloudDocument = computed(() => measures.value.length ? {
+  format: 'harmonigrid-project', schemaVersion: 1,
+  title: title.value, key: key.value, scaleType: scaleType.value,
+  timeSignature: timeSignature.value, timeSignatureUnit: timeSignatureUnit.value,
+  globalGrouping: globalGrouping.value ? [...globalGrouping.value] : null,
+  globalGroove: globalGroove.value, globalShowObligado: globalShowObligado.value,
+  globalShowSubdivisions: globalShowSubdivisions.value, showLyricsGlobal: showLyricsGlobal.value,
+  measures: measures.value.map(getMeasureHistorySnapshot),
+  repeats: JSON.parse(JSON.stringify(repeats.value)),
+  tiedSlots: [...tiedSlots.value], lyricsTiedSlots: [...lyricsTiedSlots.value],
+  preferences: {viewMode: viewMode.value, notationMode: notationMode.value,
+    measuresPerSystem: defaultMeasuresPerSystem.value, bpm: playbackBpm.value,
+    audio: Object.fromEntries(Object.entries(cloudAudioRefs).map(([name,state]) => [name,state.value]))}
+} : null)
+const cloudAudioRefs = {startMeasure: playbackStartMeasure, bassOnly: playbackBassOnly,
+  metronome: playbackMetronome, metronomeSound: playbackMetronomeSound,
+  instrument: playbackInstrument, chordsActive: playbackChordsActive,
+  continuity: playbackContinuity, fillChords: playbackFillChords,
+  triadVoicing: playbackTriadVoicing, tetradVoicing: playbackTetradVoicing}
+function closeProjectEditors() {
+  selectedBeat.value = null; selectedMeasureIndex.value = null; selectedRangeStart.value = null; selectedRangeEnd.value = null
+  activeEditingLyricsIndex.value = null; activeSyllableSelection.value = null
+  pendingSelection.value = null; activeDropdown.value = null
+  isModalOpen.value = false; isMeasureOptionsOpen.value = false
+  isSystemSuggestionsModalOpen.value = false; isTimesModalOpen.value = false
+  isRepeatMenuOpen.value = false; isTransposeModalOpen.value = false
+  isPdfExportModalOpen.value = false; isRhythmPromptOpen.value = false
+  isKeyInfoOpen.value = false; isKeyChangeInfoOpen.value = false; isMetricInfoModalOpen.value = false
+  activeConnectors.value = []; hoveredAnchor.value = null
+}
+function clearAccountWorkspace() {
+  stopPlayback(); closeProjectEditors(); cloudProjectGeneration.value++
+  measures.value = []; repeats.value = []; tiedSlots.value = new Set(); lyricsTiedSlots.value = new Set()
+  undoStack.value = []; copiedMeasures.value = []; copiedMeasureIndexes.value = []; copiedMusicalTies.value = []; copiedLyricsTies.value = []; title.value = ''; isSetupMode.value = true
+  configTitle.value = 'Mi Canción'; configKey.value = 'C'; configScale.value = 'major'; configMeasuresCount.value = 8
+}
+function hydrateProjectDocument(document) {
+  const clean = validateProjectDocument(document)
+  stopPlayback(); closeProjectEditors()
+  title.value = clean.title; key.value = clean.key; scaleType.value = clean.scaleType
+  timeSignature.value = clean.timeSignature; timeSignatureUnit.value = clean.timeSignatureUnit
+  globalGrouping.value = clean.globalGrouping; globalGroove.value = clean.globalGroove
+  globalShowObligado.value = clean.globalShowObligado; globalShowSubdivisions.value = clean.globalShowSubdivisions
+  showLyricsGlobal.value = clean.showLyricsGlobal; measures.value = clean.measures; repeats.value = clean.repeats
+  tiedSlots.value = new Set(clean.tiedSlots); lyricsTiedSlots.value = new Set(clean.lyricsTiedSlots)
+  viewMode.value = clean.preferences.viewMode; notationMode.value = clean.preferences.notationMode
+  defaultMeasuresPerSystem.value = clean.preferences.measuresPerSystem; playbackBpm.value = clean.preferences.bpm
+  if(clean.preferences.audio) for(const [name,state] of Object.entries(cloudAudioRefs)) state.value = clean.preferences.audio[name]
+  configTitle.value = clean.title; configKey.value = clean.key; configScale.value = clean.scaleType
+  configTimeSignature.value = clean.timeSignature; configTimeSignatureUnit.value = clean.timeSignatureUnit
+  configMeasuresCount.value = Math.min(clean.measures.length,currentPlan.value === 'PRO' ? 999 : 20)
+  undoStack.value = []; isSetupMode.value = false
+}
+
 </script>
 <template>
   <div class="h-[100dvh] w-full flex flex-col bg-[#F5FCE6] text-[#1C1C1E] font-sans antialiased overflow-hidden">
     
+    <CloudWorkspace :document="cloudDocument" :generation="cloudProjectGeneration" @load="hydrateProjectDocument" @clear-account="clearAccountWorkspace" />
+    <div v-if="isFreeLaunch" class="px-4 py-1 text-center text-xs text-gray-600 bg-white border-b border-gray-100">Próximamente: nuevas herramientas musicales.</div>
+    <LaunchNotice v-if="isFreeLaunch && isUpgradeModalOpen"
+      :message="upgradeReason === 'limit' ? 'Puedes crear hasta 20 compases por composición FREE. Tu composición se conserva completa.' : 'Próximamente: nuevas herramientas musicales.'"
+      @close="isUpgradeModalOpen = false" />
     <transition name="fade" mode="out-in">
       
       <!-- ==================== WIZARD (GREEN ACCENT) ==================== -->
@@ -9214,7 +9365,7 @@ const togglePlayback = () => {
               >
                 FREE
               </button>
-              <button 
+              <button v-show="!isFreeLaunch"
                 @click="setPlan('PRO')" 
                 :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-sm font-black' : 'text-gray-500 font-bold hover:text-gray-700'"
                 class="px-3 py-1 text-xs rounded-full transition-all flex items-center gap-0.5"
@@ -9262,10 +9413,10 @@ const togglePlayback = () => {
                     v-if="activeDropdown === 'timeSignature'" 
                     class="absolute top-full right-4 mt-2 w-52 bg-white rounded-2xl shadow-xl border border-gray-150 p-2 z-50 flex flex-col gap-1.5 text-left font-sans"
                   >
-                    <div v-for="group in METRIC_GROUPS" :key="group.label" class="space-y-1">
+                    <div v-for="group in METRIC_GROUPS.filter(group => !isFreeLaunch || group.items.some(item => !item.isPro))" :key="group.label" class="space-y-1">
                       <div class="text-[9.5px] text-gray-400 font-black uppercase tracking-wider px-2 pt-1">{{ group.label }}</div>
                       <div class="flex flex-col">
-                        <button
+                        <button v-show="!isFreeLaunch || !item.isPro"
                           v-for="item in group.items"
                           :key="item.name"
                           @click="selectWizardTimeSignature(item.beats, item.unit, item.isPro)"
@@ -9283,7 +9434,7 @@ const togglePlayback = () => {
                       </div>
                     </div>
                     <!-- Custom metric entry (PRO only) -->
-                    <div class="border-t border-gray-100 mt-1 pt-1">
+                    <div v-show="!isFreeLaunch" class="border-t border-gray-100 mt-1 pt-1">
                       <div class="text-[9.5px] text-gray-400 font-black uppercase tracking-wider px-2 pt-1 flex items-center gap-1.5">
                         Personalizada
                         <span class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.5 rounded font-black">PRO</span>
@@ -9360,7 +9511,7 @@ const togglePlayback = () => {
                   <div v-if="activeDropdown === 'configScale'" class="absolute bottom-full right-0 mb-2 w-64 bg-white rounded-xl shadow-xl border border-gray-100 overflow-y-auto max-h-80 z-50 p-2 space-y-3">
                     <div v-for="group in groupedScales" :key="group.label" class="space-y-1">
                       <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider px-2 pt-1">{{ group.label }}</div>
-                      <button v-for="s in group.items" :key="s.id" @click="selectConfigScale(s.id)" class="w-full text-left px-2 py-1.5 rounded-lg hover:bg-gray-50 text-[14px] flex justify-between font-medium items-center">
+                      <button v-show="!isFreeLaunch || !s.isPro" v-for="s in group.items" :key="s.id" @click="selectConfigScale(s.id)" class="w-full text-left px-2 py-1.5 rounded-lg hover:bg-gray-50 text-[14px] flex justify-between font-medium items-center">
                         <div class="flex flex-col">
                           <span class="text-gray-800 font-semibold">{{ s.name }}</span>
                           <span class="text-[10px] text-gray-400 font-normal leading-tight">{{ s.characteristic }}</span>
@@ -9406,7 +9557,7 @@ const togglePlayback = () => {
               >
                 FREE
               </button>
-              <button 
+              <button v-show="!isFreeLaunch"
                 @click="setPlan('PRO')" 
                 :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-sm font-black' : 'text-gray-800 font-bold hover:text-black'"
                 class="px-1.5 py-0.5 sm:px-2.5 sm:py-1 text-[9px] sm:text-[11px] rounded-full transition-all duration-300 flex items-center gap-0.5"
@@ -9444,7 +9595,7 @@ const togglePlayback = () => {
                 <div v-if="activeDropdown === 'mainScale'" class="absolute top-full left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-gray-100 overflow-y-auto max-h-80 z-50 p-2 space-y-3">
                   <div v-for="group in groupedScales" :key="group.label" class="space-y-1">
                     <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider px-2 pt-1">{{ group.label }}</div>
-                    <button v-for="s in group.items" :key="s.id" @click="selectMainScale(s.id)" class="w-full text-left px-2 py-1.5 rounded-lg hover:bg-gray-50 text-[14px] flex justify-between font-medium items-center">
+                    <button v-show="!isFreeLaunch || !s.isPro" v-for="s in group.items" :key="s.id" @click="selectMainScale(s.id)" class="w-full text-left px-2 py-1.5 rounded-lg hover:bg-gray-50 text-[14px] flex justify-between font-medium items-center">
                       <div class="flex flex-col">
                         <span class="text-gray-800 font-semibold">{{ s.name }}</span>
                         <span class="text-[10px] text-gray-400 font-normal leading-tight">{{ s.characteristic }}</span>
@@ -9469,7 +9620,7 @@ const togglePlayback = () => {
                     :key="g" 
                     class="relative group/item"
                   >
-                    <button 
+                    <button v-show="!isFreeLaunch || g === 'Ninguno'"
                       @click="selectGlobalGroove(g)" 
                       class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-50 text-[14px] flex flex-col font-semibold transition-all duration-150 relative"
                       :class="globalGroove === g ? 'bg-[#8EE000]/10 text-[#6CA600]' : 'text-gray-700'"
@@ -9537,7 +9688,7 @@ const togglePlayback = () => {
             
             <div v-else class="hidden md:flex p-0.5 bg-gray-100/50 rounded-lg border border-gray-200 opacity-70 cursor-pointer" @click="upgradeReason = 'feature'; isUpgradeModalOpen = true">
               <button class="px-3 py-1.5 text-[12px] text-gray-400 font-bold" disabled>Mostrar repeticiones</button>
-              <button class="px-3 py-1.5 text-[12px] text-gray-400 font-bold flex items-center gap-1" disabled>
+              <button v-show="!isFreeLaunch" class="px-3 py-1.5 text-[12px] text-gray-400 font-bold flex items-center gap-1" disabled>
                 Expandir compases <span class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1 rounded font-black">PRO</span>
               </button>
             </div>
@@ -9588,7 +9739,7 @@ const togglePlayback = () => {
                     </div>
                     <div v-else class="flex p-0.5 bg-gray-100/50 rounded-lg border border-gray-200 opacity-70 cursor-pointer" @click="activeDropdown = null; upgradeReason = 'feature'; isUpgradeModalOpen = true">
                       <button class="flex-1 text-center py-1.5 text-[11px] text-gray-400 font-bold" disabled>Mostrar repeticiones</button>
-                      <button class="flex-1 text-center py-1.5 text-[11px] text-gray-400 font-bold flex items-center justify-center gap-0.5" disabled>
+                      <button v-show="!isFreeLaunch" class="flex-1 text-center py-1.5 text-[11px] text-gray-400 font-bold flex items-center justify-center gap-0.5" disabled>
                         Expandir <span class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[7px] px-1 rounded font-black">PRO</span>
                       </button>
                     </div>
@@ -9610,7 +9761,7 @@ const togglePlayback = () => {
                     <span v-if="repeats.length" class="bg-gray-200 text-gray-800 text-[10px] rounded-full w-5 h-5 flex items-center justify-center font-black border border-gray-300">{{ repeats.length }}</span>
                   </button>
                   <!-- Ordenar compases inside dropdown -->
-                  <button 
+                  <button v-show="!isFreeLaunch"
                     @click="activeDropdown = null; currentPlan === 'PRO' ? (isOrderingModeActive = !isOrderingModeActive) : (upgradeReason = 'custom_layout', isUpgradeModalOpen = true)" 
                     class="text-left text-[13px] font-bold flex items-center justify-between px-3 py-2 rounded-lg transition-all border w-full text-gray-750"
                     :class="isOrderingModeActive 
@@ -9624,7 +9775,7 @@ const togglePlayback = () => {
                     <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[7px] px-1.5 py-0.5 rounded font-black">PRO</span>
                   </button>
                   <!-- Transportar inside dropdown -->
-                  <button 
+                  <button v-show="!isFreeLaunch"
                     @click="activeDropdown = null; handleTransposeButtonClick()" 
                     class="text-left text-[13px] font-bold flex items-center justify-between px-3 py-2 rounded-lg transition-all border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-700 w-full"
                   >
@@ -9650,7 +9801,7 @@ const togglePlayback = () => {
               <span v-if="repeats.length" class="bg-gray-100 text-gray-800 text-[10px] rounded-full w-5 h-5 flex items-center justify-center font-black border border-gray-200">{{ repeats.length }}</span>
             </button>
             <!-- Ordenar compases -->
-            <button 
+            <button v-show="!isFreeLaunch"
               @click="currentPlan === 'PRO' ? (isOrderingModeActive = !isOrderingModeActive) : (upgradeReason = 'custom_layout', isUpgradeModalOpen = true)" 
               class="hidden md:flex text-[14px] font-bold items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
               :class="isOrderingModeActive 
@@ -9661,7 +9812,7 @@ const togglePlayback = () => {
               <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black">PRO</span>
             </button>
             <!-- Transportar -->
-            <button 
+            <button v-show="!isFreeLaunch"
               @click="handleTransposeButtonClick" 
               class="hidden md:flex text-[14px] font-bold items-center gap-2 px-3 py-1.5 rounded-lg transition-all border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
             >
@@ -9678,7 +9829,7 @@ const togglePlayback = () => {
           </span>
           <span v-else class="flex items-center gap-1.5">
             <span class="w-2 h-2 bg-violet-500 rounded-full animate-ping"></span>
-            <span><strong>PRO:</strong> Expande tu música y visualízala completamente, sin límites ni repeticiones ocultas.</span>
+            <span><strong v-show="!isFreeLaunch">PRO:</strong> Expande tu música y visualízala completamente, sin límites ni repeticiones ocultas.</span>
           </span>
         </div>
         <!-- GRID AREA -->
@@ -9727,8 +9878,8 @@ const togglePlayback = () => {
               </div>
 
               <!-- Notation Mode Toggle (Grados Romanos vs Acordes - PRO) -->
-              <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
-                <button 
+              <div v-show="!isFreeLaunch" class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+                <button
                   @click="toggleNotationMode"
                   class="w-full flex items-center justify-between px-2 py-2 rounded-xl border transition-all shadow-sm active:scale-98"
                   :class="notationMode === 'roman' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-violet-500 shadow-violet-500/20' : 'bg-gray-50/80 border-gray-200 hover:bg-gray-100 text-gray-700'"
@@ -9746,7 +9897,7 @@ const togglePlayback = () => {
               
               <!-- Global Subdivisions Toggle (visible per-score in sidebar) -->
               <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
-                <label class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1.5 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Mostrar/ocultar subdivisiones en todos los compases">
+                <label v-show="!isFreeLaunch" class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1.5 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Mostrar/ocultar subdivisiones en todos los compases">
                   <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-tight">‖ Sub</span>
                   <div class="relative">
                     <input 
@@ -9763,7 +9914,7 @@ const togglePlayback = () => {
               </div>
               <!-- Global showObligado (Modo Rítmico / Ritmo Armónico) Toggle -->
               <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
-                <label class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Modo Rítmico: Los acordes respetarán la duración exacta de las figuras">
+                <label v-show="!isFreeLaunch" class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Modo Rítmico: Los acordes respetarán la duración exacta de las figuras">
                   <div class="flex flex-col text-center md:text-left">
                     <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-none">♩ Ritmo</span>
                     <span class="text-[7.5px] text-gray-400 font-bold leading-none mt-0.5">Armónico</span>
@@ -9802,7 +9953,7 @@ const togglePlayback = () => {
               </div>
               
               <!-- Suggestions Toggle Button -->
-              <div class="w-28 md:w-full mt-0 md:mt-2 flex-shrink-0 animate-scale-up">
+              <div v-show="!isFreeLaunch" class="w-28 md:w-full mt-0 md:mt-2 flex-shrink-0 animate-scale-up">
                 <button
                   @click="isSuggestionsPanelOpen = !isSuggestionsPanelOpen"
                   class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1.5 md:gap-2 px-2 py-2 rounded-xl border w-full h-20 md:h-auto hover:bg-gray-100 transition-colors"
@@ -10045,11 +10196,11 @@ const togglePlayback = () => {
             <div class="flex-1 space-y-8 min-w-0 overflow-x-auto md:overflow-x-visible">
               <!-- Asistente de Sugerencias Panel -->
               <transition name="fade">
-                <div v-if="isSuggestionsPanelOpen" class="bg-gradient-to-tr from-amber-50/80 to-amber-100/35 backdrop-blur-md border border-amber-250/70 rounded-3xl p-5 shadow-lg shadow-amber-100/10 animate-scale-up space-y-4">
+                <div v-if="!isFreeLaunch && isSuggestionsPanelOpen" class="bg-gradient-to-tr from-amber-50/80 to-amber-100/35 backdrop-blur-md border border-amber-250/70 rounded-3xl p-5 shadow-lg shadow-amber-100/10 animate-scale-up space-y-4">
                   <div class="flex items-center justify-between border-b border-amber-200/50 pb-3">
                     <div class="flex items-center gap-2">
                       <span class="text-xl">💡</span>
-                      <div>
+                      <div >
                         <h3 class="text-xs font-black text-amber-950 uppercase tracking-wider">Asistente de Sugerencias Inteligentes (PRO)</h3>
                         <p class="text-[10px] text-amber-800/80 font-medium">
                           <span v-if="allSuggestionsPool.length > 0">Se detectaron {{ allSuggestionsPool.length }} consejos específicos para tu progresión</span>
@@ -10062,7 +10213,7 @@ const togglePlayback = () => {
                       <button @click="refreshSuggestions" class="bg-white hover:bg-amber-50 text-amber-800 text-[10px] font-black px-2.5 py-1.5 rounded-lg border border-amber-200 shadow-xs flex items-center gap-1 active:scale-[0.97] transition-all">
                         🔄 Refrescar
                       </button>
-                      <button @click="isSuggestionsPanelOpen = false" class="text-amber-800 hover:text-amber-950 text-xs font-bold bg-amber-200/40 w-6 h-6 rounded-full flex items-center justify-center">✕</button>
+                      <button  @click="isSuggestionsPanelOpen = false" class="text-amber-800 hover:text-amber-950 text-xs font-bold bg-amber-200/40 w-6 h-6 rounded-full flex items-center justify-center">✕</button>
                     </div>
                   </div>
                   
@@ -10077,7 +10228,7 @@ const togglePlayback = () => {
                       </div>
                       
                       <div class="mt-4 pt-3 border-t border-gray-100">
-                        <button 
+                        <button
                           @click="runSuggestion(sug)"
                           class="w-full py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-extrabold text-[11px] rounded-xl transition-all shadow-xs flex items-center justify-center gap-1"
                         >
@@ -10112,1270 +10263,9 @@ const togglePlayback = () => {
                   "{{ GROOVE_DETAILS[globalGroove]?.description }}"
                 </div>
               </div>
-              <div 
-                v-for="(system, sIdx) in systems" 
-                :key="system.id"
-                :id="'system-row-' + system.id"
-                class="flex flex-col gap-y-3 w-full relative system-row"
-                :class="{ 'z-30': isSystemActiveOrHasActiveLyrics(system), 'z-10': !isSystemActiveOrHasActiveLyrics(system) }"
-              >
-                <!-- SVG Connectors overlay -->
-                <svg 
-                  class="absolute inset-0 pointer-events-none w-full h-full z-25 overflow-visible"
-                  v-if="currentPlan === 'PRO' && showLyricsGlobal"
-                >
-                  <path
-                    v-for="conn in activeConnectors.filter(c => c.systemId === system.id)"
-                    :key="conn.id"
-                    :d="conn.path"
-                    :stroke="conn.active ? '#8B5CF6' : '#C4B5FD'"
-                    :stroke-width="conn.active ? 2.5 : 1.5"
-                    :stroke-dasharray="conn.active ? 'none' : '3,3'"
-                    fill="none"
-                    class="transition-all duration-200"
-                    :opacity="conn.active ? 1 : 0.45"
-                  />
-                </svg>
-                <!-- MEASURES ROW -->
-                <div 
-                  class="system-row gap-x-3 gap-y-10 w-full relative"
-                  :class="{ 'z-30': isSystemActive(system), 'z-10': !isSystemActive(system) }"
-                >
-                <template v-for="(measure, mIdx) in system.measures" :key="measure.id">
-                  
-                  <!-- Recuadro de nueva escala (Between measures, only in PRO) -->
-                  <div 
-                    v-if="currentPlan === 'PRO' && measure.keyChange"
-                    class="flex flex-col items-center justify-center pt-2 flex-shrink-0 select-none text-center min-w-[96px] md:min-w-[120px] max-w-[140px] h-28 self-center animate-scale-up"
-                  >
-                    <button 
-                      @click.stop="openKeyChangeInfo(measure)"
-                      class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-violet-500 active:scale-[0.97] transition-all w-full text-center shadow-sm"
-                    >
-                      <span class="text-[10px] md:text-[11px] font-black text-gray-700 leading-tight uppercase tracking-wider block w-full truncate">
-                        {{ translateNoteToSpanish(measure.keyChange.key) }} {{ SCALES[measure.keyChange.scaleType]?.name || measure.keyChange.scaleType }}
-                      </span>
-                      <span 
-                        class="px-1.5 py-0.5 rounded-md text-[9px] md:text-[10px] font-black tracking-wide"
-                        :class="getKeyAccidentalsStr(measure.keyChange.key, measure.keyChange.scaleType) === 'Limpia' ? 'text-gray-400 bg-gray-200/80' : 'text-violet-600 bg-violet-50 border border-violet-100/50'"
-                      >
-                        {{ getKeyAccidentalsStr(measure.keyChange.key, measure.keyChange.scaleType) }}
-                      </span>
-                    </button>
-                  </div>
-                  <!-- Recuadro de nueva métrica local (Between measures, only in PRO, skip first displayed measure) -->
-                  <div 
-                    v-if="currentPlan === 'PRO' && measure.timeSignature && measure.displayedMeasureIndex > 0 && (measure.timeSignature.beats !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).beats || measure.timeSignature.unit !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).unit)"
-                    class="flex flex-col items-center justify-center pt-2 flex-shrink-0 select-none text-center min-w-[64px] md:min-w-[72px] max-w-[90px] h-28 self-center animate-scale-up"
-                  >
-                    <button 
-                      @click.stop="openLocalMetricInfo(measure)"
-                      class="flex flex-col items-center p-1.5 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-violet-500 active:scale-[0.97] transition-all w-full text-center shadow-sm animate-pulse-subtle"
-                    >
-                      <span class="text-[7.5px] font-black text-gray-400 uppercase tracking-widest leading-none mb-0.5">Métrica</span>
-                      <div class="flex flex-col items-center leading-none">
-                        <div class="text-xl md:text-2xl font-serif font-black text-gray-850 flex items-center justify-center">
-                          <span>{{ measure.timeSignature.beats }}</span>
-                        </div>
-                        <div class="w-4 h-0.5 bg-gray-400 my-0.5 transition-colors"></div>
-                        <div class="text-xl md:text-2xl font-serif font-black text-gray-850">{{ measure.timeSignature.unit }}</div>
-                      </div>
-                    </button>
-                  </div>
-                  <!-- Measure Card -->
-                  <div 
-                    class="relative bg-white border-2 border-gray-300 rounded-lg flex overflow-visible h-28 shadow-sm transition-all hover:border-[#8EE000] group"
-                    :class="{
-                      'border-l-[4px] border-l-black': getRepeatStart(measure.originalMeasureIndex), 
-                      'border-r-[4px] border-r-black': getRepeatEnd(measure.originalMeasureIndex),
-                      'border-[#a78bfa] hover:border-[#8b5cf6]': measure.isExpandedCopy,
-                      'border-[#8EE000] bg-[#8EE000]/5': isSelectionMode && isMeasureSelected(measure.originalMeasureIndex) && currentPlan === 'FREE',
-                      'border-violet-500 bg-violet-50/50 shadow-md shadow-violet-100': isSelectionMode && isMeasureSelected(measure.originalMeasureIndex) && currentPlan === 'PRO',
-                      'z-40': isRhythmSelectorActiveForMeasure(measure.originalMeasureIndex)
-                    }"
-                    :style="getMeasureFlexStyle(measure)"
-                  >
-                    <!-- Playhead Line (Reproducción) -->
-                    <div 
-                      v-if="isPlaying && currentPlayingMeasureIndex === measure.displayedMeasureIndex" 
-                      class="absolute top-0 bottom-0 w-[3px] bg-[#8EE000] z-40 pointer-events-none shadow-[0_0_8px_#8EE000]"
-                      :style="{ left: (playheadProgress * 100) + '%' }"
-                    ></div>
-                    <!-- Selection Mode Overlay -->
-                    <div 
-                      v-if="isSelectionMode"
-                      @mousedown.prevent="startSelectionDrag(measure.originalMeasureIndex)"
-                      @mouseenter="continueSelectionDrag(measure.originalMeasureIndex)"
-                      @click.stop="toggleMeasureSelection(measure.originalMeasureIndex)"
-                      class="absolute inset-0 z-30 cursor-pointer rounded-lg transition-all duration-200"
-                      :class="[
-                        isMeasureSelected(measure.originalMeasureIndex)
-                          ? (currentPlan === 'PRO' ? 'bg-violet-500/10 hover:bg-violet-500/20' : 'bg-[#8EE000]/10 hover:bg-[#8EE000]/20')
-                          : 'hover:bg-gray-100/50'
-                      ]"
-                    ></div>
-                    <!-- CASILLA BRACKET (COMPACT MODE ONLY) -->
-                    <div v-if="viewMode === 'compact' && getCasillaData(measure.displayedMeasureIndex)" class="absolute -top-7 left-0 right-0 h-6 pointer-events-none select-none flex flex-col justify-end z-20">
-                      <div class="flex items-center text-[10px] font-black text-gray-700 px-1 leading-none mb-0.5">
-                        <span v-if="getCasillaData(measure.displayedMeasureIndex).isStart" class="bg-white/95 px-1 rounded-sm shadow-sm border border-gray-200">
-                          {{ getCasillaData(measure.displayedMeasureIndex).type === 1 ? `1. (x${getCasillaData(measure.displayedMeasureIndex).times})` : `2.` }}
-                        </span>
-                      </div>
-                      <div class="h-1.5 border-t-2 border-gray-800"
-                           :class="{
-                             'border-l-2 rounded-tl-sm': getCasillaData(measure.displayedMeasureIndex).isStart,
-                             'border-r-2 rounded-tr-sm': getCasillaData(measure.displayedMeasureIndex).isEnd
-                           }">
-                      </div>
-                    </div>
-                    <!-- SECTION LABEL (INSIDE CARD TO AVOID BRACKET CONFLICTS) -->
-                    <div v-if="measure.sectionLabel" class="absolute top-1.5 left-2 bg-[#8EE000] text-black px-1.5 py-0.5 text-[10px] font-black rounded z-10 shadow-sm uppercase tracking-wider">
-                      {{ measure.sectionLabel }}
-                    </div>
-                    
-                    <!-- REPEAT DOTS -->
-                    <div v-if="getRepeatStart(measure.originalMeasureIndex)" class="absolute top-1/2 -translate-y-1/2 left-2 flex flex-col gap-1.5 z-10">
-                      <div class="w-1.5 h-1.5 bg-black rounded-full"></div>
-                      <div class="w-1.5 h-1.5 bg-black rounded-full"></div>
-                    </div>
-                    <div v-if="getRepeatEnd(measure.originalMeasureIndex)" class="absolute top-1/2 -translate-y-1/2 right-2 flex flex-col gap-1.5 z-10">
-                      <div class="w-1.5 h-1.5 bg-black rounded-full"></div>
-                      <div class="w-1.5 h-1.5 bg-black rounded-full"></div>
-                    </div>
-                    <div v-if="getRepeatEnd(measure.originalMeasureIndex)" class="absolute -top-6 right-0 text-[12px] font-bold text-gray-700 z-10 bg-white px-1 border border-b-0 border-gray-300 rounded-t-md">
-                      (x{{ getRepeatEnd(measure.originalMeasureIndex).times }})
-                    </div>
-                    
-                    <!-- Key display on first measure only -->
-                    <div v-if="measure.displayedMeasureIndex === 0" class="absolute top-1 right-2 text-[10px] font-black text-[#6CA600]/50">
-                      {{ key }}{{ scaleType === 'minor' ? 'm' : '' }}
-                    </div>
-                    <!-- Harmonic Rhythm Indicators (♪, ♬, ↷, 3, 5) -->
-                    <div 
-                      v-if="getActiveMeasureRhythms(measure).length > 0" 
-                      class="absolute -top-6 bg-white/95 backdrop-blur-sm border border-gray-200 rounded-full px-2 py-0.5 shadow-sm text-gray-600 flex items-center gap-1 z-20 text-[9px] font-black"
-                      :class="measure.displayedMeasureIndex === 0 ? 'right-12' : (getRepeatEnd(measure.originalMeasureIndex) ? 'right-12' : 'right-2')"
-                      title="Ritmo Armónico Activo"
-                    >
-                      <span 
-                        v-for="(symbol, sIdx) in getActiveMeasureRhythms(measure)" 
-                        :key="sIdx"
-                        class="text-[10px] leading-none"
-                      >
-                        {{ symbol }}
-                      </span>
-                    </div>
-                    <!-- Measure Options Button (Hide in Expanded Mode) -->
-                    <button 
-                      v-if="viewMode === 'compact'"
-                      @click.stop="openMeasureOptions(measure.originalMeasureIndex)"
-                      class="absolute -bottom-3.5 left-1/2 -translate-x-1/2 bg-white text-gray-400 hover:text-[#6CA600] hover:border-[#8EE000] border border-gray-300 rounded-full w-7 h-7 flex items-center justify-center text-xs z-20 shadow-md transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
-                    >⚙️</button>
-                    
-                    <!-- MEASURE INDEX & PROJECTION BADGE -->
-                    <div class="absolute bottom-1 left-2 text-[10px] font-bold text-gray-300 pointer-events-none flex items-center gap-1.5 z-10 select-none">
-                      <span>#{{ measure.displayedMeasureIndex + 1 }}</span>
-                      <span v-if="measure.isExpandedCopy" class="text-violet-600 font-extrabold bg-violet-50 px-1 rounded-sm border border-violet-100 text-[9px] scale-90 origin-left">
-                        Original {{ measure.originalMeasureIndex + 1 }} (Vta. {{ measure.displayPass }})
-                      </span>
-                      
-                      <!-- Auto Subdivision Badge -->
-                      <template v-if="measure.showSubdivisions !== false && getMeasureTimeSignature(measure).unit === 8">
-                        <!-- Match -->
-                        <span 
-                          v-if="analyzeMeasureSubdivision(measure).type === 'match'"
-                          class="bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 text-[8.5px] font-black rounded-md flex items-center gap-0.5 animate-scale-up"
-                          title="Subdivisión detectada automáticamente"
-                        >
-                          ✔ Sub: {{ analyzeMeasureSubdivision(measure).pattern.join('+') }}
-                        </span>
-                        <!-- Ambiguous Match -->
-                        <span 
-                          v-else-if="analyzeMeasureSubdivision(measure).type === 'ambiguous_match'"
-                          class="bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 text-[8.5px] font-black rounded-md flex items-center gap-0.5 animate-scale-up cursor-help"
-                          :title="'Podría completarse como: ' + analyzeMeasureSubdivision(measure).matchingPatterns.map(p => p.join('+')).join(' o ')"
-                        >
-                          💡 Podría ser: {{ analyzeMeasureSubdivision(measure).matchingPatterns[0].join('+') }}
-                        </span>
-                        <!-- Inconsistent -->
-                        <span 
-                          v-else-if="analyzeMeasureSubdivision(measure).type === 'inconsistent'"
-                          class="bg-red-50 text-red-700 border border-red-200 px-1.5 py-0.5 text-[8.5px] font-black rounded-md flex items-center gap-0.5 animate-scale-up"
-                          :title="analyzeMeasureSubdivision(measure).message"
-                        >
-                          ⚠️ Ritmo irregular
-                        </span>
-                      </template>
-                      <!-- Measure groove override indicator -->
-                      <div 
-                        v-if="measure.groove && measure.groove !== 'global'"  
-                        class="bg-violet-100 text-violet-750 border border-violet-200 px-1.5 py-0.5 text-[8px] font-black rounded uppercase tracking-wide pointer-events-auto"
-                        title="Anulación de groove en este compás"
-                      >
-                        {{ measure.groove === 'neutral' ? 'Neutral' : 'Custom' }}
-                      </div>
-                    </div>
-                    
-                    <!-- BEATS -->
-                    <div class="flex-1 flex z-0 relative ml-4 mr-4">
-                      <!-- Center horizontal line -->
-                      <div class="absolute top-1/2 left-0 right-0 h-px bg-gray-200 -translate-y-1/2 pointer-events-none z-0"></div>
-                      <!-- SVG Overlay for Ties (Ligados) -->
-                      <svg 
-                        v-if="currentPlan === 'PRO'"
-                        class="absolute inset-0 w-full h-full pointer-events-none z-20 overflow-visible"
-                        viewBox="0 0 1000 100"
-                        preserveAspectRatio="none"
-                      >
-                        <path 
-                          v-for="(path, pIdx) in getMeasureTiesPaths(measure)" 
-                          :key="pIdx"
-                          :d="path.d"
-                          fill="none"
-                          stroke="#8EE000"
-                          stroke-width="1.8"
-                          stroke-linecap="round"
-                          class="tie-arc transition-all duration-300"
-                        />
-                      </svg>
-                      
-                      <template v-for="state in getMergedBeats(measure)" :key="state.index">
-                        <div 
-                          v-if="!state.isMerged"
-                          class="flex h-full z-10 relative m-0.5 beat-container"
-                          :style="{ 
-                            flex: currentPlan === 'PRO' ? `${state.durationSlots} ${state.durationSlots} 0%` : getBeatFlexGrow(measure, state.beat, state.index),
-                            minWidth: `${getBeatMinWidth(measure, state.beat, state)}px`
-                          }"
-                          :class="{
-                            'bg-violet-600/[0.03] border-y border-violet-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).groupIndex % 2 === 0,
-                            'bg-indigo-600/[0.03] border-y border-indigo-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).groupIndex % 2 !== 0,
-                            'rounded-l-lg border-l border-violet-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst,
-                            'rounded-r-lg border-r border-violet-600/[0.05]': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isLast,
-                            'ml-2.5': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0,
-                            'ml-2': currentPlan === 'PRO' && measure.showSubdivisions === false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0,
-                            'ring-2 ring-[#8EE000]/80 bg-[#8EE000]/10 shadow-lg shadow-[#8EE000]/15 z-20': isPlaying && currentPlayingMeasureIndex === measure.displayedMeasureIndex && currentPlayingBeatIndex === state.index
-                          }"
-                        >
-                          <!-- Group separator line -->
-                          <div 
-                            v-if="currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0"
-                            class="absolute left-0 top-1.5 bottom-1.5 w-[2px] bg-violet-400/80 -ml-[6px] rounded-full pointer-events-none"
-                          ></div>
-                          <div 
-                            v-if="state.durationSlots > 1" 
-                            class="absolute inset-0 flex pointer-events-none z-0 transition-opacity duration-200"
-                            :class="measure.showSubdivisions !== false ? 'opacity-20' : 'opacity-0 group-hover:opacity-10'"
-                          >
-                            <div v-for="n in state.durationSlots - 1" :key="n" class="flex-1 border-r border-gray-400/50"></div>
-                            <div class="flex-1"></div>
-                          </div>
-                          <!-- Normal Beat -->
-                          <div
-                            v-if="!shouldRenderAsSubdivided(measure, state.beat, state.index)"
-                            @click.stop="clickBeat(measure.originalMeasureIndex, state.index, measure.displayedMeasureIndex)"
-                            class="w-full h-full flex flex-col items-center justify-center active:bg-[#8EE000]/10 hover:bg-[#8EE000]/5 relative transition-colors rounded-lg group/beat cursor-pointer"
-                          >
-                            <!-- Chord name wrapped in white badge for clean margins and readability -->
-                            <div 
-                              v-if="state.beat.root || (state.beat.subdivisions && state.beat.subdivisions.some(s => s.root))"
-                              :id="'chord-card-' + state.beat.id"
-                              @mouseenter="hoveredChordId = state.beat.id"
-                              @mouseleave="hoveredChordId = null"
-                              class="bg-white/95 border border-gray-200/80 rounded-xl px-3 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 group-hover/beat:scale-105 transition-transform animate-scale-up max-w-[calc(100%+16px)]"
-                              :class="{ 'border-violet-500 ring-2 ring-violet-100 shadow-md shadow-violet-100': currentPlan === 'PRO' && (hoveredChordId === state.beat.id || (hoveredAnchor && isChordIdRelatedToBeat(hoveredAnchor.chordId, state.beat.id, measure))) }"
-                            >
-                              <div class="flex flex-col items-center justify-center">
-                                <span :class="[getMeasureFontSizeClass(measure), 'text-gray-800 font-black leading-none']">
-                                  {{ getBeatDisplayChord(state.beat).main }}
-                                </span>
-                                <span v-if="getBeatDisplayChord(state.beat).bass" class="text-xs text-gray-500 font-bold leading-none mt-0.5">
-                                  {{ getBeatDisplayChord(state.beat).bass }}
-                                </span>
-                              </div>
-                              <!-- Obligado symbol display -->
-                              <svg 
-                                v-if="measure.showObligado" 
-                                class="h-4 w-12 text-violet-600 shrink-0 select-none pointer-events-none mt-0.5" 
-                                viewBox="0 0 100 24" 
-                                preserveAspectRatio="none"
-                                v-html="getRhythmDisplayIconSVG(state.beat.harmonicRhythm || 'auto', measure, state.beat)"
-                              ></svg>
-                            </div>
-                            <!-- Rest Badge / Slash line -->
-                            <template v-else>
-                              <div 
-                                v-if="measure.showObligado && state.beat.harmonicRhythm"
-                                class="bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1 shadow-sm z-10 flex flex-col items-center justify-center gap-0.5 opacity-60 hover:scale-105 transition-transform"
-                              >
-                                <span class="text-gray-400 font-bold leading-none text-[11px]">𝄾</span>
-                                <svg 
-                                  class="h-4 w-12 text-gray-400 shrink-0 select-none pointer-events-none mt-0.5" 
-                                  viewBox="0 0 100 24" 
-                                  preserveAspectRatio="none"
-                                  v-html="getRhythmDisplayIconSVG(state.beat.harmonicRhythm, measure, state.beat)"
-                                ></svg>
-                              </div>
-                              <div 
-                                v-else
-                                class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-px h-6 bg-gray-300 transform rotate-12 group-hover/beat:opacity-0"
-                              ></div>
-                            </template>
-                            
-                            <!-- Beat override icon -->
-                            <span 
-                              v-if="hasBeatRhythmOverride(measure, state.beat, state.index)" 
-                              class="text-[9px] font-black text-violet-600 absolute top-1 right-2 select-none pointer-events-none transition-opacity duration-200 group-hover/beat:opacity-0"
-                              title="Anulación de ritmo en este acorde"
-                            >
-                              {{ getSubdivisionIcon(state.beat.harmonicRhythm) }}
-                            </span>
-                            <!-- Tiny Rhythm edit button (only visible when Ritmo Armónico is ON) -->
-                            <button 
-                              v-if="measure.showObligado"
-                              @click.stop="openRhythmSelector(measure.originalMeasureIndex, state.index)"
-                              class="absolute top-1 right-1 text-[9px] text-[#6CA600]/50 hover:text-[#6CA600] hover:scale-110 active:scale-95 transition-all opacity-0 group-hover/beat:opacity-100 z-20 w-4 h-4 flex items-center justify-center bg-gray-550 hover:bg-gray-100 rounded border border-gray-200/80 shadow-sm"
-                              title="Cambiar figura rítmica"
-                            >
-                              ✏️
-                            </button>
-                            <!-- Rhythm Selector Popover for Normal Beat -->
-                            <transition name="dropdown">
-                              <div 
-                                v-if="activeRhythmSelector && activeRhythmSelector.measureIndex === measure.originalMeasureIndex && activeRhythmSelector.beatIndex === state.index"
-                                class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-[320px] max-h-[420px] overflow-y-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-3 z-50 flex flex-col gap-2 rhythm-popover-container text-white text-left font-sans cursor-default scrollbar-thin scrollbar-thumb-slate-700"
-                                @click.stop
-                              >
-                                <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none">Figuras Básicas</div>
-                                <div class="grid grid-cols-2 gap-1.5">
-                                  <button 
-                                    v-for="fig in getAvailableRhythmFigures(measure)" 
-                                    :key="fig.value"
-                                    @click.stop="selectRhythmFigure(fig.value)"
-                                    class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
-                                    :class="[
-                                      getEffectiveRhythm(measure, state.beat, state.index) === fig.value 
-                                        ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
-                                        : 'text-slate-200 bg-slate-850/50 border border-transparent',
-                                      !isFigureValid(fig.value, measure, state.index)
-                                        ? 'opacity-40 cursor-not-allowed'
-                                        : ''
-                                    ]"
-                                  >
-                                      <div class="flex items-center gap-1.5">
-                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value, getMeasureTimeSignature(measure).unit === 8)"></svg>
-                                        <span v-if="fig.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black shrink-0">PRO</span>
-                                      </div>
-                                      <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
-                                    </button>
-                                  </div>
-                                  
-                                  <template v-if="['eighth', 'sixteenth', 'triplet'].includes(getEffectiveRhythm(measure, state.beat, state.index))">
-                                    <div class="border-t border-slate-800/80 my-1"></div>
-                                    
-                                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
-                                      <span>♬</span> <span>{{ getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? (getMeasureTimeSignature(measure).unit === 8 ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Corcheas (2 Notas)') : 'Familia de Semicorcheas') }}</span>
-                                      <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black uppercase tracking-wide">PRO</span>
-                                    </div>
-                                    <div class="flex flex-col gap-1">
-                                      <button 
-                                        v-for="(pat, key) in (getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? TRIPLET_PATTERNS : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS))" 
-                                        :key="key"
-                                        @click.stop="selectSixteenthPatternWrapper(measure, state.beat, key)"
-                                        class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
-                                        :class="isPatternActive(measure, state.beat, state.index, key)
-                                          ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
-                                          : 'text-slate-200 bg-slate-850/30 border border-transparent'"
-                                      >
-                                        <div class="flex-1 min-w-0 flex flex-col justify-center">
-                                          <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key, getMeasureTimeSignature(measure).unit === 8)"></svg>
-                                          <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ getPatternLabel(key, pat, getMeasureTimeSignature(measure).unit === 8) }}</span>
-                                        </div>
-                                        <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
-                                      </button>
-                                    </div>
-                                  
-                                  <div class="border-t border-slate-800/80 my-1.5"></div>
-                                  <div class="bg-slate-850 p-2.5 rounded-xl border border-slate-800 flex flex-col gap-1.5">
-                                    <div class="flex items-center justify-between">
-                                      <span class="text-[10px] font-black text-violet-400 uppercase tracking-wider">Vista de figuras separadas</span>
-                                      <button 
-                                        @click.stop="state.beat.forceSeparated = !state.beat.forceSeparated"
-                                        class="px-2 py-1 rounded text-[10px] font-black transition-all"
-                                        :class="state.beat.forceSeparated ? 'bg-[#8EE000]/20 text-[#8EE000] border border-[#8EE000]/40' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'"
-                                      >
-                                        {{ state.beat.forceSeparated ? 'ACTIVADA' : 'DESACTIVADA' }}
-                                      </button>
-                                    </div>
-                                    <p class="text-[9px] text-slate-400 leading-normal font-medium select-none">
-                                      Usa esta vista para separar las figuras en tarjetas individuales y poder elegir acordes asociados a cada figura que se está mostrando de forma independiente.
-                                    </p>
-                                  </div>
-                                </template>
-                              </div>
-                            </transition>
-                          </div>
-                          <!-- Subdivided Beat -->
-                          <div 
-                            v-else
-                            class="w-full h-full flex flex-col border border-gray-200 rounded-lg overflow-visible bg-white relative shadow-sm group/sub-beat"
-                          >
-                            <!-- SVG Rhythmic Beam Display with Click to Edit Rhythm -->
-                            <div 
-                              @click.stop="openRhythmSelector(measure.originalMeasureIndex, state.index)"
-                              class="h-6 w-full bg-gray-50/70 hover:bg-[#8EE000]/10 border-b border-gray-100 flex items-center justify-center select-none relative group/rhythm transition-colors outline-none cursor-pointer shrink-0"
-                              title="Cambiar figura rítmica del pulso"
-                            >
-                              <svg 
-                                class="h-4 text-[#6CA600] transition-all duration-200" 
-                                :class="measure.showSubdivisions !== false ? 'w-full' : (getVisibleSlotsForRender(measure, state.beat, state.index).length === 1 ? 'w-16 mx-auto' : 'w-full')"
-                                :style="{ opacity: (measure.showSubdivisions === false && state.index > 0) ? 0.65 : 1 }"
-                                viewBox="0 0 100 24" 
-                                preserveAspectRatio="none"
-                              >
-                                <g v-html="getDynamicRhythmSVG(getEffectiveRhythm(measure, state.beat, state.index), getBeatPatternKey(state.beat, getEffectiveRhythm(measure, state.beat, state.index)), getVisibleSlotsForRender(measure, state.beat, state.index), getMeasureTimeSignature(measure).unit === 8)"></g>
-                              </svg>
-                              <span class="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-[#6CA600]/75 group-hover/rhythm:text-[#6CA600] group-hover/rhythm:scale-110 transition-all font-bold">✏️</span>
-                              
-                              <!-- Rhythm Selector Popover for Subdivided Beat -->
-                              <transition name="dropdown">
-                                <div 
-                                  v-if="activeRhythmSelector && activeRhythmSelector.measureIndex === measure.originalMeasureIndex && activeRhythmSelector.beatIndex === state.index"
-                                  class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-[320px] max-h-[420px] overflow-y-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-3 z-50 flex flex-col gap-2 rhythm-popover-container text-white text-left font-sans cursor-default scrollbar-thin scrollbar-thumb-slate-700"
-                                  @click.stop
-                                >
-                                  <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none">Figuras Básicas</div>
-                                  <div class="grid grid-cols-2 gap-1.5">
-                                    <button 
-                                      v-for="fig in getAvailableRhythmFigures(measure)" 
-                                      :key="fig.value"
-                                      @click.stop="selectRhythmFigure(fig.value)"
-                                      class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
-                                      :class="[
-                                        getEffectiveRhythm(measure, state.beat, state.index) === fig.value 
-                                          ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
-                                          : 'text-slate-200 bg-slate-850/50 border border-transparent',
-                                        !isFigureValid(fig.value, measure, state.index)
-                                          ? 'opacity-40 cursor-not-allowed'
-                                          : ''
-                                      ]"
-                                    >
-                                      <div class="flex items-center gap-1.5">
-                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value, getMeasureTimeSignature(measure).unit === 8)"></svg>
-                                        <span v-if="fig.isPro && currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 py-0.2 rounded font-black shrink-0">PRO</span>
-                                      </div>
-                                      <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
-                                    </button>
-                                  </div>
-                                  
-                                  <template v-if="['eighth', 'sixteenth', 'triplet'].includes(getEffectiveRhythm(measure, state.beat, state.index))">
-                                    <div class="border-t border-slate-800/80 my-1"></div>
-                                    
-                                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
-                                      <span>♬</span> <span>{{ getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? (getMeasureTimeSignature(measure).unit === 8 ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Corcheas (2 Notas)') : 'Familia de Semicorcheas') }}</span>
-                                      <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1.5 py-0.2 rounded font-black uppercase tracking-wide">PRO</span>
-                                    </div>
-                                    <div class="flex flex-col gap-1">
-                                      <button 
-                                        v-for="(pat, key) in (getEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? TRIPLET_PATTERNS : (getEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS))" 
-                                        :key="key"
-                                        @click.stop="selectSixteenthPatternWrapper(measure, state.beat, key)"
-                                        class="w-full flex items-center justify-between px-3 py-2 rounded-xl border transition-all text-left"
-                                        :class="isPatternActive(measure, state.beat, state.index, key)
-                                          ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
-                                          : 'text-slate-200 bg-slate-850/30 border border-transparent'"
-                                      >
-                                        <div class="flex-1 min-w-0 flex flex-col justify-center">
-                                          <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key, getMeasureTimeSignature(measure).unit === 8)"></svg>
-                                          <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ getPatternLabel(key, pat, getMeasureTimeSignature(measure).unit === 8) }}</span>
-                                        </div>
-                                        <span v-if="isPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
-                                      </button>
-                                    </div>
-                                    
-                                    <div class="border-t border-slate-800/80 my-1.5"></div>
-                                    <div class="bg-slate-850 p-2.5 rounded-xl border border-slate-800 flex flex-col gap-1.5">
-                                      <div class="flex items-center justify-between">
-                                        <span class="text-[10px] font-black text-violet-400 uppercase tracking-wider">Vista de figuras separadas</span>
-                                        <button 
-                                          @click.stop="state.beat.forceSeparated = !state.beat.forceSeparated"
-                                          class="px-2 py-1 rounded text-[10px] font-black transition-all"
-                                          :class="state.beat.forceSeparated ? 'bg-[#8EE000]/20 text-[#8EE000] border border-[#8EE000]/40' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'"
-                                        >
-                                          {{ state.beat.forceSeparated ? 'ACTIVADA' : 'DESACTIVADA' }}
-                                        </button>
-                                      </div>
-                                      <p class="text-[9px] text-slate-400 leading-normal font-medium select-none">
-                                        Usa esta vista para separar las figuras en tarjetas individuales y poder elegir acordes asociados a cada figura que se está mostrando de forma independiente.
-                                      </p>
-                                    </div>
-                                  </template>
-                                </div>
-                              </transition>
-                            </div>
-                            <!-- Subdivided Slots -->
-                            <div :class="['flex-1 flex', measure.showSubdivisions !== false ? 'divide-x divide-gray-200' : 'divide-x divide-transparent group-hover/sub-beat:divide-gray-200/40 transition-colors duration-200']">
-                              <button
-                                v-for="sub in getVisibleSlotsForRender(measure, state.beat, state.index)"
-                                :key="sub.originalIndex"
-                                :disabled="getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0"
-                                @click.stop="clickBeat(measure.originalMeasureIndex, state.index, measure.displayedMeasureIndex, sub.originalIndex)"
-                                class="h-full flex flex-col items-center justify-center relative transition-colors group/subslot"
-                                :style="{ flexGrow: sub.flexGrow }"
-                                :class="[
-                                  getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0 
-                                    ? (measure.showSubdivisions !== false ? 'bg-gray-105 cursor-not-allowed text-gray-450' : 'bg-transparent cursor-not-allowed text-gray-400') 
-                                    : 'active:bg-[#8EE000]/10 hover:bg-[#8EE000]/5 text-gray-800'
-                                ]"
-                              >
-                                <!-- Botón para alternar ligado con la siguiente figura -->
-                                <button 
-                                  v-if="getEffectiveRhythm(measure, state.beat, state.index) !== 'offbeat' || sub.originalIndex !== 0"
-                                  @click.stop="toggleTieBySlotId(`${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`)"
-                                  class="absolute -top-1 -right-1 text-[8px] px-1 py-0.2 rounded-full transition-all font-bold z-20 shadow-sm flex items-center justify-center bg-gray-100 hover:bg-violet-100 text-gray-400 hover:text-violet-750 opacity-0 group-hover/subslot:opacity-100"
-                                  :class="{ 'bg-violet-600 text-white !opacity-100 shadow-violet-200': isSlotTiedToNext(`${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`) }"
-                                  title="Ligar a la siguiente figura"
-                                >
-                                  🔗
-                                </button>
-
-                                <!-- Arco de ligado curvo (TIE) a la siguiente figura -->
-                                <div v-if="isSlotTiedToNext(`${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`)" class="absolute -bottom-2 right-0 translate-x-1/2 z-30 pointer-events-none flex items-center justify-center">
-                                  <svg class="w-8 h-3.5 text-violet-600 drop-shadow-sm" viewBox="0 0 32 14">
-                                    <path d="M 2 2 Q 16 14 30 2" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-                                  </svg>
-                                </div>
-
-                                <!-- Mini override rhythm indicator over chord -->
-                                <span 
-                                  v-if="hasBeatRhythmOverride(measure, state.beat, state.index) && !sub.isSilence"
-                                  class="text-[9px] font-black text-violet-600 leading-none scale-75 select-none absolute top-1 pointer-events-none"
-                                  title="Anulación de ritmo en este acorde"
-                                >
-                                  {{ getSubdivisionIcon(state.beat.harmonicRhythm) }}
-                                </span>
-                                <!-- Silence indicator for offbeat (contratiempo) or empty subdivisions -->
-                                <div 
-                                  v-if="getEffectiveRhythm(measure, state.beat, state.index) === 'offbeat' && sub.originalIndex === 0" 
-                                  class="flex flex-col items-center justify-center pt-1"
-                                >
-                                  <span class="text-[9px] font-bold text-gray-400 select-none">𝄾</span>
-                                  <span class="text-[7px] font-black text-gray-300 uppercase tracking-tight scale-90 mt-0.5">Silencio</span>
-                                </div>
-                                <span 
-                                  v-else
-                                  :class="[
-                                    getSubdivisionFontSizeClass(getEffectiveRhythm(measure, state.beat, state.index) === 'sixteenth' ? (4 / sub.flexGrow) : getBeatSlots(measure, state.beat, state.index).length),
-                                    'leading-none font-bold text-center mt-2 flex items-center justify-center gap-0.5'
-                                  ]"
-                                >
-                                  <span v-if="!sub.root">𝄾</span>
-                                  <span v-else 
-                                    :id="'chord-card-' + sub.id"
-                                    @mouseenter="hoveredChordId = sub.id"
-                                    @mouseleave="hoveredChordId = null"
-                                    class="flex flex-col items-center justify-center leading-none px-1 py-0.5 rounded border border-transparent transition-all"
-                                    :class="{ 'border-violet-500 bg-violet-50 text-violet-750 font-black shadow-sm ring-1 ring-violet-100': currentPlan === 'PRO' && (hoveredChordId === sub.id || (hoveredAnchor && isChordIdRelatedToBeat(hoveredAnchor.chordId, sub.id, measure))) }"
-                                  >
-                                    <span>{{ splitChordDisplay(sub, measure.originalMeasureIndex).main }}</span>
-                                    <span v-if="splitChordDisplay(sub, measure.originalMeasureIndex).bass" class="text-[9px] text-gray-500 font-semibold mt-0.5">
-                                      {{ splitChordDisplay(sub, measure.originalMeasureIndex).bass }}
-                                    </span>
-                                  </span>
-                                  <span 
-                                    v-if="sub.isSilence && sub.root" 
-                                    class="text-amber-500 text-[11px] animate-pulse cursor-help shrink-0" 
-                                    title="Advertencia: Acorde colocado en un silencio rítmico"
-                                  >⚠️</span>
-                                </span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </template>
-                    </div>
-                    <!-- Bulb icon for suggestions (💡 Ampolleta de ideas) -->
-                    <button 
-                      v-if="!isOrderingModeActive && system.measures.length === 4 && mIdx === 3 && getSuggestionsForSystemLocal(system).length > 0"
-                      @click.stop="openSystemSuggestions(system)"
-                      class="absolute -right-5 top-1/2 -translate-y-1/2 bg-amber-50 border border-amber-200 rounded-full w-9 h-9 flex items-center justify-center text-lg z-30 shadow-lg shadow-amber-100 hover:bg-amber-100 active:scale-95 transition-all animate-pulse"
-                      title="💡 Sugerencias disponibles para este sistema"
-                    >💡</button>
-                    <!-- System Break Toggle Button (Ordering Mode only, PRO only) -->
-                    <button
-                      v-if="isOrderingModeActive"
-                      @click.stop="toggleSystemBreak(measure.originalMeasureIndex)"
-                      class="absolute -right-5 top-1/2 -translate-y-1/2 rounded-full w-9 h-9 flex items-center justify-center text-sm z-30 shadow-lg transition-all border font-bold"
-                      :class="measure.systemBreak 
-                        ? 'bg-violet-600 border-violet-700 text-white hover:bg-violet-750' 
-                        : 'bg-white border-gray-200 text-gray-400 hover:text-gray-650 hover:border-gray-300'"
-                      title="Insertar/Eliminar Salto de Sistema después de este compás"
-                    >
-                      ↵
-                    </button>
-                    <div 
-                      v-if="measure.showObligado && currentPlan === 'PRO' && !getMeasureCapacityExceededMessage(measure)" 
-                      class="absolute bottom-1 right-2 z-20 flex items-center gap-1 select-none"
-                    >
-                      <span 
-                        v-if="getMeasureRemainingBeats(measure) === 0" 
-                        class="text-[9px] bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-md font-bold flex items-center gap-0.5"
-                        title="Compás completo"
-                      >
-                        ✔ Completo
-                      </span>
-                      <span 
-                        v-else
-                        class="text-[9px] bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-md font-bold flex items-center gap-1 cursor-pointer hover:bg-amber-100 transition-colors animate-pulse pointer-events-auto"
-                        @click.stop="autoCompleteMeasure(measure)"
-                        title="Haga clic para completar automáticamente con silencios"
-                      >
-                        ⚠️ Falta {{ getMeasureRemainingBeats(measure) }} {{ getMeasureTimeSignature(measure).unit === 8 ? 'corchea' : 'negra' }}{{ getMeasureRemainingBeats(measure) !== 1 ? 's' : '' }}
-                      </span>
-                    </div>
-                    <!-- Lyrics indicator icon (visible when showLyricsGlobal is false and measure has lyrics) -->
-                    <div 
-                      v-if="!showLyricsGlobal && measure.lyrics?.rawText && measure.lyrics.rawText.trim() !== ''"
-                      @click.stop="activateLyricsForMeasure(measure.originalMeasureIndex)"
-                      class="absolute top-1.5 right-2 text-[10px] bg-violet-100 hover:bg-violet-200 text-violet-750 w-5 h-5 rounded-full flex items-center justify-center cursor-pointer shadow-sm border border-violet-200/50 z-25 transition-all transform hover:scale-105"
-                      :class="{ 'mr-10': measure.displayedMeasureIndex === 0 }"
-                      title="Ver letra / anotaciones"
-                    >
-                      💬
-                    </div>
-                    
-                    <!-- Capacity exceeded warning recuadro -->
-                    <div 
-                      v-if="getMeasureCapacityExceededMessage(measure)"
-                      class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-[95%] bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-black px-2 py-1.5 rounded-md z-45 text-center shadow-lg shadow-rose-100/30 flex items-center justify-center gap-1 animate-scale-up"
-                    >
-                      <span>⚠️</span>
-                      <span class="uppercase font-sans font-black tracking-wide">{{ getMeasureCapacityExceededMessage(measure) }}</span>
-                    </div>
-                  </div>
-                </template>
-                
-                <!-- ADD MEASURE BUTTON (Hide in Expanded Mode) -->
-                <button 
-                  v-if="viewMode === 'compact' && sIdx === systems.length - 1 && (currentPlan === 'PRO' || measures.length < 20) && !shouldShowLyricsRow(system)"
-                  @click="addMeasure"
-                  class="h-28 border-2 border-dashed border-gray-300 bg-white/50 rounded-lg text-gray-400 flex items-center justify-center hover:bg-[#8EE000]/5 hover:border-[#8EE000] hover:text-[#6CA600] transition-all group"
-                  :style="getAddButtonFlexStyle()"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
-                </button>
-                <!-- Promocional de compases cuando se llega al límite en versión FREE -->
-                <button 
-                  v-if="viewMode === 'compact' && sIdx === systems.length - 1 && currentPlan === 'FREE' && measures.length >= 20 && !shouldShowLyricsRow(system)"
-                  @click="upgradeReason = 'limit'; isUpgradeModalOpen = true"
-                  class="h-28 border-2 border-dashed border-violet-300 bg-violet-50/20 rounded-lg text-violet-500 flex flex-col gap-1 items-center justify-center hover:bg-violet-50/50 hover:border-violet-400 hover:text-violet-600 transition-all group px-4 text-center cursor-pointer"
-                  :style="getAddButtonFlexStyle()"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 group-hover:scale-110 transition-transform mb-0.5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                  <span class="text-xs font-black">20 compases max en FREE</span>
-                  <span class="text-[10px] text-violet-600 font-bold">🚀 Pasar a PRO para ilimitados</span>
-                </button>
-              </div>
-              <!-- LYRICS ROW -->
-              <div 
-                v-if="shouldShowLyricsRow(system)"
-                class="flex flex-row w-full items-stretch gap-x-3 mt-1 select-none transition-all duration-300"
-                :class="{
-                  'z-30': activeLyricsRhythmSelector && system.measures.some(m => m.originalMeasureIndex === activeLyricsRhythmSelector.measureIndex),
-                  'z-20': !activeLyricsRhythmSelector || !system.measures.some(m => m.originalMeasureIndex === activeLyricsRhythmSelector.measureIndex)
-                }"
-              >
-                <template v-for="(measure, mIdx) in system.measures" :key="'lyrics-' + measure.id">
-                  <!-- Spacer for key change -->
-                  <div 
-                    v-if="currentPlan === 'PRO' && measure.keyChange"
-                    class="flex-shrink-0 min-w-[96px] md:min-w-[120px] max-w-[140px]"
-                  ></div>
-                  
-                  <!-- Spacer for metric change -->
-                  <div 
-                    v-if="currentPlan === 'PRO' && measure.timeSignature && measure.displayedMeasureIndex > 0 && (measure.timeSignature.beats !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).beats || measure.timeSignature.unit !== getMeasureTimeSignature(measure.originalMeasureIndex - 1).unit)"
-                    class="flex-shrink-0 min-w-[64px] md:min-w-[72px] max-w-[90px]"
-                  ></div>
-                  
-                  <!-- Lyric block column -->
-                  <div 
-                    :style="getMeasureFlexStyle(measure)"
-                    class="relative transition-all duration-200 flex flex-col justify-stretch group"
-                    :class="{ 'z-40': activeLyricsRhythmSelector && activeLyricsRhythmSelector.measureIndex === measure.originalMeasureIndex }"
-                    @mouseenter="hoveredMeasureIndex = measure.originalMeasureIndex"
-                    @mouseleave="hoveredMeasureIndex = null"
-                  >
-                    <!-- Mode Selector (Libre vs Sincro vs Rítmico) -->
-                    <div 
-                      v-if="hoveredMeasureIndex === measure.originalMeasureIndex && (showLyricsGlobal || (measure.lyrics && measure.lyrics.rawText && measure.lyrics.rawText.trim() !== ''))"
-                      class="absolute -top-6 right-2 flex bg-white/95 backdrop-blur-sm shadow-md rounded-full p-0.5 border border-gray-200 z-30 transition-all text-[10px] font-bold"
-                    >
-                      <button 
-                        @click="measure.lyrics.mode = 'free'"
-                        :class="(measure.lyrics?.mode !== 'synced' && measure.lyrics?.mode !== 'rhythm') ? 'bg-[#8EE000] text-black px-2 py-0.5 rounded-full shadow-sm' : 'text-gray-500 hover:text-gray-700 px-2 py-0.5'"
-                      >
-                        Libre
-                      </button>
-                      <button 
-                        @click="currentPlan === 'PRO' ? (measure.lyrics.mode = 'synced') : (upgradeReason = 'synced_lyrics', isUpgradeModalOpen = true)"
-                        :class="measure.lyrics?.mode === 'synced' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-2 py-0.5 rounded-full shadow-sm' : 'text-gray-500 hover:text-gray-700 px-2 py-0.5 flex items-center gap-0.5'"
-                      >
-                        Sincro
-                        <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 rounded-full font-black font-sans">PRO</span>
-                      </button>
-                      <button 
-                        @click="currentPlan === 'PRO' ? (measure.lyrics.mode = 'rhythm') : (upgradeReason = 'rhythm_lyrics', isUpgradeModalOpen = true)"
-                        :class="measure.lyrics?.mode === 'rhythm' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-2 py-0.5 rounded-full shadow-sm' : 'text-gray-500 hover:text-gray-700 px-2 py-0.5 flex items-center gap-0.5'"
-                      >
-                        Rítmico
-                        <span v-if="currentPlan !== 'PRO'" class="text-[7px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-1 rounded-full font-black font-sans">PRO</span>
-                      </button>
-                    </div>
-                    <!-- Tooltip and floating Assign Button for pending selection -->
-                    <div 
-                      v-if="pendingSelection && pendingSelection.measureIndex === measure.originalMeasureIndex"
-                      class="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-900 text-white shadow-xl rounded-xl px-2.5 py-1.5 flex items-center gap-2 text-xs font-bold border border-slate-800 z-45 animate-scale-up whitespace-nowrap cursor-default animate-bounce"
-                    >
-                      <button 
-                        @click.stop="assignPendingSelection(measure)"
-                        class="bg-violet-600 hover:bg-violet-700 text-white px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all text-xs font-black shadow-md shadow-violet-900/20 active:scale-95 animate-scale-up"
-                      >
-                        <span>➕ Asignar</span>
-                        <span v-if="getNextUnusedChord(measure)" class="bg-violet-850 text-[9px] px-1.5 py-0.5 rounded font-black text-violet-100 uppercase tracking-wide">
-                          {{ formatDisplayChord(getNextUnusedChord(measure)) }}
-                        </span>
-                        <span v-else class="text-[9px] text-violet-300 font-normal italic">
-                          (Sin acordes libres)
-                        </span>
-                      </button>
-                      
-                      <!-- Cancel button -->
-                      <button 
-                        @click.stop="pendingSelection = null" 
-                        class="text-slate-400 hover:text-white bg-slate-850 hover:bg-slate-800 rounded-full w-5 h-5 flex items-center justify-center text-xs transition-colors"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    <!-- Edit / View Area (if visible) -->
-                    <div 
-                      v-if="showLyricsGlobal || (measure.lyrics && measure.lyrics.rawText && measure.lyrics.rawText.trim() !== '') || measure.originalMeasureIndex === activeEditingLyricsIndex"
-                      class="w-full h-full min-h-[38px] flex flex-col justify-stretch bg-white border-y border-gray-300 hover:border-y-gray-400 focus-within:border-y-violet-500 focus-within:ring-2 focus-within:ring-violet-100 transition-all overflow-visible"
-                      :class="{
-                        'border-l border-gray-300 rounded-l-2xl hover:border-l-gray-400 focus-within:border-l-violet-500': isFirstOfGroup(system.measures, mIdx),
-                        'border-r border-gray-300 rounded-r-2xl hover:border-r-gray-400 focus-within:border-r-violet-500': isLastOfGroup(system.measures, mIdx),
-                        'border-r border-gray-250': !isLastOfGroup(system.measures, mIdx)
-                      }"
-                    >
-                      <!-- MODE: FREE (standard textarea) -->
-                      <div 
-                        v-if="measure.lyrics?.mode !== 'synced' && measure.lyrics?.mode !== 'rhythm'"
-                        class="grid w-full h-full items-stretch"
-                      >
-                        <!-- Auto-grow hidden span -->
-                        <span class="lyric-span select-none invisible col-start-1 row-start-1 whitespace-pre-wrap break-words leading-relaxed text-gray-800 font-sans text-[13px]" style="grid-area: 1 / 1 / 2 / 2; letter-spacing: 0.02em; padding: 8px 12px;">{{ measure.lyrics?.rawText || ' ' }}</span>
-                        <!-- Actual Textarea -->
-                        <textarea 
-                          :id="'lyrics-textarea-' + measure.originalMeasureIndex"
-                          :name="'lyrics-textarea-' + measure.originalMeasureIndex"
-                          v-model="measure.lyrics.rawText"
-                          placeholder="Escribe..."
-                          class="lyric-textarea col-start-1 row-start-1 w-full h-full resize-none bg-transparent outline-none leading-relaxed text-gray-800 font-sans border-0 shadow-none focus:ring-0 focus:outline-none text-[13px]"
-                          style="grid-area: 1 / 1 / 2 / 2; letter-spacing: 0.02em; padding: 8px 12px;"
-                          @keydown="handleLyricsKeydown($event, measure.originalMeasureIndex)"
-                          @focus="activeEditingLyricsIndex = measure.originalMeasureIndex"
-                          @blur="activeEditingLyricsIndex = null"
-                        ></textarea>
-                      </div>
-                      <!-- MODE: SYNCED (interactive renderer matching beats row grid layout) -->
-                      <div 
-                        v-else-if="measure.lyrics?.mode === 'synced'"
-                        class="flex-1 flex flex-row items-stretch select-text cursor-text"
-                        style="padding: 0 16px;" 
-                      >
-                        <template v-for="state in getMergedBeats(measure)" :key="state.index">
-                          <div 
-                            v-if="!state.isMerged"
-                            class="flex h-full z-10 relative m-0.5 pointer-events-none"
-                            :style="{ 
-                              flex: currentPlan === 'PRO' ? `${state.durationSlots} ${state.durationSlots} 0%` : getBeatFlexGrow(measure, state.beat, state.index),
-                              minWidth: `${getBeatMinWidth(measure, state.beat, state)}px`
-                            }"
-                            :class="{
-                              'ml-2.5': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0,
-                              'ml-2': currentPlan === 'PRO' && measure.showSubdivisions === false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0
-                            }"
-                          >
-                            <!-- Always render beat slot (never subdivided in lyrics row) -->
-                            <div 
-                              class="w-full h-full flex flex-col justify-center relative select-text pointer-events-none"
-                              @mouseup="handleSlotLyricsMouseUp($event, measure, state.beat.id)"
-                              @dblclick="handleSlotLyricsDblClick($event, measure)"
-                            >
-                              <div 
-                                v-for="layout in [getSlotLayout(measure, state.beat.id)]"
-                                :key="state.beat.id"
-                                class="leading-relaxed text-gray-800 font-sans text-[13px] py-2 whitespace-nowrap overflow-visible select-text w-full"
-                                :class="layout.hasLyrics ? 'pointer-events-auto' : 'pointer-events-none'"
-                              >
-                                <template v-if="!layout.hasLyrics">
-                                  <span class="opacity-0 pointer-events-none select-none">.</span>
-                                </template>
-                                <template v-else-if="layout.hasAssociated">
-                                  <div class="flex justify-center w-full relative">
-                                    <div class="relative">
-                                      <!-- Pre text aligned to the left of the syllable and flows left -->
-                                      <div class="absolute right-full top-0 whitespace-nowrap pr-0.5 select-text">
-                                        <span
-                                          v-for="segment in layout.pre"
-                                          :key="segment.start + '-' + segment.end"
-                                          class="transition-all duration-150 inline-block rounded px-0.5 animate-scale-up"
-                                          :class="{
-                                            'hover:bg-gray-150 cursor-pointer': segment.type === 'normal',
-                                            'bg-amber-100 text-amber-900 font-bold border border-dashed border-amber-300 animate-pulse': segment.type === 'pending'
-                                          }"
-                                          @click.stop="handleSegmentClick(segment, measure)"
-                                        >{{ segment.text }}</span>
-                                      </div>
-                                      <!-- Centered syllable -->
-                                      <span
-                                        :id="'lyric-span-' + measure.originalMeasureIndex + '-' + layout.associated.start + '-' + layout.associated.end"
-                                        class="transition-all duration-150 inline-block rounded px-0.5 animate-scale-up"
-                                        :class="{
-                                          'bg-violet-50 text-violet-750 font-black border border-violet-200 underline decoration-violet-400 decoration-wavy underline-offset-4 cursor-pointer hover:bg-violet-100': true,
-                                          'bg-violet-100 ring-2 ring-violet-200': hoveredChordId === layout.associated.anchor.chordId || (hoveredAnchor && hoveredAnchor.chordId === layout.associated.anchor.chordId && hoveredAnchor.start === layout.associated.anchor.start)
-                                        }"
-                                        @mouseenter="hoveredAnchor = layout.associated.anchor"
-                                        @mouseleave="hoveredAnchor = null"
-                                        @click.stop="handleSegmentClick(layout.associated, measure)"
-                                      >{{ layout.associated.text }}</span>
-                                      <!-- Trailing text aligned to the right of the syllable and flows right -->
-                                      <div class="absolute left-full top-0 whitespace-nowrap pl-0.5 select-text">
-                                        <span
-                                          v-for="segment in layout.post"
-                                          :key="segment.start + '-' + segment.end"
-                                          class="transition-all duration-150 inline-block rounded px-0.5 animate-scale-up"
-                                          :class="{
-                                            'hover:bg-gray-150 cursor-pointer': segment.type === 'normal',
-                                            'bg-amber-100 text-amber-900 font-bold border border-dashed border-amber-300 animate-pulse': segment.type === 'pending'
-                                          }"
-                                          @click.stop="handleSegmentClick(segment, measure)"
-                                        >{{ segment.text }}</span>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </template>
-                                <template v-else>
-                                  <span
-                                    v-for="segment in layout.normalSegments"
-                                    :key="segment.start + '-' + segment.end"
-                                    class="transition-all duration-150 inline-block rounded px-0.5 animate-scale-up"
-                                    :class="{
-                                      'hover:bg-gray-150 cursor-pointer': segment.type === 'normal',
-                                      'bg-amber-100 text-amber-900 font-bold border border-dashed border-amber-300 animate-pulse': segment.type === 'pending'
-                                    }"
-                                    @click.stop="handleSegmentClick(segment, measure)"
-                                  >{{ segment.text }}</span>
-                                </template>
-                              </div>
-                            </div>
-                          </div>
-                        </template>
-                      </div>
-                      <!-- MODE: RHYTHM (aligned slots renderer + editor layout) -->
-                      <div 
-                        v-else-if="measure.lyrics?.mode === 'rhythm'"
-                        class="flex-1 flex flex-col items-stretch"
-                      >
-                        <!-- Lyrics Rhythm Grid (Physically between chords score and textarea/pills) -->
-                        <div 
-                          class="flex-1 flex flex-row items-stretch select-none border-b border-gray-100 bg-gray-50/10 py-1.5 relative"
-                          style="padding: 0 16px; min-h-[46px]" 
-                        >
-                          <!-- Lyrics Ties paths SVG overlay -->
-                          <svg 
-                            class="absolute pointer-events-none z-25 h-6 top-1.5"
-                            style="left: 16px; right: 16px; width: calc(100% - 32px);"
-                            viewBox="0 0 1000 24"
-                            preserveAspectRatio="none"
-                          >
-                            <path 
-                              v-for="(path, pIdx) in getMeasureLyricsTiesPaths(measure)" 
-                              :key="pIdx"
-                              :d="path.d"
-                              fill="none"
-                              stroke="#8b5cf6" 
-                              stroke-width="1.8"
-                              stroke-linecap="round"
-                              class="tie-arc transition-all duration-300"
-                            />
-                          </svg>
-                          <template v-for="state in getLyricsMergedBeats(measure)" :key="state.index">
-                            <div 
-                              v-if="!state.isMerged"
-                              class="flex flex-col h-full relative m-0.5"
-                              :style="{ 
-                                flex: `${state.durationSlots} ${state.durationSlots} 0%`,
-                                minWidth: `${getBeatMinWidth(measure, state.beat, state)}px`
-                              }"
-                              :class="[
-                                (activeLyricsRhythmSelector && activeLyricsRhythmSelector.measureIndex === measure.originalMeasureIndex && activeLyricsRhythmSelector.beatIndex === state.index) ? 'z-30' : 'z-10',
-                                {
-                                  'ml-2.5': currentPlan === 'PRO' && measure.showSubdivisions !== false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0,
-                                  'ml-2': currentPlan === 'PRO' && measure.showSubdivisions === false && getBeatGroupInfo(measure, state.index).isFirst && getBeatGroupInfo(measure, state.index).groupIndex > 0
-                                }
-                              ]"
-                            >
-                              <!-- Rhythmic Figure SVG beam at the top of the beat -->
-                              <div 
-                                @click.stop="openLyricsRhythmSelector(measure.originalMeasureIndex, state.index)"
-                                class="h-5 w-full bg-violet-50/30 hover:bg-[#8EE000]/10 border border-violet-100/50 rounded flex items-center justify-center relative group/rhythm transition-colors outline-none cursor-pointer shrink-0 mb-1"
-                                title="Cambiar figura rítmica de la letra"
-                              >
-                                <svg 
-                                  class="h-3.5 text-violet-600 transition-all duration-200" 
-                                  :class="getLyricsVisibleSlotsForRender(measure, state.beat, state.index).length === 1 ? 'w-16 mx-auto' : 'w-full'"
-                                  viewBox="0 0 100 24" 
-                                  preserveAspectRatio="none"
-                                >
-                                  <g v-html="getDynamicRhythmSVG(getLyricsEffectiveRhythm(measure, state.beat, state.index), getLyricsBeatPatternKey(state.beat, getLyricsEffectiveRhythm(measure, state.beat, state.index), measure, state.index), getLyricsVisibleSlotsForRender(measure, state.beat, state.index), getMeasureTimeSignature(measure).unit === 8)"></g>
-                                </svg>
-                                <span class="absolute right-1 top-1/2 -translate-y-1/2 text-[8px] text-violet-500/70 group-hover/rhythm:text-violet-750 font-bold">✏️</span>
-                              </div>
-                              
-                              <!-- Dedicated Lyrics Figure Selector Popover -->
-                              <transition name="dropdown">
-                                <div 
-                                  v-if="activeLyricsRhythmSelector && activeLyricsRhythmSelector.measureIndex === measure.originalMeasureIndex && activeLyricsRhythmSelector.beatIndex === state.index"
-                                  class="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-[320px] max-h-[420px] overflow-y-auto bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-3 z-50 flex flex-col gap-2 rhythm-popover-container text-white text-left font-sans cursor-default scrollbar-thin scrollbar-thumb-slate-700"
-                                  @click.stop
-                                >
-                                  <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none">Figuras para Letra</div>
-                                  
-                                  <!-- Mismo ritmo armónico toggle -->
-                                  <div class="bg-slate-850 p-2.5 rounded-xl border border-slate-800 flex flex-col gap-1.5 mb-1.5">
-                                    <div class="flex items-center justify-between">
-                                      <span class="text-[10px] font-black text-violet-400 uppercase tracking-wider select-none">Mismo ritmo armónico</span>
-                                      <button 
-                                        @click.stop="toggleSyncWithHarmonic(measure, state.beat, state.index)"
-                                        class="px-2 py-1 rounded text-[10px] font-black transition-all"
-                                        :class="state.beat.syncWithHarmonic ? 'bg-[#8EE000]/20 text-[#8EE000] border border-[#8EE000]/40' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'"
-                                      >
-                                        {{ state.beat.syncWithHarmonic ? 'ACTIVADA' : 'DESACTIVADA' }}
-                                      </button>
-                                    </div>
-                                    <p class="text-[9px] text-slate-400 leading-normal font-medium select-none">
-                                      Activa esta opción para que el ritmo de la letra siga exactamente al ritmo armónico del acorde.
-                                    </p>
-                                  </div>
-
-                                  <div class="grid grid-cols-2 gap-1.5">
-                                    <button 
-                                      v-for="fig in getAvailableRhythmFigures(measure)" 
-                                      :key="fig.value"
-                                      :disabled="state.beat.syncWithHarmonic || !isLyricsFigureValid(fig.value, measure, state.index)"
-                                      @click.stop="selectLyricsRhythmFigure(fig.value)"
-                                      class="flex flex-col justify-center px-3 py-1.5 rounded-xl border transition-all text-left"
-                                      :class="[
-                                        getLyricsEffectiveRhythm(measure, state.beat, state.index) === fig.value 
-                                          ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
-                                          : 'text-slate-200 bg-slate-850/50 border border-transparent',
-                                        (state.beat.syncWithHarmonic || !isLyricsFigureValid(fig.value, measure, state.index)) ? 'opacity-40 cursor-not-allowed' : ''
-                                      ]"
-                                    >
-                                      <div class="flex items-center gap-1.5">
-                                        <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(fig.value, getMeasureTimeSignature(measure).unit === 8)"></svg>
-                                      </div>
-                                      <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ fig.label }}</span>
-                                    </button>
-                                  </div>
-                                  
-                                  <template v-if="['eighth', 'sixteenth', 'triplet'].includes(getLyricsEffectiveRhythm(measure, state.beat, state.index))">
-                                    <div class="border-t border-slate-800/80 my-1"></div>
-                                    
-                                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider text-center select-none flex items-center justify-center gap-1.5">
-                                      <span>♬</span> <span>{{ getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'Familia de Tresillos' : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? (getMeasureTimeSignature(measure).unit === 8 ? 'Familia de Semicorcheas (2 Notas)' : 'Familia de Corcheas (2 Notas)') : 'Familia de Semicorcheas') }}</span>
-                                    </div>
-                                    <div class="flex flex-col gap-1">
-                                      <button 
-                                        v-for="(pat, key) in (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? TRIPLET_PATTERNS : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? EIGHTH_PATTERNS : SIXTEENTH_PATTERNS))" 
-                                        :key="key"
-                                        :disabled="state.beat.syncWithHarmonic || !isLyricsFigureValid(getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'eighth' : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'triplet' : 'sixteenth'), measure, state.index)"
-                                        @click.stop="selectLyricsSixteenthPatternWrapper(measure, state.beat, key)"
-                                        :class="[
-                                          isLyricsPatternActive(measure, state.beat, state.index, key)
-                                            ? 'bg-[#8EE000]/20 text-[#6CA600] border border-[#8EE000]/30' 
-                                            : 'text-slate-200 bg-slate-850/30 border border-transparent',
-                                          !isLyricsFigureValid(getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'eighth' ? 'eighth' : (getLyricsEffectiveRhythm(measure, state.beat, state.index) === 'triplet' ? 'triplet' : 'sixteenth'), measure, state.index) ? 'opacity-40 cursor-not-allowed' : ''
-                                        ]"
-                                      >
-                                        <div class="flex-1 min-w-0 flex flex-col justify-center">
-                                          <svg class="h-4 w-12 text-current shrink-0 select-none" viewBox="0 0 100 24" preserveAspectRatio="none" v-html="getRhythmIconSVG(key, getMeasureTimeSignature(measure).unit === 8)"></svg>
-                                          <span class="text-[9px] opacity-65 font-bold truncate block mt-0.5 select-none">{{ getPatternLabel(key, pat, getMeasureTimeSignature(measure).unit === 8) }}</span>
-                                        </div>
-                                        <span v-if="isLyricsPatternActive(measure, state.beat, state.index, key)" class="text-[#6CA600] text-xs font-black shrink-0 ml-2">✓</span>
-                                      </button>
-                                    </div>
-                                  </template>
-                                </div>
-                              </transition>
-                              <template v-if="getLyricsBeatSlots(measure, state.beat, state.index).length === 0">
-                                <div 
-                                  class="w-full flex-1 flex flex-col justify-center items-center relative transition-colors border border-transparent group/sub"
-                                  :class="[
-                                    isLyricsSlotSilence(measure, state.index, null) 
-                                      ? 'cursor-default opacity-40 bg-gray-100/50' 
-                                      : 'cursor-pointer hover:bg-violet-50/40 rounded-lg',
-                                    !isLyricsSlotSilence(measure, state.index, null) && isSlotSelectedForSyllable(measure, state.index, null) 
-                                      ? 'ring-2 ring-violet-500 bg-violet-50/20' 
-                                      : '',
-                                    !isLyricsSlotSilence(measure, state.index, null) && activeSyllableSelection && activeSyllableSelection.measureIndex === measure.originalMeasureIndex 
-                                      ? 'ring-1 ring-dashed ring-violet-400/50 bg-violet-500/[0.02] hover:bg-violet-500/10' 
-                                      : ''
-                                  ]"
-                                  @click.stop="!isLyricsSlotSilence(measure, state.index, null) && assignSyllableToSlot(measure, state.index, null)"
-                                >
-                                  <div class="text-[12px] font-sans py-1 text-center w-full flex items-center justify-center gap-1">
-                                    <span v-if="getSyllableAtSlot(measure, state.index, null)" class="font-bold text-gray-800 flex items-center gap-0.5">
-                                      {{ getSyllableAtSlot(measure, state.index, null).text }}
-                                      <span v-if="getSyllableAtSlot(measure, state.index, null).tied" class="text-violet-500 font-mono">~</span>
-                                    </span>
-                                    <span v-else-if="isLyricsSlotSilence(measure, state.index, null)" class="text-[10px] text-gray-400 font-mono">𝄾</span>
-                                    <span v-else class="text-[9px] text-gray-300 opacity-20">.</span>
-                                    
-                                    <!-- Tie toggle button (Absolutely positioned on top-right, visible on hover or when tied) -->
-                                    <button 
-                                      v-if="!isLyricsSlotSilence(measure, state.index, null) && getSyllableAtSlot(measure, state.index, null) && getSyllableAtSlot(measure, state.index, null).isRoot"
-                                      @click.stop="toggleLyricsTieSlot(`lyrics_${measure.originalMeasureIndex}_${state.index}`)"
-                                      class="absolute top-0.5 right-0.5 text-[8px] w-3 h-3 flex items-center justify-center rounded bg-gray-100 hover:bg-violet-200 text-gray-400 hover:text-violet-750 transition-all font-bold opacity-0 group-hover/sub:opacity-100 z-10"
-                                      :class="{ 'bg-violet-100 text-violet-750 !opacity-100 border border-violet-200': isLyricsNextSlotTied(`lyrics_${measure.originalMeasureIndex}_${state.index}`) }"
-                                      title="Ligar a la siguiente figura"
-                                    >
-                                      ~
-                                    </button>
-                                  </div>
-                                </div>
-                              </template>
-                              <!-- Subdivided beat slots -->
-                              <template v-else>
-                                <div class="flex-1 flex divide-x divide-gray-150 bg-gray-50/20 rounded-lg overflow-hidden border border-gray-100">
-                                  <div 
-                                    v-for="sub in getLyricsVisibleSlotsForRender(measure, state.beat, state.index)"
-                                    :key="sub.originalIndex"
-                                    :style="{ flexGrow: sub.flexGrow }"
-                                    class="h-full flex flex-col items-center justify-center relative transition-colors group/sub"
-                                    :class="[
-                                      isLyricsSlotSilence(measure, state.index, sub.originalIndex) 
-                                        ? 'cursor-default opacity-40 bg-gray-100/30' 
-                                        : 'cursor-pointer hover:bg-violet-50/40',
-                                      !isLyricsSlotSilence(measure, state.index, sub.originalIndex) && isSlotSelectedForSyllable(measure, state.index, sub.originalIndex) 
-                                        ? 'ring-2 ring-violet-500 bg-violet-50/20' 
-                                        : '',
-                                      !isLyricsSlotSilence(measure, state.index, sub.originalIndex) && activeSyllableSelection && activeSyllableSelection.measureIndex === measure.originalMeasureIndex 
-                                        ? 'ring-1 ring-dashed ring-violet-400/50 bg-violet-500/[0.02] hover:bg-violet-500/10' 
-                                        : ''
-                                    ]"
-                                    @click.stop="!isLyricsSlotSilence(measure, state.index, sub.originalIndex) && assignSyllableToSlot(measure, state.index, sub.originalIndex)"
-                                  >
-                                    <div class="text-[11px] font-sans py-1 text-center w-full flex items-center justify-center gap-1">
-                                      <span v-if="getSyllableAtSlot(measure, state.index, sub.originalIndex)" class="font-bold text-gray-800 flex items-center gap-0.5">
-                                        {{ getSyllableAtSlot(measure, state.index, sub.originalIndex).text }}
-                                        <span v-if="getSyllableAtSlot(measure, state.index, sub.originalIndex).tied" class="text-violet-500 font-mono">~</span>
-                                      </span>
-                                      <span v-else-if="isLyricsSlotSilence(measure, state.index, sub.originalIndex)" class="text-[9px] text-gray-400 font-mono">𝄾</span>
-                                      <span v-else class="text-[9px] text-gray-300 opacity-20">.</span>
-                                      
-                                      <!-- Tie toggle button (Absolutely positioned on top-right, visible on hover or when tied) -->
-                                      <button 
-                                        v-if="!isLyricsSlotSilence(measure, state.index, sub.originalIndex) && getSyllableAtSlot(measure, state.index, sub.originalIndex) && getSyllableAtSlot(measure, state.index, sub.originalIndex).isRoot"
-                                        @click.stop="toggleLyricsTieSlot(`lyrics_${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`)"
-                                        class="absolute top-0.5 right-0.5 text-[8px] w-3 h-3 flex items-center justify-center rounded bg-gray-100 hover:bg-violet-200 text-gray-400 hover:text-violet-750 transition-all font-bold opacity-0 group-hover/sub:opacity-100 z-10"
-                                        :class="{ 'bg-violet-100 text-violet-750 !opacity-100 border border-violet-200': isLyricsNextSlotTied(`lyrics_${measure.originalMeasureIndex}_${state.index}_${sub.originalIndex}`) }"
-                                        title="Ligar a la siguiente figura"
-                                      >
-                                        ~
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              </template>
-                            </div>
-                          </template>
-                        </div>
-                        <!-- Editable text area shown when editing -->
-                        <div 
-                          v-if="showLyricsGlobal || measure.originalMeasureIndex === activeEditingLyricsIndex"
-                          class="grid w-full min-h-[48px] border-b border-gray-200"
-                        >
-                          <!-- Auto-grow hidden span -->
-                          <span class="lyric-span select-none invisible col-start-1 row-start-1 whitespace-pre-wrap break-words leading-relaxed text-gray-800 font-sans text-[13px]" style="grid-area: 1 / 1 / 2 / 2; letter-spacing: 0.02em; padding: 8px 12px;">{{ measure.lyrics?.rawText || ' ' }}</span>
-                          <!-- Textarea -->
-                          <textarea 
-                            :id="'lyrics-textarea-' + measure.originalMeasureIndex"
-                            v-model="measure.lyrics.rawText"
-                            placeholder="Escribe la letra..."
-                            class="lyric-textarea col-start-1 row-start-1 w-full h-full resize-none bg-transparent outline-none leading-relaxed text-gray-800 font-sans border-0 shadow-none focus:ring-0 focus:outline-none text-[13px]"
-                            style="grid-area: 1 / 1 / 2 / 2; letter-spacing: 0.02em; padding: 8px 12px;"
-                            @keydown="handleLyricsKeydown($event, measure.originalMeasureIndex)"
-                            @focus="activeEditingLyricsIndex = measure.originalMeasureIndex"
-                            @blur="activeEditingLyricsIndex = null"
-                          ></textarea>
-                        </div>
-                        
-                        <!-- Syllable Assign Panel (only when editing) -->
-                        <div 
-                          v-if="(showLyricsGlobal || measure.originalMeasureIndex === activeEditingLyricsIndex) && measure.lyrics?.syllables"
-                          class="flex flex-col gap-2 p-3 bg-violet-50/40 border-b border-violet-100/50"
-                        >
-                          <!-- Suggestions / Question Banner -->
-                          <div 
-                            v-if="measure.lyrics.syllableSuggestion && !measure.lyrics.ignoreSuggestion && !hasHyphensOrCommas(measure.lyrics.rawText)" 
-                            class="flex flex-col gap-2 bg-violet-50 border border-violet-200 rounded-xl p-3 text-[12px] text-violet-950 shadow-sm animate-scale-up mb-2 font-sans w-full"
-                          >
-                            <div class="flex items-start gap-2">
-                              <span class="text-base">💡</span>
-                              <div class="flex-1">
-                                <div class="font-bold text-violet-900 mb-0.5">¿Cómo quieres dividir las sílabas para el ritmo?</div>
-                                <div>Hemos detectado texto sin división. ¿Asignamos la división automática de sílabas sugerida o prefieres asignarlo manualmente escribiendo tus propios guiones?</div>
-                                <div class="mt-1.5 font-mono bg-white/60 border border-violet-100 rounded px-2 py-1 text-violet-800 text-[11px] inline-block">
-                                  Sugerencia: <strong>{{ measure.lyrics.syllableSuggestion }}</strong>
-                                </div>
-                              </div>
-                            </div>
-                            <div class="flex flex-wrap items-center gap-2 mt-1 font-sans font-bold self-end">
-                              <button 
-                                @click.stop="applySyllableSuggestion(measure)" 
-                                class="bg-violet-600 hover:bg-violet-700 text-white px-3 py-1 rounded-lg shadow-sm transition-colors text-[11px]"
-                              >
-                                Sí, aplicar a este compás
-                              </button>
-                              <button 
-                                @click.stop="applySyllableSuggestionToAllMeasures()" 
-                                class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-lg shadow-sm transition-colors text-[11px]"
-                              >
-                                Aplicar a toda la letra (todos los compases)
-                              </button>
-                              <button 
-                                @click.stop="measure.lyrics.ignoreSuggestion = true" 
-                                class="text-gray-500 hover:text-gray-700 hover:bg-gray-150 px-3 py-1 rounded-lg border border-gray-200 bg-white transition-colors text-[11px]"
-                              >
-                                Asignar manualmente
-                              </button>
-                            </div>
-                          </div>
-
-                          
-                          <!-- Syllable Pills List -->
-                          <div class="flex flex-wrap items-center gap-1.5 w-full">
-                            <div 
-                              v-for="syl in measure.lyrics.syllables" 
-                              :key="syl.id"
-                              class="relative flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold transition-all cursor-pointer select-none"
-                              :class="[
-                                activeSyllableSelection?.syllableId === syl.id
-                                  ? 'bg-violet-600 text-white shadow-md shadow-violet-200 ring-2 ring-violet-300'
-                                  : (syl.rhythmEventId 
-                                      ? 'bg-violet-100 text-violet-850 hover:bg-violet-200 border border-violet-200/50' 
-                                      : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300')
-                              ]"
-                              @click.stop="selectSyllablePill(measure, syl)"
-                            >
-                              <span>{{ syl.text }}</span>
-                              <span v-if="syl.rhythmEventId" class="text-[9px] opacity-75 font-mono">
-                                ({{ getSyllableSlotDisplayLabel(measure, syl.rhythmEventId) }})
-                              </span>
-                              <button 
-                                v-if="syl.rhythmEventId"
-                                @click.stop="clearSyllableAssignment(measure, syl)"
-                                class="text-[10px] opacity-60 hover:opacity-100 ml-1 hover:text-red-500 transition-colors"
-                                title="Desvincular"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                            
-                            <div 
-                              v-if="(measure.lyrics.rawText && (measure.lyrics.rawText.includes('-') || measure.lyrics.ignoreSuggestion)) || (measure.lyrics.syllables && measure.lyrics.syllables.some(s => s.rhythmEventId))"
-                              class="flex items-center gap-2 ml-auto"
-                            >
-                              <button 
-                                v-if="measure.lyrics.rawText && (measure.lyrics.rawText.includes('-') || measure.lyrics.ignoreSuggestion)"
-                                @click.stop="resetLyricsSyllables(measure)"
-                                class="text-[11px] text-violet-600 hover:text-violet-800 font-bold px-2 py-1 rounded hover:bg-violet-50 transition-colors"
-                                title="Recomponer el texto quitando guiones para volver a subdividirlo o asignarlo libremente"
-                              >
-                                Recomponer texto (quitar guiones)
-                              </button>
-                              
-                              <button 
-                                v-if="measure.lyrics.syllables && measure.lyrics.syllables.some(s => s.rhythmEventId)"
-                                @click.stop="clearAllSyllableAssignments(measure)"
-                                class="text-[11px] text-gray-500 hover:text-red-600 font-bold px-2 py-1 rounded hover:bg-red-50 transition-colors animate-scale-up"
-                              >
-                                Limpiar todo
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <!-- Sutil Hint button (if hidden but hovered) -->
-                    <button 
-                      v-else-if="hoveredMeasureIndex === measure.originalMeasureIndex"
-                      @click.stop="activateLyricsForMeasure(measure.originalMeasureIndex)"
-                      class="w-full min-h-[38px] flex items-center justify-center border border-dashed border-gray-300 rounded-full hover:border-[#8EE000] hover:bg-[#8EE000]/5 text-gray-400 hover:text-[#6CA600] transition-all text-xs font-semibold cursor-pointer py-2"
-                    >
-                      + Letra
-                    </button>
-                    
-                    <!-- Default invisible spacing block to preserve alignment -->
-                    <div v-else class="w-full min-h-[38px] opacity-0 pointer-events-none"></div>
-                  </div>
-                </template>
-                
-                <!-- Spacer for ADD MEASURE BUTTON -->
-                <div 
-                  v-if="viewMode === 'compact' && sIdx === systems.length - 1 && (currentPlan === 'PRO' || measures.length < 20) && !shouldShowLyricsRow(system)"
-                  class="flex-shrink-0"
-                  :style="getAddButtonFlexStyle()"
-                ></div>
-                <!-- Spacer for Promocional button -->
-                <div 
-                  v-if="viewMode === 'compact' && sIdx === systems.length - 1 && currentPlan === 'FREE' && measures.length >= 20 && !shouldShowLyricsRow(system)"
-                  class="flex-shrink-0"
-                  :style="getAddButtonFlexStyle()"
-                ></div>
-              </div>
-
-              <!-- ADD MEASURE BUTTON BELOW LYRICS (Only on last system, when lyrics are shown) -->
-              <div 
-                v-if="viewMode === 'compact' && sIdx === systems.length - 1 && shouldShowLyricsRow(system)"
-                class="w-full mt-3 flex justify-center"
-              >
-                <!-- Botón de agregar compás normal -->
-                <button 
-                  v-if="currentPlan === 'PRO' || measures.length < 20"
-                  @click="addMeasure"
-                  class="h-16 w-full border-2 border-dashed border-gray-300 bg-white/50 rounded-xl text-gray-400 flex items-center justify-center hover:bg-[#8EE000]/5 hover:border-[#8EE000] hover:text-[#6CA600] transition-all group shadow-sm cursor-pointer animate-scale-up"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 group-hover:scale-110 transition-transform text-gray-400 hover:text-[#6CA600]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
-                <!-- Botón promocional si llega al límite (versión FREE) -->
-                <button 
-                  v-else
-                  @click="upgradeReason = 'limit'; isUpgradeModalOpen = true"
-                  class="h-20 w-full border-2 border-dashed border-violet-300 bg-violet-50/20 rounded-xl text-violet-500 flex flex-col gap-1 items-center justify-center hover:bg-violet-50/50 hover:border-violet-400 hover:text-violet-600 transition-all group px-4 text-center cursor-pointer shadow-sm animate-scale-up"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 group-hover:scale-110 transition-transform mb-0.5 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                  <span class="text-xs font-black">20 compases max en FREE</span>
-                  <span class="text-[10px] text-violet-600 font-bold">🚀 Pasar a PRO para ilimitados</span>
-                </button>
-              </div>
-            </div>
+              <ScoreViewport v-for="(system, sIdx) in systems" :key="system.id" :system="system" :index="sIdx" :context="scoreRenderContext" :virtual="displayedMeasures.length > 80" @register="registerSystemViewport" @visibility-change="updateConnectors">
+                <ScoreSystem :system="system" :index="sIdx" :context="scoreRenderContext" />
+              </ScoreViewport>
           </div>
         </div>
         </main>
@@ -11398,7 +10288,7 @@ const togglePlayback = () => {
             <div class="flex items-center gap-2">
               <span class="text-xs font-bold text-gray-600">Por fila predeterminado:</span>
               <div class="flex bg-gray-100 rounded-lg p-0.5 border border-gray-200">
-                <button 
+                <button v-show="!isFreeLaunch"
                   v-for="num in [2, 3, 4, 5, 6]" 
                   :key="num"
                   @click="setMeasuresPerSystem(num)"
@@ -11463,7 +10353,7 @@ const togglePlayback = () => {
                 REPETIR
               </button>
               
-              <button 
+              <button v-show="!isFreeLaunch"
                 v-if="isCasillasAvailable"
                 @click="convertRepeatToCasilla" 
                 class="flex-1 sm:flex-initial px-4 py-2 text-[14px] font-bold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 rounded-xl transition-all shadow-md shadow-violet-200/50 active:scale-95 flex items-center justify-center gap-1"
@@ -11693,7 +10583,7 @@ const togglePlayback = () => {
                 </div>
               </div>
               <!-- Visualización y Educación (Subdivisiones y Obligado) -->
-              <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-4">
+              <div v-show="!isFreeLaunch" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-4">
                 <span class="block text-xs font-bold text-gray-400 uppercase tracking-wider">🎓 Visualización / Ámbito Educativo</span>
                 
                 <div class="space-y-4 divide-y divide-gray-150">
@@ -11765,7 +10655,7 @@ const togglePlayback = () => {
                   <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 </button>
                 
-                <button @click="isMeasureOptionsOpen = false; isSelectionMode = true; clearSelection()" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 text-left">
+                <button v-show="!isFreeLaunch" @click="isMeasureOptionsOpen = false; isSelectionMode = true; clearSelection()" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 text-left">
                   <div class="flex items-center gap-3">
                     <span class="text-xl">🔢</span>
                     <div>
@@ -11775,7 +10665,7 @@ const togglePlayback = () => {
                   </div>
                   <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 </button>
-                <button @click="startKeyChangeSetup" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 text-left">
+                <button v-show="!isFreeLaunch" @click="startKeyChangeSetup" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 text-left">
                   <div class="flex items-center gap-3">
                     <span class="text-xl">🔑</span>
                     <div>
@@ -11788,7 +10678,7 @@ const togglePlayback = () => {
                   </div>
                   <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 </button>
-                <button @click="startLocalMetricSetup" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 text-left">
+                <button v-show="!isFreeLaunch" @click="startLocalMetricSetup" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 text-left">
                   <div class="flex items-center gap-3">
                     <span class="text-xl">⏱️</span>
                     <div>
@@ -11905,10 +10795,10 @@ const togglePlayback = () => {
               </div>
               <!-- Metric selection options -->
               <div class="space-y-4">
-                <div v-for="group in METRIC_GROUPS" :key="group.label" class="space-y-2">
+                <div v-for="group in METRIC_GROUPS.filter(group => !isFreeLaunch || group.items.some(item => !item.isPro))" :key="group.label" class="space-y-2">
                   <div class="text-[10px] font-black text-gray-400 uppercase tracking-wider">{{ group.label }}</div>
                   <div class="grid grid-cols-2 gap-2">
-                    <button 
+                    <button v-show="!isFreeLaunch || !item.isPro"
                       v-for="item in group.items"
                       :key="item.name"
                       @click="selectLocalMetricItem(item.beats, item.unit)"
@@ -11926,7 +10816,7 @@ const togglePlayback = () => {
                 </div>
               </div>
               <!-- Métrica Personalizada (PRO) -->
-              <div class="pt-4 border-t border-gray-200 space-y-3">
+              <div v-show="!isFreeLaunch" class="pt-4 border-t border-gray-200 space-y-3">
                 <h5 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Métrica Personalizada (PRO)</h5>
                 <div class="flex items-center gap-3">
                   <div class="flex-1">
@@ -12170,7 +11060,7 @@ const togglePlayback = () => {
                 </span>
                 
                 <div class="grid grid-cols-1 gap-2">
-                  <button 
+                  <button v-show="!isFreeLaunch"
                     v-for="s in suggestedBassNotes" 
                     :key="s.note"
                     @click="currentPlan === 'PRO' ? selectBassNote(s.note) : (upgradeReason = 'feature', isUpgradeModalOpen = true)"
@@ -12310,7 +11200,7 @@ const togglePlayback = () => {
                       <span class="block text-[10px] font-black text-indigo-700 uppercase tracking-wider mb-1">🎓 Detalle Pedagógico</span>
                       <p class="text-[11px] text-indigo-950 leading-relaxed">{{ activeTensionExplanation.detail }}</p>
                     </div>
-                    <button 
+                    <button v-show="!isFreeLaunch"
                       v-else 
                       @click="upgradeReason = 'escalas'; isUpgradeModalOpen = true"
                       class="w-full py-2 bg-violet-50 hover:bg-violet-100 text-violet-700 font-extrabold rounded-xl flex items-center justify-center gap-1 text-[11px] transition-all"
@@ -12328,7 +11218,7 @@ const togglePlayback = () => {
                 <h4 class="text-sm font-black text-gray-800 flex items-center gap-2">
                   <span>🔗</span> <span>Ligado de Tiempo</span>
                 </h4>
-                <span class="text-[9px] bg-violet-100 text-violet-750 font-black px-1.5 py-0.5 rounded uppercase tracking-wide">PRO</span>
+                <span v-show="!isFreeLaunch" class="text-[9px] bg-violet-100 text-violet-750 font-black px-1.5 py-0.5 rounded uppercase tracking-wide">PRO</span>
               </div>
               
               <p class="text-xs text-gray-500 leading-relaxed text-left">
@@ -12351,7 +11241,7 @@ const togglePlayback = () => {
                 <h4 class="text-sm font-black text-gray-800 flex items-center gap-2">
                   <span>🥁</span> <span>Ritmo Armónico</span>
                 </h4>
-                <span v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-wide">👑 PRO</span>
+                <span v-show="!isFreeLaunch" v-if="currentPlan !== 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-wide">👑 PRO</span>
               </div>
               
               <!-- If we are editing a main beat (not a subdivision slot) -->
@@ -12526,7 +11416,7 @@ const togglePlayback = () => {
             </div>
             
             <!-- 3.5. SECONDARY ALTERNATIVES GRID -->
-            <div v-if="activeModalNextChord && secondaryAlternativeChords.length > 0" class="space-y-3 pt-4 border-t border-gray-200">
+            <div v-show="!isFreeLaunch" v-if="activeModalNextChord && secondaryAlternativeChords.length > 0" class="space-y-3 pt-4 border-t border-gray-200">
               <div class="flex items-center justify-between">
                 <span class="block text-[11px] font-black text-violet-700 uppercase tracking-wider flex items-center gap-1 select-none">
                   <span>✨ Alternativas Secundarias (Hacia {{ formatDisplayChord(activeModalNextChord.chord) }})</span>
@@ -12538,7 +11428,7 @@ const togglePlayback = () => {
               </div>
               
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <button 
+                <button
                   v-for="alt in secondaryAlternativeChords" 
                   :key="alt.root + alt.type"
                   @click="currentPlan === 'PRO' ? selectChord({ root: alt.root, type: alt.type }) : (isModalOpen = false, upgradeReason = 'alternativas_secundarias', isUpgradeModalOpen = true)"
@@ -12872,7 +11762,7 @@ const togglePlayback = () => {
           </div>
         </div>
         <!-- SUGGESTIONS MODAL (AMPOLLETA DE IDEAS) -->
-        <div v-if="isSystemSuggestionsModalOpen" @click.stop class="relative bg-[#F2F2F7] w-full rounded-t-[16px] shadow-2xl animate-slide-up-ios pb-safe flex flex-col max-h-[85vh] z-10 md:w-[600px] md:mx-auto md:rounded-3xl md:mb-10">
+        <div v-if="!isFreeLaunch && isSystemSuggestionsModalOpen" @click.stop class="relative bg-[#F2F2F7] w-full rounded-t-[16px] shadow-2xl animate-slide-up-ios pb-safe flex flex-col max-h-[85vh] z-10 md:w-[600px] md:mx-auto md:rounded-3xl md:mb-10">
           <div class="bg-white px-4 py-4 flex items-center justify-between border-b border-gray-200 shrink-0 rounded-t-[16px] md:rounded-t-3xl shadow-sm">
             <button @click="isSystemSuggestionsModalOpen = false" class="text-gray-500 text-[17px] font-medium bg-gray-100 px-3 py-1.5 rounded-full hover:bg-gray-200 transition-colors">Cerrar</button>
             <h3 class="text-[17px] font-bold text-gray-900 pointer-events-none flex flex-col items-center">
@@ -12905,7 +11795,7 @@ const togglePlayback = () => {
                       <span v-if="suggestion.metadata?.tension" class="text-[9px] bg-slate-900 text-slate-100 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
                         ⚡ {{ suggestion.metadata.tension }}
                       </span>
-                      <span v-if="currentPlan !== 'PRO'" class="text-[9.5px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-2 py-0.5 rounded-full font-black shadow-sm flex items-center gap-0.5">👑 PRO</span>
+                      <span  v-if="currentPlan !== 'PRO'" class="text-[9.5px] bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-2 py-0.5 rounded-full font-black shadow-sm flex items-center gap-0.5">👑 PRO</span>
                     </div>
                   </div>
                   
@@ -12962,7 +11852,7 @@ const togglePlayback = () => {
                   
                   <!-- Action button -->
                   <div class="pt-1 flex justify-end">
-                    <button 
+                    <button
                       @click="runSuggestion(suggestion)"
                       class="px-5 py-2.5 text-xs font-black rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1.5 w-full sm:w-auto justify-center"
                       :class="currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-violet-150 hover:shadow-violet-250' : 'bg-[#8EE000] text-black shadow-[#8EE000]/20 hover:bg-[#7BC200]'"
@@ -13043,7 +11933,7 @@ const togglePlayback = () => {
                 <span>Ver más (Detalles teóricos)</span>
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
               </button>
-              <button 
+              <button v-show="!isFreeLaunch"
                 v-else
                 @click="upgradeReason = 'escalas'; isUpgradeModalOpen = true"
                 class="w-full py-3 bg-gray-50 border border-gray-200 hover:bg-gray-100 text-gray-500 font-bold rounded-2xl flex items-center justify-center gap-2 text-sm transition-all"
@@ -13139,45 +12029,45 @@ const togglePlayback = () => {
     </transition>
     <!-- ==================== PREMIUM UPGRADE MODAL ==================== -->
     <transition name="fade">
-      <div v-if="isUpgradeModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-        <div class="bg-white rounded-3xl shadow-2xl p-6 max-w-sm w-full border border-gray-100 text-center animate-scale-up">
+      <div v-if="!isFreeLaunch && isUpgradeModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+        <div  class="bg-white rounded-3xl shadow-2xl p-6 max-w-sm w-full border border-gray-100 text-center animate-scale-up">
           <div class="w-16 h-16 bg-gradient-to-tr from-violet-600 to-indigo-600 text-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-200">
             <span class="text-3xl">👑</span>
           </div>
           <h3 class="text-xl font-extrabold text-gray-900 mb-2">HarmoniGrid PRO</h3>
           
           <p class="text-sm text-gray-600 mb-6" v-if="upgradeReason === 'limit'">
-            Has alcanzado el límite de 20 compases.<br><strong class="text-violet-600">🚀 Pásate a PRO para compases ilimitados</strong> y escribe piezas musicales más largas.
+            Has alcanzado el límite de 20 compases.<br><strong  class="text-violet-600">🚀 Pásate a PRO para compases ilimitados</strong> y escribe piezas musicales más largas.
           </p>
-          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'escalas'">
-            Has seleccionado una escala avanzada o modo PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para usar las 26 escalas y modos</strong> y enriquecer tu vocabulario armónico.
+          <p  class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'escalas'">
+            Has seleccionado una escala avanzada o modo PRO.<br><strong  class="text-violet-600">🚀 Pásate a PRO para usar las 26 escalas y modos</strong> y enriquecer tu vocabulario armónico.
           </p>
-          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'custom_layout'">
-            La ordenación personalizada de compases es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para ordenar compases a tu gusto</strong>, cambiar la cantidad de compases por fila e insertar saltos de sistema.
+          <p  class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'custom_layout'">
+            La ordenación personalizada de compases es una función PRO.<br><strong  class="text-violet-600">🚀 Pásate a PRO para ordenar compases a tu gusto</strong>, cambiar la cantidad de compases por fila e insertar saltos de sistema.
           </p>
-          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'modulacion'">
-            El análisis de modulación y consejos de arreglos avanzados es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para desbloquear el análisis Berklee</strong> y recibir consejos profesionales sobre transiciones de tonalidad.
+          <p  class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'modulacion'">
+            El análisis de modulación y consejos de arreglos avanzados es una función PRO.<br><strong  class="text-violet-600">🚀 Pásate a PRO para desbloquear el análisis Berklee</strong> y recibir consejos profesionales sobre transiciones de tonalidad.
           </p>
-          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'ritmo_armonico'">
-            El Ritmo Armónico con subdivisiones de corcheas, semicorcheas y contratiempos es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para usar alta densidad armónica y cortes de banda</strong>.
+          <p  class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'ritmo_armonico'">
+            El Ritmo Armónico con subdivisiones de corcheas, semicorcheas y contratiempos es una función PRO.<br><strong  class="text-violet-600">🚀 Pásate a PRO para usar alta densidad armónica y cortes de banda</strong>.
           </p>
           <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'synced_lyrics'">
-            El modo de Letras Sincronizadas te permite enlazar sílabas o palabras de tus letras directamente con acordes específicos.<br><strong class="text-violet-600">🚀 Pásate a PRO para sincronizar tus letras y visualizarlas con conectores interactivos</strong>.
+            El modo de Letras Sincronizadas te permite enlazar sílabas o palabras de tus letras directamente con acordes específicos.<br><strong  class="text-violet-600">🚀 Pásate a PRO para sincronizar tus letras y visualizarlas con conectores interactivos</strong>.
           </p>
           <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'rhythm_lyrics'">
-            El modo de Letras Rítmicas (Rhythm Lyrics) te permite asociar sílabas exactas a eventos y subdivisiones rítmicas de la rejilla musical.<br><strong class="text-violet-600">🚀 Pásate a PRO para componer con alineación temporal exacta, ligados y silencios</strong>.
+            El modo de Letras Rítmicas (Rhythm Lyrics) te permite asociar sílabas exactas a eventos y subdivisiones rítmicas de la rejilla musical.<br><strong  class="text-violet-600">🚀 Pásate a PRO para componer con alineación temporal exacta, ligados y silencios</strong>.
           </p>
-          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'transpose'">
-            El transporte inteligente de acordes (tonal, modal y funcional) es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para transportar tu partitura de forma inteligente</strong> y aprender cómo cambian los grados y las notas.
+          <p  class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'transpose'">
+            El transporte inteligente de acordes (tonal, modal y funcional) es una función PRO.<br><strong  class="text-violet-600">🚀 Pásate a PRO para transportar tu partitura de forma inteligente</strong> y aprender cómo cambian los grados y las notas.
           </p>
-          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'alternativas_secundarias'">
-            El Modo de Alternativas Secundarias es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para insertar dominantes secundarios, sustitutos de tritono, ii relacionados e intercambios modales</strong> directamente en tu partitura.
+          <p  class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'alternativas_secundarias'">
+            El Modo de Alternativas Secundarias es una función PRO.<br><strong  class="text-violet-600">🚀 Pásate a PRO para insertar dominantes secundarios, sustitutos de tritono, ii relacionados e intercambios modales</strong> directamente en tu partitura.
           </p>
-          <p class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'expanded_pdf'">
-            La exportación de partituras extendidas de acordes de forma lineal y desglosada (sin repeticiones) es una función PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO para exportar flujos de compases extendidos</strong>.
+          <p  class="text-sm text-gray-600 mb-6" v-else-if="upgradeReason === 'expanded_pdf'">
+            La exportación de partituras extendidas de acordes de forma lineal y desglosada (sin repeticiones) es una función PRO.<br><strong  class="text-violet-600">🚀 Pásate a PRO para exportar flujos de compases extendidos</strong>.
           </p>
-          <p class="text-sm text-gray-600 mb-6" v-else>
-            Esta función requiere la versión PRO.<br><strong class="text-violet-600">🚀 Pásate a PRO</strong> para usar casillas avanzadas y expandir tus compases sin límites.
+          <p  class="text-sm text-gray-600 mb-6" v-else>
+            Esta función requiere la versión PRO.<br><strong  class="text-violet-600">🚀 Pásate a PRO</strong> para usar casillas avanzadas y expandir tus compases sin límites.
           </p>
           
           <div class="bg-violet-50 rounded-2xl p-4 text-left mb-6 space-y-2 border border-violet-100/50">
@@ -13204,7 +12094,7 @@ const togglePlayback = () => {
             </div>
           </div>
           
-          <button @click="currentPlan = 'PRO'; isUpgradeModalOpen = false" class="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white font-extrabold rounded-2xl shadow-lg shadow-indigo-200/50 transition-all active:scale-[0.98]">
+          <button  @click="setPlan('PRO'); isUpgradeModalOpen = false" class="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white font-extrabold rounded-2xl shadow-lg shadow-indigo-200/50 transition-all active:scale-[0.98]">
             Pasar a PRO 🚀
           </button>
           <button @click="isUpgradeModalOpen = false" class="w-full mt-2 py-2 text-gray-400 hover:text-gray-600 font-bold text-sm">
@@ -13275,13 +12165,13 @@ const togglePlayback = () => {
             <!-- Global selector inside modal -->
             <div class="pt-4 border-t border-gray-200 space-y-3">
               <h4 class="text-xs font-black text-gray-400 uppercase tracking-wider">Cambiar Métrica Global del Score</h4>
-              <p class="text-[11px] text-gray-400">Puedes seleccionar una métrica para reestructurar todo tu score. Las métricas avanzadas requieren el plan PRO:</p>
+              <p class="text-[11px] text-gray-400">Puedes seleccionar una métrica para reestructurar todo tu score. Elige una de las métricas disponibles:</p>
               
               <div class="space-y-4">
-                <div v-for="group in METRIC_GROUPS" :key="group.label" class="space-y-1.5">
+                <div v-for="group in METRIC_GROUPS.filter(group => !isFreeLaunch || group.items.some(item => !item.isPro))" :key="group.label" class="space-y-1.5">
                   <div class="text-[9.5px] text-gray-400 font-black uppercase tracking-wider">{{ group.label }}</div>
                   <div class="grid grid-cols-3 gap-2">
-                    <button
+                    <button v-show="!isFreeLaunch || !item.isPro"
                       v-for="item in group.items"
                       :key="item.name"
                       @click="changeGlobalTimeSignature(item.beats, item.unit); isMetricInfoModalOpen = false"
@@ -13341,7 +12231,7 @@ const togglePlayback = () => {
               </span>
             </div>
             <!-- Academic / Educational section -->
-            <div class="border border-gray-100 rounded-2xl overflow-hidden shadow-sm">
+            <div v-show="!isFreeLaunch" class="border border-gray-100 rounded-2xl overflow-hidden shadow-sm">
               <!-- Header of analysis -->
               <div class="bg-gray-50 px-4 py-2.5 border-b border-gray-100 flex items-center justify-between">
                 <span class="text-xs font-black text-gray-400 uppercase tracking-wider">Análisis Armónico Berklee</span>
@@ -13355,7 +12245,7 @@ const togglePlayback = () => {
                 <p class="text-xs text-gray-500 max-w-xs mx-auto">
                   Aprende cómo se conecta esta nueva tonalidad con la anterior (Relativa, Paralela, Directa, etc.) y recibe recomendaciones de arreglos de nivel profesional.
                 </p>
-                <button 
+                <button
                   @click="upgradeReason = 'modulacion'; isUpgradeModalOpen = true"
                   class="inline-flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-95 mt-1"
                 >
@@ -13494,7 +12384,7 @@ const togglePlayback = () => {
         <div class="relative bg-white rounded-3xl shadow-2xl p-6 max-w-lg w-full border border-gray-150 text-left animate-scale-up z-10 flex flex-col max-h-[90vh] overflow-y-auto">
           <!-- Header -->
           <div class="flex items-center justify-between pb-3 border-b border-gray-100">
-            <div class="flex items-center gap-2">
+            <div v-show="!isFreeLaunch" class="flex items-center gap-2">
               <span class="text-xl">🔄</span>
               <h3 class="text-lg font-black text-gray-900">Transportar (PRO)</h3>
             </div>
@@ -13691,7 +12581,7 @@ const togglePlayback = () => {
               </label>
 
               <!-- Opción 2: Sólo acordes extendidos -->
-              <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
+              <label v-show="!isFreeLaunch" class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
                 :class="selectedPdfExportOption === 'chords-only-expanded' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
                 <input id="pdf-chords-only-expanded" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-only-expanded" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
@@ -13708,13 +12598,13 @@ const togglePlayback = () => {
                 :class="selectedPdfExportOption === 'chords-and-lyrics-free' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
                 <input id="pdf-chords-and-lyrics-free" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-free" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
-                  <div class="text-xs font-bold text-gray-900">Opción 3: Acordes y letra libre/simple</div>
+                  <div class="text-xs font-bold text-gray-900">Opción {{ isFreeLaunch ? 2 : 3 }}: Acordes y letra libre/simple</div>
                   <div class="text-[11px] text-gray-555 mt-0.5">Coloca las letras en formato libre directamente debajo de los compases, ajustadas al ancho del compás y apiladas verticalmente.</div>
                 </div>
               </label>
 
               <!-- Opción 4: Acordes y letra asociada a la subdivisión -->
-              <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
+              <label v-show="!isFreeLaunch" class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
                 :class="selectedPdfExportOption === 'chords-and-lyrics-rhythm' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
                 <input id="pdf-chords-and-lyrics-rhythm" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-rhythm" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
@@ -13727,7 +12617,7 @@ const togglePlayback = () => {
               </label>
 
               <!-- Opción 5: Acordes y letra sincronizada Pro -->
-              <label class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
+              <label v-show="!isFreeLaunch" class="flex items-start gap-3 p-3 rounded-2xl border transition-all cursor-pointer select-none"
                 :class="selectedPdfExportOption === 'chords-and-lyrics-synced' ? 'border-violet-600 bg-violet-50/40 shadow-sm' : 'border-gray-200 hover:bg-gray-50/50'">
                 <input id="pdf-chords-and-lyrics-synced" name="selectedPdfExportOption" type="radio" v-model="selectedPdfExportOption" value="chords-and-lyrics-synced" class="mt-1 text-violet-600 focus:ring-violet-500 border-gray-300">
                 <div class="flex-1">
@@ -13746,7 +12636,7 @@ const togglePlayback = () => {
             <button @click="isPdfExportModalOpen = false" class="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl text-xs font-bold text-center active:scale-98 transition-all">
               Cancelar
             </button>
-            <button v-if="currentPlan === 'FREE' && isProOptionSelected" @click="triggerProUpgradeForExport" class="flex-1 py-3 bg-gradient-to-r from-amber-500 to-violet-650 hover:from-amber-600 hover:to-violet-750 text-white rounded-xl text-xs font-bold text-center active:scale-98 transition-all shadow-md flex items-center justify-center gap-1.5">
+            <button v-show="!isFreeLaunch" v-if="currentPlan === 'FREE' && isProOptionSelected" @click="triggerProUpgradeForExport" class="flex-1 py-3 bg-gradient-to-r from-amber-500 to-violet-650 hover:from-amber-600 hover:to-violet-750 text-white rounded-xl text-xs font-bold text-center active:scale-98 transition-all shadow-md flex items-center justify-center gap-1.5">
               <span>Pasar a PRO para Exportar</span>
               <span>👑</span>
             </button>

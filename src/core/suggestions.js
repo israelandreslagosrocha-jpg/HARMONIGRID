@@ -3569,13 +3569,18 @@ export function applySuggestion(measures, payload) {
       if (m && m.beats && m.beats[change.beatIndex] !== undefined) {
         const rawTensions = change.chord.tensions || []
         const uniqueTensions = Array.from(new Set(rawTensions))
-        m.beats[change.beatIndex] = {
+        const harmony = {
           root: change.chord.root,
           type: change.chord.type,
           tensions: uniqueTensions,
           tension: change.chord.tension || null,
           bass: change.chord.bass || null
         }
+        const beat = m.beats[change.beatIndex]
+        Object.assign(beat,harmony)
+        // Preserve rhythm, identities, lyric links and independent later chords.
+        const firstSounding = beat.subdivisions?.find(sub=>!sub.isSilence&&!sub.isMerged)
+        if(firstSounding)Object.assign(firstSounding,JSON.parse(JSON.stringify(harmony)))
       }
     }
   })
