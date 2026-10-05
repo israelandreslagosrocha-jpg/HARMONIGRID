@@ -1,5 +1,6 @@
 <script setup>
 import {ref,shallowRef,computed,watch,onMounted,onBeforeUnmount,nextTick} from 'vue'
+import {preserveGoogleDraft,restoreGoogleDraft,clearGoogleDraft,prepareGoogleLogin} from '../services/googleAuth.js'
 import {getSupabaseClient} from '../services/supabase.js'
 import {createProjectRepository} from '../services/projects.js'
 import {projectRecovery} from '../services/projectRecovery.js'
@@ -55,6 +56,9 @@ onMounted(async()=>{
     if(error)throw error
     if(!disposed&&initialEpoch===authEpoch)sessionChanged(data.session,'INITIAL_SESSION')
     ready.value=true
+    const returningDraft=restoreGoogleDraft(sessionStorage)
+    if(returningDraft&&!props.document){emit('load',returningDraft);await nextTick();clearGoogleDraft(sessionStorage)}
+    if(new URLSearchParams(location.search).has('error')){open.value=true;message.value='No se completó el acceso con Google. Puedes volver a intentarlo; tu composición se conserva.'}
   }catch(error){message.value=error.message}
   if(disposed)return
   window.addEventListener('beforeunload',beforeUnload)
@@ -72,6 +76,16 @@ function trapKeys(event){
   const first=elements[0],last=elements.at(-1)
   if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}
   else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus()}
+}
+async function googleLogin() {
+  if(busy.value||!ready.value)return
+  busy.value=true;message.value=''
+  try {
+    const url=await prepareGoogleLogin(client,redirect(),import.meta.env.VITE_SUPABASE_URL)
+    // Capture before leaving: OAuth reloads the editor, unlike email/password login.
+    preserveGoogleDraft(sessionStorage,props.document)
+    location.assign(url)
+  }catch(error){message.value=`No se pudo iniciar el acceso con Google: ${error.message}`}finally{busy.value=false}
 }
 async function authenticate() {
   busy.value=true;message.value=''
@@ -154,6 +168,10 @@ onBeforeUnmount(()=>{
       </header>
       <p v-if="message" role="status" class="rounded-lg bg-gray-100 p-3 break-words">{{ message }}</p>
       <template v-if="!user || mode==='password'">
+        <template v-if="mode==='login' || mode==='register'">
+          <button type="button" :disabled="busy || !ready" @click="googleLogin" class="w-full rounded-lg border border-gray-300 bg-white px-4 py-3 font-semibold hover:bg-gray-50 disabled:opacity-50">Continuar con Google</button>
+          <p class="text-center text-xs text-gray-500">o utiliza tu correo electrónico</p>
+        </template>
         <form @submit.prevent="authenticate" class="space-y-4">
           <label v-if="mode!=='password'" class="block">Correo electrónico
             <input v-model="email" type="email" autocomplete="email" required :disabled="busy || !ready" class="mt-1 w-full rounded-lg border p-3" />
