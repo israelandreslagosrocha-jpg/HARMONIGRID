@@ -2,7 +2,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
-import {spawnSync} from 'node:child_process'
+import {spawn,spawnSync} from 'node:child_process'
+import {startBudgetRelay} from './strix-budget-relay.mjs'
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..')
 const fail=message=>{console.error(message);process.exit(1)}
 const config=path.join(root,'.tools/strix.env')
@@ -26,7 +27,17 @@ const cliConfig=path.join(root,'.tools/strix-cli.json')
 const mcpConfig=path.join(root,'.tools/strix-mcp.json')
 fs.writeFileSync(cliConfig,'{}\n',{mode:0o600})
 fs.writeFileSync(mcpConfig,'{"mcpServers":{}}\n',{mode:0o600})
-console.log('Primer escaneo OpenAI: umbral estimado US$4, margen respecto del presupuesto de US$5. No es un límite exacto de facturación.')
+console.log('Primer escaneo OpenAI: reservas conservadoras antes de cada llamada, máximo US$4,50. Umbral adicional de Strix: US$4.')
 console.log(`Objetivo aislado: ${target}`)
-const result=spawnSync(executable,['--config',cliConfig,'--mcp-config',mcpConfig,'--target',target,'--instruction-file',path.join(target,'STRIX_SCOPE.md'),'--scan-mode','quick','--scope-mode','full','--non-interactive','--max-budget','4','--max-turns','40'],{cwd:root,env,stdio:'inherit'})
-process.exit(result.status??1)
+const relay=await startBudgetRelay(values.LLM_API_KEY,path.join(root,'.tools'))
+env.LLM_API_KEY=relay.token
+env.LLM_API_BASE=relay.base
+env.STRIX_API_TYPE='chat_completions'
+let status=1
+try {
+  status=await new Promise((resolve,reject)=>{
+    const child=spawn(executable,['--config',cliConfig,'--mcp-config',mcpConfig,'--target',target,'--instruction-file',path.join(target,'STRIX_SCOPE.md'),'--scan-mode','quick','--scope-mode','full','--non-interactive','--max-budget','4','--max-turns','40'],{cwd:root,env,stdio:'inherit'})
+    child.once('error',reject);child.once('exit',code=>resolve(code??1))
+  })
+}finally{relay.close();console.log(`Guardia local: ${relay.state.calls} llamadas reservadas; cota conservadora US$${(relay.state.reservedMicros/1000000).toFixed(2)}. No es una lectura de la factura.`)}
+process.exitCode=status
