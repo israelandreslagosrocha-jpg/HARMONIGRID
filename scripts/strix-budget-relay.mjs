@@ -5,28 +5,32 @@ import {randomBytes} from 'node:crypto'
 import {Readable} from 'node:stream'
 import fs from 'node:fs'
 import path from 'node:path'
-export function reserveRequest(body,state) {
+export function reserveRequest(body,state,countInputTokens) {
   if(body?.model!=='gpt-5.4'||!Array.isArray(body.messages)||body.messages.length>200)throw Error('Unsupported model or messages')
   for(const message of body.messages) {
     if(typeof message.content==='string'||message.content==null)continue
     if(!Array.isArray(message.content)||message.content.some(part=>part.type!=='text'||typeof part.text!=='string'))throw Error('Text-only scan required')
   }
   if(body.tools?.some(tool=>tool.type!=='function'))throw Error('Paid hosted tools are not allowed')
-  const request={...body,service_tier:'default',n:1,max_completion_tokens:4096}
+  const requestedOutput=body.max_completion_tokens??body.max_tokens??4096
+  if(!Number.isSafeInteger(requestedOutput)||requestedOutput<=0)throw Error('Invalid output limit')
+  const request={...body,service_tier:'default',n:1,max_completion_tokens:Math.min(requestedOutput,4096)}
   delete request.max_tokens
   delete request.prediction
   const payload=JSON.stringify(request)
   const bytes=Buffer.byteLength(payload)
-  if(bytes>100000)throw Error('Request exceeds conservative text budget')
-  // UTF-8 byte count plus framing allowance overestimates text token count.
+  if(bytes>1000000)throw Error('Request exceeds conservative text budget')
+  const tokens=countInputTokens?countInputTokens(payload):bytes
+  if(!Number.isSafeInteger(tokens)||tokens<0||tokens>1000000)throw Error('Invalid token estimate')
+  // Local tokenizer plus framing allowance; byte upper bound as fallback.
   // US$6/M input and US$30/M output exceed documented standard/long-context rates.
-  const reservation=Math.ceil(((bytes+16384)*6+4096*30)/1000000*1000000)
+  const reservation=(tokens+16384)*6+request.max_completion_tokens*30
   if(state.reservedMicros+reservation>4500000)throw Error('Local scan budget exhausted')
   state.reservedMicros+=reservation
   state.calls++
   return payload
 }
-export async function startBudgetRelay(apiKey,privateDirectory,fetchUpstream=fetch) {
+export async function startBudgetRelay(apiKey,privateDirectory,fetchUpstream=fetch,countInputTokens) {
   const token=randomBytes(32).toString('hex')
   const ledger=path.join(privateDirectory,'strix-budget-state.json')
   const lock=path.join(privateDirectory,'strix-budget.lock')
@@ -38,8 +42,8 @@ export async function startBudgetRelay(apiKey,privateDirectory,fetchUpstream=fet
     if(req.method!=='POST'||req.url!=='/v1/chat/completions'||req.headers.authorization!==`Bearer ${token}`)return reject(res,403,'Unauthorized relay request')
     try {
       const chunks=[];let size=0
-      for await(const chunk of req){size+=chunk.length;if(size>100000)throw Error('Request too large');chunks.push(chunk)}
-      const payload=reserveRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')),state)
+      for await(const chunk of req){size+=chunk.length;if(size>1000000)throw Error('Request too large');chunks.push(chunk)}
+      const payload=reserveRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')),state,countInputTokens)
       // Persist before sending: restarting the scanner cannot reset its budget.
       fs.writeFileSync(ledger+'.tmp',JSON.stringify(state),{mode:0o600})
       fs.renameSync(ledger+'.tmp',ledger)

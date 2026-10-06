@@ -12,7 +12,7 @@ assert.equal(request.n,1)
 assert.throws(()=>reserveRequest({...body,model:'other'},state))
 assert.throws(()=>reserveRequest({...body,messages:[{content:[{type:'image_url',image_url:{url:'https://example.com'}}]}]},state))
 assert.throws(()=>reserveRequest({...body,tools:[{type:'web_search'}]},state))
-assert.throws(()=>reserveRequest({...body,messages:[{content:'x'.repeat(100001)}]},state))
+assert.throws(()=>reserveRequest({...body,messages:[{content:'x'.repeat(1000001)}]},state))
 assert.equal(state.calls,1)
 while(true){try{reserveRequest(body,state)}catch{break}}
 const before={...state}
@@ -20,6 +20,11 @@ for(let i=0;i<20;i++)assert.throws(()=>reserveRequest(body,state))
 assert.deepEqual(state,before)
 assert.ok(state.reservedMicros<=4500000)
 assert.ok(state.calls>1)
+const countedState={reservedMicros:0,calls:0}
+const small=JSON.parse(reserveRequest({...body,max_completion_tokens:16},countedState,()=>10))
+assert.equal(small.max_completion_tokens,16)
+assert.equal(countedState.reservedMicros,(10+16384)*6+16*30)
+assert.throws(()=>reserveRequest(body,countedState,()=>NaN))
 const directory=fs.mkdtempSync(path.join(os.tmpdir(),'hg-budget-test-'))
 let forwarded=0
 const mock=async(url,options)=>{

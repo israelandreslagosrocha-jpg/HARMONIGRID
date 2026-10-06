@@ -29,10 +29,17 @@ fs.writeFileSync(cliConfig,'{"env":{}}\n',{mode:0o600})
 fs.writeFileSync(mcpConfig,'{"mcpServers":{}}\n',{mode:0o600})
 console.log('Primer escaneo OpenAI: reservas conservadoras antes de cada llamada, máximo US$4,50. Umbral adicional de Strix: US$4.')
 console.log(`Objetivo aislado: ${target}`)
-const relay=await startBudgetRelay(values.LLM_API_KEY,path.join(root,'.tools'))
+const countInputTokens=payload=>{
+  const counted=spawnSync(path.join(root,'.tools/strix/bin/python'),[path.join(root,'scripts/strix-count-tokens.py')],{input:payload,encoding:'utf8',timeout:30000})
+  if(counted.status!==0||!/^\d+\s*$/.test(counted.stdout))throw Error('Local token counting failed; no API request sent')
+  return Number(counted.stdout.trim())
+}
+const relay=await startBudgetRelay(values.LLM_API_KEY,path.join(root,'.tools'),fetch,countInputTokens)
 env.LLM_API_KEY=relay.token
 env.LLM_API_BASE=relay.base
 env.STRIX_API_TYPE='chat_completions'
+env.STRIX_REASONING_EFFORT='medium'
+env.STRIX_TELEMETRY='false'
 let status=1
 try {
   status=await new Promise((resolve,reject)=>{
