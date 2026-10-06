@@ -1,9 +1,10 @@
 // Prepare an isolated source-only target; this does not run Strix or contact any service.
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 const root=path.resolve(new URL('..',import.meta.url).pathname)
-const output=await fs.mkdtemp(path.join(os.tmpdir(),'harmonigrid-strix-'))
+const sandboxRoot='/private/tmp/harmonigrid-security'
+await fs.mkdir(sandboxRoot,{recursive:true,mode:0o700})
+const output=await fs.mkdtemp(path.join(sandboxRoot,'source-'))
 for(const name of ['src','supabase','tests','scripts','package.json','package-lock.json','vite.config.js','tailwind.config.js','postcss.config.js','index.html','vercel.json']) {
  try{await fs.cp(path.join(root,name),path.join(output,name),{recursive:true})}
  catch(error){if(error.code!=='ENOENT')throw error}
