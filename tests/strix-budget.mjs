@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {reserveRequest,settleUsage,startBudgetRelay} from '../scripts/strix-budget-relay.mjs'
+import {reserveRequest,settleUsage,startBudgetRelay,MAX_SCAN_MICROS} from '../scripts/strix-budget-relay.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -18,7 +18,7 @@ while(true){try{reserveRequest(body,state)}catch{break}}
 const before={...state}
 for(let i=0;i<20;i++)assert.throws(()=>reserveRequest(body,state))
 assert.deepEqual(state,before)
-assert.ok(state.reservedMicros<=4500000)
+assert.ok(state.reservedMicros<=MAX_SCAN_MICROS)
 assert.ok(state.calls>1)
 const countedState={reservedMicros:0,calls:0}
 const small=JSON.parse(reserveRequest({...body,max_completion_tokens:16},countedState,()=>10))
@@ -59,6 +59,9 @@ try {
   const checked=await post(relay.token,{...body,stream:true})
   await checked.text()
   assert.equal(relay.state.reservedMicros,saved+4000)
+  const receipts=fs.readFileSync(path.join(directory,'strix-budget-receipts.jsonl'),'utf8')
+  assert.ok(!receipts.includes('fake-private-key'))
+  assert.equal(receipts.split('\n').filter(Boolean).map(line=>JSON.parse(line)).filter(entry=>entry.settled).length,2)
   const after=relay.state.reservedMicros
   await relay.close()
   relay=await startBudgetRelay('fake-private-key',directory,mock)
@@ -66,4 +69,32 @@ try {
   assert.equal(relay.state.calls,3)
   await assert.rejects(()=>startBudgetRelay('fake-private-key',directory,mock))
 }finally{await relay.close();fs.rmSync(directory,{recursive:true,force:true})}
+// An uncertain network failure must retain its reservation and stop retries.
+const failedDirectory=fs.mkdtempSync(path.join(os.tmpdir(),'hg-budget-failure-'))
+let failures=0
+const blocked=[]
+const failedRelay=await startBudgetRelay('fake-private-key',failedDirectory,async()=>{
+  failures++
+  throw new TypeError('network failure fake-private-key',{cause:{code:'ECONNRESET'}})
+},()=>10,reason=>blocked.push(reason))
+try {
+  const failed=await fetch(failedRelay.base+'/chat/completions',{method:'POST',headers:{authorization:`Bearer ${failedRelay.token}`,'content-type':'application/json'},body:JSON.stringify(body)})
+  assert.equal(failed.status,429)
+  const text=await failed.text()
+  assert.ok(!text.includes('fake-private-key'))
+  assert.deepEqual(blocked,['incomplete_request'])
+  assert.equal(failures,1)
+  const reserved=(10+16384)*6+4096*30
+  assert.equal(failedRelay.state.reservedMicros,reserved)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(failedDirectory,'strix-budget-state.json'),'utf8')).reservedMicros,reserved)
+  const receipts=fs.readFileSync(path.join(failedDirectory,'strix-budget-receipts.jsonl'),'utf8')
+  assert.ok(!receipts.includes('fake-private-key'))
+  assert.equal(JSON.parse(receipts.trim().split('\n').at(-1)).causeCode,'ECONNRESET')
+  failedRelay.state.reservedMicros=MAX_SCAN_MICROS
+  const exhausted=await fetch(failedRelay.base+'/chat/completions',{method:'POST',headers:{authorization:`Bearer ${failedRelay.token}`,'content-type':'application/json'},body:JSON.stringify(body)})
+  assert.equal(exhausted.status,429);await exhausted.text()
+  assert.equal(failures,1)
+  assert.equal(failedRelay.state.reservedMicros,MAX_SCAN_MICROS)
+  assert.deepEqual(blocked,['incomplete_request','budget_exhausted'])
+}finally{await failedRelay.close();fs.rmSync(failedDirectory,{recursive:true,force:true})}
 console.log('Strix budget guard passed: bounded output, text-only, fixed model/tier, cumulative reservations and retry rejection. No API calls.')

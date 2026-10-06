@@ -37,14 +37,18 @@ const cliConfig=path.join(root,'.tools/strix-cli.json')
 const mcpConfig=path.join(root,'.tools/strix-mcp.json')
 fs.writeFileSync(cliConfig,'{"env":{}}\n',{mode:0o600})
 fs.writeFileSync(mcpConfig,'{"mcpServers":{}}\n',{mode:0o600})
-console.log('Primer escaneo OpenAI: reservas conservadoras antes de cada llamada, máximo US$4,50. Umbral adicional de Strix: US$4.')
+console.log('Primer escaneo OpenAI: reservas conservadoras antes de cada llamada, máximo US$4,90. Umbral adicional de Strix: US$4.')
 console.log(`Objetivo aislado: ${target}`)
 const countInputTokens=payload=>{
   const counted=spawnSync(path.join(root,'.tools/strix/bin/python'),[path.join(root,'scripts/strix-count-tokens.py')],{input:payload,encoding:'utf8',timeout:30000})
   if(counted.status!==0||!/^\d+\s*$/.test(counted.stdout))throw Error('Local token counting failed; no API request sent')
   return Number(counted.stdout.trim())
 }
-const relay=await startBudgetRelay(values.LLM_API_KEY,path.join(root,'.tools'),fetch,countInputTokens)
+let scanChild=null
+const relay=await startBudgetRelay(values.LLM_API_KEY,path.join(root,'.tools'),fetch,countInputTokens,reason=>{
+  console.error(`Escaneo detenido por la guardia local: ${reason}. Las reservas se conservan.`)
+  scanChild?.kill('SIGINT')
+})
 env.LLM_API_KEY=relay.token
 env.LLM_API_BASE=relay.base
 env.STRIX_API_TYPE='chat_completions'
@@ -56,6 +60,7 @@ try {
   status=await new Promise((resolve,reject)=>{
     const selection=resume?['--resume',resume]:['--target',target,'--instruction-file',path.join(target,'STRIX_SCOPE.md')]
     const child=spawn(executable,['--config',cliConfig,'--mcp-config',mcpConfig,...selection,'--scan-mode','quick','--scope-mode','full','--non-interactive','--max-budget','4','--max-turns','40'],{cwd:root,env,stdio:'inherit'})
+    scanChild=child
     child.once('error',reject);child.once('exit',code=>resolve(code??1))
   })
 }finally{await relay.close();console.log(`Guardia local: ${relay.state.calls} llamadas reservadas; cota conservadora US$${(relay.state.reservedMicros/1000000).toFixed(2)}. No es una lectura de la factura.`)}
