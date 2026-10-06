@@ -25,7 +25,7 @@ if(!target)fail('No se pudo identificar la copia aislada.')
 // Do not inherit unrelated user MCP connections or scan configuration.
 const cliConfig=path.join(root,'.tools/strix-cli.json')
 const mcpConfig=path.join(root,'.tools/strix-mcp.json')
-fs.writeFileSync(cliConfig,'{}\n',{mode:0o600})
+fs.writeFileSync(cliConfig,'{"env":{}}\n',{mode:0o600})
 fs.writeFileSync(mcpConfig,'{"mcpServers":{}}\n',{mode:0o600})
 console.log('Primer escaneo OpenAI: reservas conservadoras antes de cada llamada, máximo US$4,50. Umbral adicional de Strix: US$4.')
 console.log(`Objetivo aislado: ${target}`)
