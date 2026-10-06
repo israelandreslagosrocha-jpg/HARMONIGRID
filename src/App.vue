@@ -7,7 +7,7 @@ import ScoreViewport from './components/ScoreViewport.vue'
 import ScoreSystem from './components/ScoreSystem.vue'
 import LaunchNotice from './components/LaunchNotice.vue'
 import logoUrl from './assets/logo.jpg'
-import { getDiatonicChords, SCALES, getScaleNotes } from './core/scales.js'
+import { getDiatonicChords, SCALES, getScaleNotes, getScaleDegreeLabels } from './core/scales.js'
 import { formatChord, getRomanNumeralForChord } from './core/chords.js'
 import { playClick, playChordNotes, getVoiceLedMidi, getRootPositionMidi } from './core/audio.js'
 import { generatePDF } from './core/pdfExport.js'
@@ -447,79 +447,7 @@ const getDynamicScaleExplanation = (keyRoot, scaleId, notesSpanish, parentRoot) 
   const scaleName = `${spanishKey} ${scaleDef.name}`
   const parentKeySpanish = translateNoteToSpanish(parentRoot)
   const notesStr = notesSpanish.join(', ')
-  switch (scaleId) {
-    // Mayor / Menor
-    case 'major':
-      return `La escala mayor es la escala diatónica fundamental de la música occidental. Su estructura de intervalos de tono y semitono (T–T–S–T–T–T–S) define el modo mayor, caracterizado por una sonoridad brillante, estable y alegre. En el caso de <strong>${scaleName}</strong>, sus notas son <strong>${notesStr}</strong>, organizadas según este patrón intervalar.`
-    case 'minor':
-      return `La escala de <strong>${scaleName}</strong> (también conocida como modo eólico) se construye a partir del sexto (6.º) grado de su escala mayor relativa, que es <strong>${parentKeySpanish} Mayor</strong>. Comparte exactamente la misma armadura de clave, pero comienza en su sexto grado, lo que le otorga una sonoridad melancólica, reflexiva y natural. En este tono, sus notas son <strong>${notesStr}</strong>.`
-    // Modos Griegos
-    case 'dorian':
-      return `El modo de <strong>${scaleName}</strong> (modo dórico) es el segundo (2.º) modo de la escala mayor. En este caso, <strong>${scaleName}</strong> se construye a partir del segundo grado de su escala mayor madre, que es <strong>${parentKeySpanish} Mayor</strong>. Es una escala menor con la sexta nota mayor (<strong>${notesSpanish[5]}</strong>), lo que le da un carácter más brillante dentro de las escalas menores, muy utilizada en el jazz, el rock y la música modal. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – 2 – ♭3 – 4 – 5 – 6 – ♭7).`
-    case 'phrygian':
-      return `El modo de <strong>${scaleName}</strong> (modo frigio) es el tercer (3.º) modo de la escala mayor. En este caso, <strong>${scaleName}</strong> se construye a partir del tercer grado de su escala mayor madre, que es <strong>${parentKeySpanish} Mayor</strong>. Es una escala menor con la segunda menor (<strong>♭2</strong> / <strong>${notesSpanish[1]}</strong>), lo que le otorga un carácter tenso, oscuro y de fuerte influencia flamenca o española. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – ♭2 – ♭3 – 4 – 5 – ♭6 – ♭7).`
-    case 'lydian':
-      return `El modo de <strong>${scaleName}</strong> (modo lidio) es el cuarto (4.º) modo de la escala mayor. Se construye a partir del cuarto grado de la escala mayor de <strong>${parentKeySpanish} Mayor</strong>. Es una escala mayor con la cuarta nota aumentada (<strong>#4</strong> / <strong>${notesSpanish[3]}</strong>), lo que genera una sonoridad sumamente brillante, de ensueño y cinematográfica. Sus notas específicas son <strong>${notesStr}</strong>.`
-    case 'mixolydian':
-      return `El modo de <strong>${scaleName}</strong> (modo mixolidio) es el quinto (5.º) modo de la escala mayor. Se construye a partir del quinto grado de su escala mayor madre, que es <strong>${parentKeySpanish} Mayor</strong>. Consiste en una estructura mayor con la séptima nota menor (<strong>♭7</strong> / <strong>${notesSpanish[6]}</strong>), lo que suaviza la tensión de sensible y la convierte en la escala base del blues, el rock y el funk. Sus notas específicas son <strong>${notesStr}</strong>.`
-    case 'locrian':
-      return `El modo de <strong>${scaleName}</strong> (modo locrio) es el séptimo (7.º) modo de la escala mayor. En este caso, <strong>${scaleName}</strong> se construye a partir del séptimo grado de su escala mayor madre, que es <strong>${parentKeySpanish} Mayor</strong>. Su sonoridad es disminuida e inestable debido a que posee una quinta disminuida (<strong>♭5</strong> / <strong>${notesSpanish[4]}</strong>) y una segunda menor (<strong>♭2</strong> / <strong>${notesSpanish[1]}</strong>), siendo el modo más tenso y sombrío del sistema diatónico. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – ♭2 – ♭3 – 4 – ♭5 – ♭6 – ♭7).`
-    // Menores Avanzadas
-    case 'harmonic_minor':
-      return `La escala de <strong>${scaleName}</strong> (menor armónica) se construye a partir de la escala menor natural elevando medio tono el séptimo grado (sensible, la nota <strong>${notesSpanish[6]}</strong>). En este tono, está formada por <strong>${notesStr}</strong>. Este cambio busca generar un acorde de dominante mayor sobre el quinto grado (V), permitiendo una resolución tonal fuerte hacia la tónica, dotándola de una sonoridad dramática y exótica.`
-    case 'melodic_minor':
-      return `La escala de <strong>${scaleName}</strong> (menor melódica) surge para suavizar el intervalo de segunda aumentada de la menor armónica, ascendiendo medio tono tanto el sexto grado (<strong>${notesSpanish[5]}</strong>) como el séptimo grado (<strong>${notesSpanish[6]}</strong>) respecto a la menor natural. En este tono, sus notas son <strong>${notesStr}</strong>. En el jazz moderno, se emplea de forma ascendente y descendente, siendo la escala madre de algunos de los modos más sofisticados.`
-    // Modos de Menor Armónica
-    case 'locrian_sharp6':
-      return `La escala de <strong>${scaleName}</strong> es el segundo (2.º) modo de la escala menor armónica. En este caso, <strong>${scaleName}</strong> se construye a partir del segundo grado de <strong>${parentKeySpanish} Menor Armónica</strong>. Conserva la tensión característica del locrio (con su quinta disminuida), pero al elevar la sexta a una sexta mayor (<strong>${notesSpanish[5]}</strong>), se obtiene un color más abierto y sofisticado, muy útil sobre acordes m7♭5. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – ♭2 – ♭3 – 4 – ♭5 – 6 – ♭7).`
-    case 'ionian_sharp5':
-      return `La escala de <strong>${scaleName}</strong> es el tercer (3.º) modo de la escala menor armónica. En este caso, <strong>${scaleName}</strong> se construye a partir del tercer grado de <strong>${parentKeySpanish} Menor Armónica</strong>. Es una escala mayor con la quinta aumentada (<strong>♯5</strong> / <strong>${notesSpanish[4]}</strong>), generando un sonido de acorde aumentado, misterioso, flotante e impresionista sobre acordes Maj7(♯5). Sus notas son <strong>${notesStr}</strong>.`
-    case 'dorian_sharp4':
-      return `La escala de <strong>${scaleName}</strong> es el cuarto (4.º) modo de la escala menor armónica. En este caso, <strong>${scaleName}</strong> se construye a partir del cuarto grado de <strong>${parentKeySpanish} Menor Armónica</strong>. Combina la base menor del dórico con la tensión de una cuarta aumentada (<strong>♯4</strong> / <strong>${notesSpanish[3]}</strong>), típica de la música folclórica de Europa del Este (escala gitana). Sus notas son <strong>${notesStr}</strong>.`
-    case 'phrygian_dominant':
-      return `La escala de <strong>${scaleName}</strong> es el quinto (5.º) modo de la escala menor armónica. En este caso, <strong>${scaleName}</strong> surge a partir del quinto grado de <strong>${parentKeySpanish} Menor Armónica</strong>. Es el modo más popular de este sistema; posee una tercera mayor combinada con una segunda menor, generando el clásico sonido exótico del flamenco, el heavy metal y las bandas sonoras. Sus notas específicas son <strong>${notesStr}</strong>.`
-    case 'lydian_sharp2':
-      return `La escala de <strong>${scaleName}</strong> es el sexto (6.º) modo de la escala menor armónica. En este caso, <strong>${scaleName}</strong> se construye a partir del sexto grado de <strong>${parentKeySpanish} Menor Armónica</strong>. Es una escala mayor con una segunda aumentada (<strong>♯2</strong> / <strong>${notesSpanish[1]}</strong>) y una cuarta aumentada (<strong>♯4</strong> / <strong>${notesSpanish[3]}</strong>), lo que produce una sonoridad inusual, tensa y de carácter místico o cinematográfico. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – ♯2 – 3 – ♯4 – 5 – ♭6 – ♭7).`
-    case 'ultralocrian':
-      return `La escala de <strong>${scaleName}</strong> (Superlocrio Disminuido o locrio ♭♭7) es el séptimo (7.º) modo de la escala menor armónica. En este caso, <strong>${scaleName}</strong> se construye a partir del séptimo grado de <strong>${parentKeySpanish} Menor Armónica</strong>. Su sonoridad es extremadamente inestable y oscura debido a que posee una quinta disminuida (<strong>♭5</strong>) y una séptima disminuida (<strong>♭♭7</strong> / <strong>${notesSpanish[6]}</strong>), siendo una escala más teórica que práctica. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – ♭2 – ♭3 – 4 – ♭5 – ♭6 – ♭♭7).`
-    // Modos de Menor Melódica
-    case 'dorian_flat2':
-      return `La escala de <strong>${scaleName}</strong> (y todas las escalas dóricas ♭2) es el segundo (2.º) modo de la escala menor melódica. En este caso, <strong>${scaleName}</strong> se construye a partir del segundo grado de <strong>${parentKeySpanish} Menor Melódica</strong>. Mezcla la tensión de la segunda menor (<strong>♭2</strong>) con la sexta mayor característica del modo dórico, generando una sonoridad muy utilizada en el jazz moderno y la fusión. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – ♭2 – ♭3 – 4 – 5 – 6 – ♭7).`
-    case 'lydian_augmented':
-      return `El modo de <strong>${scaleName}</strong> es el tercer (3.º) modo de la escala menor melódica. En este caso, <strong>${scaleName}</strong> se construye a partir del tercer grado de <strong>${parentKeySpanish} Menor Melódica</strong>. Es una escala de tipo mayor con la cuarta aumentada (<strong>♯4</strong> / <strong>${notesSpanish[3]}</strong>) y la quinta aumentada (<strong>♯5</strong> / <strong>${notesSpanish[4]}</strong>), lo que genera una sonoridad muy suspendida e ideal para acordes Maj7(♯5), formada por las notas <strong>${notesStr}</strong>.`
-    case 'lydian_dominant':
-      return `El modo de <strong>${scaleName}</strong> es el cuarto (4.º) modo de la escala menor melódica. En este caso, <strong>${scaleName}</strong> se construye a partir del cuarto grado de <strong>${parentKeySpanish} Menor Melódica</strong>. Combina la cuarta aumentada (<strong>♯4</strong> / <strong>${notesSpanish[3]}</strong>) con la séptima menor (<strong>♭7</strong> / <strong>${notesSpanish[6]}</strong>), siendo la opción predilecta en el jazz para dominantes no funcionales con extensión ♯11. Sus notas son <strong>${notesStr}</strong>.`
-    case 'mixolydian_flat6':
-      return `El modo de <strong>${scaleName}</strong> es el quinto (5.º) modo de la escala menor melódica. En este caso, <strong>${scaleName}</strong> se construye a partir del quinto grado de <strong>${parentKeySpanish} Menor Melódica</strong>. Consiste en una estructura mayor con la sexta menor (<strong>♭6</strong> / <strong>${notesSpanish[5]}</strong>) y la séptima menor (<strong>♭7</strong> / <strong>${notesSpanish[6]}</strong>), lo que aporta un color cálido pero melancólico sobre acordes dominantes antes de resolver. Sus notas son <strong>${notesStr}</strong>.`
-    case 'locrian_sharp2':
-      return `La escala de <strong>${scaleName}</strong> (y todas las escalas locrias ♯2) es el sexto (6.º) modo de la escala menor melódica. En este caso, <strong>${scaleName}</strong> se construye a partir del sexto grado de <strong>${parentKeySpanish} Menor Melódica</strong>. Es un modo locrio con la segunda mayor, lo que lo hace mucho más estable y una opción clave para improvisar sobre acordes semidisminuidos (m7♭5). Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – 2 – ♭3 – 4 – ♭5 – ♭6 – ♭7).`
-    case 'altered':
-      return `La escala de <strong>${scaleName}</strong> (también llamada escala superlocria) es el séptimo (7.º) modo de la escala menor melódica. En este caso, <strong>${scaleName}</strong> se construye a partir del séptimo grado de <strong>${parentKeySpanish} Menor Melódica</strong>. Contiene todas las alteraciones posibles sobre un acorde dominante (♭9, ♯9, ♭5, ♯5), siendo la escala de máxima tensión para acordes dominantes alterados. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – ♭2 – ♯2 – 3 – ♭5 – ♯5 – ♭7).`
-    // Simétricas
-    case 'diminished_wh':
-      return `La escala de <strong>${scaleName}</strong> es una estructura simétrica octatónica (de ocho notas) que se construye alternando intervalos de Tono (T) y Semitono (S). En este caso, sus notas son <strong>${notesStr}</strong>. Se repite de forma idéntica cada tercera menor, convirtiéndola en la herramienta definitiva para improvisar sobre acordes disminuidos con séptima disminuida (dim7).`
-    case 'diminished_hw':
-      return `La escala de <strong>${scaleName}</strong> es una estructura simétrica octatónica que se construye alternando Semitono (S) y Tono (T). En este tono, se forma con las notas <strong>${notesStr}</strong>. Se utiliza para generar máxima tensión sobre acordes dominantes, generando tensiones de novena bemol (<strong>♭9</strong>), novena aumentada (<strong>♯9</strong>) y quinta bemol (<strong>♭5</strong>).`
-    case 'whole_tone':
-      return `La escala de <strong>${scaleName}</strong> es una estructura simétrica hexatónica (de seis notas) compuesta exclusivamente por intervalos de tono entero. En este tono, sus notas son <strong>${notesStr}</strong>. Al no tener quintas justas ni semitonos, carece de centro tonal fuerte, produciendo una sonoridad suspendida y etérea típica del impresionismo francés.`
-    // Populares
-    case 'pentatonic_major':
-      return `La escala de <strong>${scaleName}</strong> (pentatónica mayor) es una estructura de cinco notas derivada de la escala de <strong>${spanishKey} Mayor</strong>, omitiendo el cuarto y séptimo grado para eliminar los semitonos disonantes. En este caso, sus notas son <strong>${notesStr}</strong>. Su ausencia de tensiones la hace sumamente fluida y popular en el pop, el rock y la música folclórica.`
-    case 'pentatonic_minor':
-      return `La escala de <strong>${scaleName}</strong> (pentatónica menor) es una estructura de cinco notas que se deriva de la escala de <strong>${spanishKey} Menor Natural</strong>, omitiendo el segundo y sexto grado. En este caso, está compuesta por las notas <strong>${notesStr}</strong>. Es el bloque fundamental de la guitarra moderna, el rock y el blues.`
-    case 'blues':
-      return `La escala de <strong>${scaleName}</strong> (escala de blues) se construye sobre la base de la escala pentatónica menor, incorporando la emblemática nota de blues o quinta disminuida (<strong>♭5</strong> / <strong>${notesSpanish[3]}</strong>) como nota de paso cromática. En esta tonalidad, se compone de las notas <strong>${notesStr}</strong>, aportando su carácter melancólico y expresivo.`
-    case 'harmonic_major':
-      return `La escala de <strong>${scaleName}</strong> (mayor armónica) es una variación de la escala mayor natural con el sexto grado rebajado medio tono (<strong>♭6</strong>). Aporta una sonoridad brillante pero con un matiz exótico y melancólico, muy utilizada en la rearmonización de jazz y música para cine. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – 2 – 3 – 4 – 5 – ♭6 – 7).`
-    case 'hungarian_gypsy_minor':
-      return `La escala de <strong>${scaleName}</strong> (menor húngara o doble armónica menor) es una de las escalas exóticas más importantes para composición cinematográfica, metal neoclásico y música gitana. Combina la estructura de la menor armónica con el intervalo de cuarta aumentada (<strong>♯4</strong> / <strong>${notesSpanish[3]}</strong>) del modo lidio, conteniendo simultáneamente <strong>♯4</strong> y <strong>7</strong> (sensible mayor). En esta tonalidad, sus notas son <strong>${notesStr}</strong>.`
-    case 'hungarian_major':
-      return `La escala de <strong>${scaleName}</strong> (mayor húngara) modifica la escala mayor elevando la segunda (<strong>♯2</strong> / <strong>${notesSpanish[1]}</strong>) y la cuarta (<strong>♯4</strong> / <strong>${notesSpanish[3]}</strong>). El resultado es una sonoridad brillante, exótica y muy utilizada en música gitana, bandas sonoras, fantasía y composición cinematográfica. En esta tonalidad, está compuesta por las notas <strong>${notesStr}</strong>.`
-    case 'bebop_dominant':
-      return `La escala de <strong>${scaleName}</strong> (bebop dominante) es una escala mixolidia que incorpora la séptima mayor como nota de paso entre la séptima menor y la octava. Al tener ocho notas, permite que las notas del acorde (1, 3, 5, ♭7) caigan siempre en los tiempos fuertes al tocar corcheas, siendo la base del fraseo de jazz bebop. Sus notas son <strong>${notesStr}</strong> (fórmula: 1 – 2 – 3 – 4 – 5 – 6 – ♭7 – 7).`
-    default:
-      return scaleDef.explanation
-  }
+  return `${scaleDef.explanation} En <strong>${scaleName}</strong>, las notas son <strong>${notesStr}</strong>. La sonoridad depende también del acorde, el ritmo, el registro y el fraseo; las descripciones de carácter orientan la escucha y no son reglas universales.`
 }
 const keyInfoData = computed(() => {
   const currentKey = key.value
@@ -547,14 +475,7 @@ const keyInfoData = computed(() => {
   
   const notesSpanish = spelledNotes.map(translateNoteToSpanish)
   
-  const intervalLabels = scaleDef.intervals.map((semitones) => {
-    const intervalNames = {
-      0: 'R',
-      1: 'b2', 2: '2M', 3: 'b3', 4: '3M', 5: '4P',
-      6: 'b5', 7: '5P', 8: 'b6', 9: '6M', 10: 'b7', 11: '7M'
-    }
-    return intervalNames[semitones] || `${semitones}st`
-  })
+  const intervalLabels = getScaleDegreeLabels(currentKey,currentScaleId)
   
   let circleExplanation = ''
   const parentRoot = getParentKeyRoot(currentKey, currentScaleId)
@@ -10977,7 +10898,7 @@ function hydrateProjectDocument(document) {
                 <h5 class="text-xs font-black text-amber-800 uppercase tracking-wider">Advertencia Educativa</h5>
                 <p class="text-xs text-amber-700 leading-relaxed">
                   Has colocado un acorde en un <strong>silencio rítmico</strong>. 
-                  En la teoría y práctica musical, los acordes se asocian a las figuras y tiempos activos (notas), no a los silencios.
+                  En este pulso el acorde se conserva escrito, pero no produce un ataque porque está marcado como silencio. La indicación armónica puede seguir describiendo el contexto musical durante ese silencio.
                   Puedes cambiar la figura rítmica de este pulso en la sección "Ritmo Armónico" más abajo para seleccionar un patrón compatible que tenga una nota en este tiempo.
                 </p>
               </div>

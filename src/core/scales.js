@@ -12,7 +12,7 @@ export const SCALES = {
     intervals: [0, 2, 4, 5, 7, 9, 11],
     formula: 'T – T – S – T – T – T – S',
     characteristic: 'Escala diatónica fundamental de la música occidental.',
-    explanation: 'Es la escala diatónica fundamental de la música occidental. Su estructura de intervalos de tono y semitono (T-T-S-T-T-T-S) define el modo mayor, caracterizado por una sonoridad brillante y alegre. Sus notas se organizan de forma natural siguiendo el orden del círculo de quintas.',
+    explanation: 'Es la escala diatónica fundamental de la música occidental. Su estructura de intervalos de tono y semitono (T-T-S-T-T-T-S) define el modo mayor, caracterizado por una sonoridad brillante y alegre. Sus grados se ordenan por altura dentro de la octava; el círculo de quintas relaciona tonalidades y armaduras, no el orden de sus notas.',
     degrees: [
       { numeral: 'I', triad: 'maj', tetrad: 'maj7' },
       { numeral: 'ii', triad: 'min', tetrad: 'm7' },
@@ -127,7 +127,7 @@ export const SCALES = {
     isPro: true,
     intervals: [0, 1, 3, 5, 6, 8, 10],
     formula: 'S – T – T – S – T – T – T',
-    characteristic: 'Escala disminuida inestable con 2.ª menor y 5.ª disminuida.',
+    characteristic: 'Modo diatónico con 2.ª menor y 5.ª disminuida; su acorde de tónica es disminuido.',
     explanation: 'Es el séptimo modo de la escala mayor, construido desde el séptimo (7.º) grado de la escala mayor madre (ej. Si Locrio surge de Do Mayor). Su sonoridad es disminuida e inestable debido a que posee una quinta disminuida (b5) y una segunda menor (b2), siendo el modo más tenso de la escala mayor.',
     degrees: [
       { numeral: 'i°', triad: 'dim', tetrad: 'm7b5' },
@@ -168,7 +168,7 @@ export const SCALES = {
     intervals: [0, 2, 3, 5, 7, 9, 11],
     formula: 'T – S – T – T – T – T – S',
     characteristic: 'Escala menor con 6.ª y 7.ª mayores. Sonido jazz moderno.',
-    explanation: 'Creada para suavizar el salto melódico de tono y medio de la menor armónica, ascendiendo también el sexto grado. En la música popular y el jazz moderno se usa tanto de subida como de bajada, siendo la madre de modos muy avanzados para improvisación.',
+    explanation: 'Creada para suavizar el salto melódico de tono y medio de la menor armónica, ascendiendo también el sexto grado. En la enseñanza tonal clásica se presenta con 6.º y 7.º elevados al ascender y como menor natural al descender, según el contexto. Aquí se usa la colección fija del jazz, con 6.º y 7.º mayores en ambas direcciones, de la que derivan sus modos.',
     degrees: [
       { numeral: 'i', triad: 'min', tetrad: 'mM7' },
       { numeral: 'ii', triad: 'min', tetrad: 'm7' },
@@ -194,10 +194,10 @@ export const SCALES = {
       { numeral: 'iø', triad: 'dim', tetrad: 'm7b5' },
       { numeral: '♭II+', triad: 'aug', tetrad: 'maj7#5' },
       { numeral: '♭iii', triad: 'min', tetrad: 'm7' },
-      { numeral: 'iv', triad: 'min', tetrad: 'm7' },
+      { numeral: 'IV', triad: 'maj', tetrad: '7' },
       { numeral: '♭V', triad: 'maj', tetrad: 'maj7' },
       { numeral: 'VI°', triad: 'dim', tetrad: 'dim7' },
-      { numeral: '♭vii', triad: 'min', tetrad: 'm7' }
+      { numeral: '♭vii', triad: 'min', tetrad: 'mM7' }
     ]
   },
   ionian_sharp5: {
@@ -230,12 +230,12 @@ export const SCALES = {
     explanation: 'Cuarto modo de la escala menor armónica (construido sobre el IV grado). Combina la melancolía del dórico con la tensión de una cuarta aumentada, típica de la música folclórica de Europa del Este (también llamada escala gitana).',
     degrees: [
       { numeral: 'i', triad: 'min', tetrad: 'm7' },
-      { numeral: 'ii', triad: 'min', tetrad: 'm7' },
-      { numeral: '♭III+', triad: 'aug', tetrad: 'maj7#5' },
-      { numeral: '#iv°', triad: 'dim', tetrad: 'm7b5' },
-      { numeral: 'v', triad: 'min', tetrad: 'm7' },
+      { numeral: 'II', triad: 'maj', tetrad: '7' },
+      { numeral: '♭III', triad: 'maj', tetrad: 'maj7' },
+      { numeral: '#iv°', triad: 'dim', tetrad: 'dim7' },
+      { numeral: 'v', triad: 'min', tetrad: 'mM7' },
       { numeral: 'vi°', triad: 'dim', tetrad: 'm7b5' },
-      { numeral: '♭VII', triad: 'maj', tetrad: 'maj7' }
+      { numeral: '♭VII+', triad: 'aug', tetrad: 'maj7#5' }
     ]
   },
   phrygian_dominant: {
@@ -269,11 +269,11 @@ export const SCALES = {
     degrees: [
       { numeral: 'I', triad: 'maj', tetrad: 'maj7' },
       { numeral: '♯ii°', triad: 'dim', tetrad: 'dim7' },
-      { numeral: 'iii+', triad: 'aug', tetrad: 'maj7#5' },
+      { numeral: 'iii', triad: 'min', tetrad: 'mM7' },
       { numeral: '♯iv°', triad: 'dim', tetrad: 'm7b5' },
-      { numeral: 'V', triad: 'maj', tetrad: 'maj7' },
+      { numeral: 'V+', triad: 'aug', tetrad: 'maj7#5' },
       { numeral: 'vi', triad: 'min', tetrad: 'm7' },
-      { numeral: 'vii', triad: 'min', tetrad: 'm7' }
+      { numeral: 'VII', triad: 'maj', tetrad: '7' }
     ]
   },
   ultralocrian: {
@@ -400,7 +400,7 @@ export const SCALES = {
     intervals: [0, 1, 3, 4, 6, 8, 10],
     formula: 'S – T – S – T – T – T – T',
     characteristic: 'Superlocrio. Escala de máxima tensión para dominantes alterados.',
-    explanation: 'Séptimo modo de la escala menor melódica (construido sobre el VII grado). Altera todos los grados posibles (b2, #2, b5, #5, b7), siendo la escala de máxima tensión sobre acordes dominantes alterados (7alt).',
+    explanation: 'Séptimo modo de la escala menor melódica (construido sobre el VII grado). Sobre un dominante conserva fundamental, tercera mayor y séptima menor, y aporta ♭9, ♯9, ♭5/♯11 y ♯5/♭13. La lectura superlocria por grados y la escritura práctica de estas tensiones son enarmónicas; su uso depende de la resolución del acorde.',
     degrees: [
       { numeral: 'i°', triad: 'dim', tetrad: 'm7b5' },
       { numeral: '♭ii', triad: 'min', tetrad: 'mM7' },
@@ -481,7 +481,7 @@ export const SCALES = {
     intervals: [0, 2, 4, 7, 9],
     formula: 'T – T – 1.5T – T – 1.5T',
     characteristic: 'Escala de 5 notas sin semitonos. Muy popular en folk y rock.',
-    explanation: 'Escala de 5 notas derivada de la escala mayor eliminando el 4.º y 7.º grado (los semitonos). Al no tener intervalos disonantes, es imposible tocar una nota fuera de tono, siendo la base del folk y el pop.',
+    explanation: 'Escala de 5 notas derivada de la escala mayor eliminando el 4.º y 7.º grado (los semitonos). No contiene semitonos internos, pero la consonancia depende del acorde, el registro y el contexto. Una nota de la pentatónica puede crear tensión sobre la armonía; escucha su resolución en vez de asumir que cualquier nota encaja.',
     degrees: [
       { numeral: 'I', triad: 'maj', tetrad: 'maj7' },
       { numeral: 'ii', triad: 'min', tetrad: 'm7' },
@@ -590,7 +590,7 @@ export const SCALES = {
     intervals: [0, 2, 4, 5, 7, 9, 10, 11],
     formula: 'T – T – S – T – T – S – S – S',
     characteristic: 'Mixolidia con séptima mayor de paso (7M). Fundamental para el fraseo de jazz.',
-    explanation: 'Escala mixolidia que incorpora la séptima mayor como nota de paso entre la séptima menor y la octava. Al tener ocho notas, permite que las notas del acorde (1, 3, 5, ♭7) caigan siempre en los tiempos fuertes al tocar corcheas, siendo la base del fraseo de jazz bebop.',
+    explanation: 'Escala mixolidia que incorpora la séptima mayor como nota de paso entre la séptima menor y la octava. Al tener ocho notas, puede alinear las notas del acorde (1, 3, 5, ♭7) con los tiempos fuertes en líneas continuas de corcheas, según la nota inicial y la dirección del fraseo, siendo la base del fraseo de jazz bebop.',
     degrees: [
       { numeral: 'I', triad: 'maj', tetrad: '7' },
       { numeral: 'ii', triad: 'min', tetrad: 'm7' },
@@ -632,7 +632,7 @@ export function getScaleNotes(keyRoot, scaleType) {
     } else if (scaleType === 'blues') {
       letterOffsets = [0, 2, 3, 4, 4, 6]
     } else if (scaleType === 'whole_tone') {
-      letterOffsets = [0, 1, 2, 3, 4, 5]
+      letterOffsets = [0, 1, 2, 3, 5, 6] // 1, 2, 3, #4, b6, b7; avoids triple accidentals
     } else if (scaleType === 'diminished_wh') {
       letterOffsets = [0, 1, 2, 3, 3, 4, 5, 6]
     } else if (scaleType === 'diminished_hw') {
@@ -698,4 +698,20 @@ export function getDiatonicChords(keyRoot, scaleType = 'major', complexity = 'te
       label: `${rootName}${labelType}`
     }
   }).filter(Boolean)
+}
+
+/** Degree spelling matters: F# is #4 in C, not b5 just because both are 6 semitones. */
+export function getScaleDegreeLabels(keyRoot,scaleType) {
+  const notes=getScaleNotes(keyRoot,scaleType)
+  const letters='CDEFGAB',major=[0,2,4,5,7,9,11]
+  const tonicLetter=letters.indexOf(keyRoot?.[0]),tonic=NOTE_TO_INDEX[keyRoot]
+  if(tonicLetter<0||tonic===undefined)return []
+  return notes.map(note=>{
+    const degree=(letters.indexOf(note[0])-tonicLetter+7)%7
+    const pitch=(NOTE_TO_INDEX[note]-tonic+12)%12
+    let alteration=(pitch-major[degree]+12)%12
+    if(alteration>6)alteration-=12
+    if(degree===0&&alteration===0)return 'R'
+    return (alteration<0?'♭'.repeat(-alteration):'♯'.repeat(alteration))+(degree+1)
+  })
 }

@@ -1,7 +1,7 @@
 // src/core/suggestions.js
 import { NOTE_TO_INDEX, transposeNote } from './notes.js'
 import { getScaleNotes, SCALES } from './scales.js'
-import { getKeySignature } from './keySignatures.js'
+import { CHORD_TYPE_INTERVALS } from './audio.js'
 import { 
   getDiatonicFunction, 
   getDiatonicRelationship, 
@@ -66,26 +66,16 @@ const getThirdOfRoot = (root, type, keyContext) => {
   return transposeNote(root, offset, keyContext)
 }
 
-function getChordNotes(root, type, keyContext) {
-  const notes = { root: root }
-  
-  // Third
-  const isMinor = ['min', 'm7', 'm7b5', 'dim', 'dim7', 'mM7', 'min7', 'minor'].includes(type)
-  notes.third = transposeNote(root, isMinor ? 3 : 4, keyContext)
-  
-  // Fifth
-  const isDim = ['dim', 'dim7', 'm7b5'].includes(type)
-  notes.fifth = transposeNote(root, isDim ? 6 : 7, keyContext)
-  
-  // Seventh
-  if (['maj7', 'maj9', 'mM7'].includes(type)) {
-    notes.seventh = transposeNote(root, 11, keyContext)
-  } else if (['m7', '7', 'm7b5', 'min7', '9', 'm9', '7sus4'].includes(type)) {
-    notes.seventh = transposeNote(root, 10, keyContext)
-  } else if (type === 'dim7') {
-    notes.seventh = transposeNote(root, 9, keyContext)
-  }
-  
+export function getChordNotes(root, type, keyContext) {
+  const aliases={minor:'min',m:'min',min7:'m7',maj9:'maj7',m9:'m7','9':'7','7sus4':'7'}
+  const intervals=CHORD_TYPE_INTERVALS[aliases[type]||type]||CHORD_TYPE_INTERVALS.maj
+  const notes={root}
+  const third=type==='7sus4'?5:intervals[1]
+  const middleRole=type==='sus2'?'second':type==='sus4'||type==='7sus4'?'fourth':'third'
+  notes[middleRole]=transposeNote(root,third,keyContext)
+  notes.fifth=transposeNote(root,intervals[2],keyContext)
+  if(intervals.length>=4)notes[['6','m6','69','m69'].includes(type)?'sixth':'seventh']=transposeNote(root,intervals[3],keyContext)
+  if(intervals.length>=5)notes.ninth=transposeNote(root,intervals[4],keyContext)
   return notes
 }
 
@@ -95,8 +85,8 @@ function explainNoteResolution(note, chordB, keyContext) {
   
   // Check if it is a common tone
   for (const [role, bNote] of Object.entries(bNotes)) {
-    if (bNote === note) {
-      const roleSpanish = { root: 'fundamental', third: 'tercera', fifth: 'quinta', seventh: 'séptima' }[role]
+    if (NOTE_TO_INDEX[bNote] !== undefined && NOTE_TO_INDEX[bNote] === noteIdx) {
+      const roleSpanish = { root: 'fundamental', second: 'segunda', third: 'tercera', fourth: 'cuarta', fifth: 'quinta', sixth: 'sexta', seventh: 'séptima', ninth: 'novena' }[role]
       return `la nota ${note} se mantiene como **nota común**, convirtiéndose en la ${roleSpanish} de ${chordB.root}${chordB.type || ''}, lo que proporciona un enlace extremadamente estable y suave`
     }
   }
@@ -106,12 +96,12 @@ function explainNoteResolution(note, chordB, keyContext) {
     const bNoteIdx = NOTE_TO_INDEX[bNote]
     if (noteIdx !== undefined && bNoteIdx !== undefined) {
       const diff = (bNoteIdx - noteIdx + 12) % 12
-      const roleSpanish = { root: 'fundamental', third: 'tercera', fifth: 'quinta', seventh: 'séptima' }[role]
+      const roleSpanish = { root: 'fundamental', second: 'segunda', third: 'tercera', fourth: 'cuarta', fifth: 'quinta', sixth: 'sexta', seventh: 'séptima', ninth: 'novena' }[role]
       
       if (diff === 1) { // Resolves UP by 1 semitone (half step)
         return `la nota ${note} resuelve por **semitono ascendente** directo hacia la ${roleSpanish} (${bNote}) de ${chordB.root}${chordB.type || ''}, creando una conducción de voces muy melódica`
       } else if (diff === 11) { // Resolves DOWN by 1 semitone (half step)
-        return `la nota ${note} conduce por **semitono descendente** (sensible) hacia la ${roleSpanish} (${bNote}) de ${chordB.root}${chordB.type || ''}, ofreciendo una resolución de gran fluidez`
+        return `la nota ${note} conduce por **semitono descendente** hacia la ${roleSpanish} (${bNote}) de ${chordB.root}${chordB.type || ''}, ofreciendo una resolución de gran fluidez`
       } else if (diff === 2) { // Resolves UP by 2 semitones (whole step)
         return `la nota ${note} se desplaza por **paso conjunto ascendente** hacia la ${roleSpanish} (${bNote}) de ${chordB.root}${chordB.type || ''}`
       } else if (diff === 10) { // Resolves DOWN by 2 semitones (whole step)
@@ -3597,26 +3587,28 @@ export function analyzeModulationRelationship(fromKey, fromScale, toKey, toScale
   
   const semitones = (toIdx - fromIdx + 12) % 12
   
-  // 1. Relativa: comparten la misma armadura de clave
-  const sigFrom = getKeySignature(fromKey, fromScale || 'major')
-  const sigTo = getKeySignature(toKey, toScale || 'major')
-  const isSameSignature = sigFrom.type === sigTo.type && sigFrom.count === sigTo.count
-  const isDifferentKey = fromKey !== toKey || fromScale !== toScale
-  if (isSameSignature && isDifferentKey) {
+  // Shared armatures are not enough: altered minor collections can differ.
+  const fromNotes=getScaleNotes(fromKey,fromScale||'major').map(note=>NOTE_TO_INDEX[note])
+  const toNotes=getScaleNotes(toKey,toScale||'major').map(note=>NOTE_TO_INDEX[note])
+  const sameCollection=fromNotes.length>0 && fromNotes.length===toNotes.length &&
+    fromNotes.every(note=>toNotes.includes(note))
+  const different=fromIdx!==toIdx || fromScale!==toScale
+  if(sameCollection&&different) {
+    const majorMinorPair=[fromScale||'major',toScale||'major'].sort().join(',')==='major,minor'
     return {
-      type: 'Relativa',
-      description: 'Modulación a la Relativa. Dado que ambas tonalidades comparten la misma armadura de clave (mismas notas), la transición es extremadamente fluida y orgánica. Ofrece un cambio de color emocional (de mayor a menor o viceversa) sin alterar la afinación general.'
+      type:majorMinorPair?'Relativa':'Modos relativos',
+      description:majorMinorPair
+        ? 'Estas tonalidades mayor y menor natural comparten notas y armadura, pero tienen tónicas diferentes. Para establecer el nuevo centro, refuérzalo mediante la melodía, el bajo y las cadencias.'
+        : 'Estas colecciones comparten las mismas clases de altura y tienen centros modales diferentes. Cambiar el centro requiere apoyo del bajo, el fraseo o la armonía; comenzar en otra nota por sí solo no garantiza el nuevo modo.'
     }
   }
-  
-  // 2. Paralela
-  if (fromKey === toKey && fromScale !== toScale) {
+  if(fromIdx===toIdx&&fromScale!==toScale) {
     return {
-      type: 'Tonalidad Paralela',
-      description: 'Modulación Paralela (Homónima). Mantiene la misma tónica fundamental pero cambia el modo (de Mayor a menor o viceversa). Aporta un contraste emocional inmediato y dramático, alterando la sonoridad sin mover el centro físico del bajo.'
+      type:'Tonalidad Paralela',
+      description:'Las colecciones mantienen la tónica y cambian uno o más grados. Es una relación paralela u homónima; el efecto depende de las notas alteradas, los acordes, el registro y el fraseo.'
     }
   }
-  
+
   // 3. Subida de Energía (1 o 2 semitonos arriba)
   if (semitones === 1 || semitones === 2) {
     return {
