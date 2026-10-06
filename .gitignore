@@ -12,3 +12,6 @@ pnpm-debug.log*
 # Local security tooling and private scan artifacts
 .tools/
 strix_runs/
+
+# Private security scanner credentials
+/strix.env
