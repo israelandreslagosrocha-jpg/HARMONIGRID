@@ -12,7 +12,7 @@ if(!values.LLM_API_KEY)fail('Falta LLM_API_KEY en .tools/strix.env. No se ha eje
 if(values.STRIX_LLM!=='openai/gpt-5.4')fail('El proveedor/modelo debe ser openai/gpt-5.4 para este primer escaneo.')
 const executable=path.join(root,'.tools/strix/bin/strix')
 if(!fs.existsSync(executable))fail('La instalación local de Strix aún no está lista.')
-const env={PATH:process.env.PATH,HOME:process.env.HOME,TMPDIR:process.env.TMPDIR,LANG:process.env.LANG,...values}
+const env={PATH:process.env.PATH,HOME:process.env.HOME,TMPDIR:process.env.TMPDIR,LANG:process.env.LANG,DOCKER_HOST:`unix://${process.env.HOME}/.colima/harmonigrid-security/docker.sock`,...values}
 const docker=spawnSync('docker',['info','--format','{{.ServerVersion}}'],{env,encoding:'utf8',timeout:20000})
 if(docker.status!==0)fail('Docker no está disponible o su máquina virtual aún no está iniciada.')
 const help=spawnSync(executable,['--help'],{env,encoding:'utf8',timeout:30000})
@@ -21,7 +21,12 @@ const prepared=spawnSync(process.execPath,[path.join(root,'scripts/prepare-strix
 if(prepared.status!==0)fail('No se pudo preparar la copia aislada.')
 const target=prepared.stdout.match(/^Prepared isolated source target: (.+)$/m)?.[1]
 if(!target)fail('No se pudo identificar la copia aislada.')
+// Do not inherit unrelated user MCP connections or scan configuration.
+const cliConfig=path.join(root,'.tools/strix-cli.json')
+const mcpConfig=path.join(root,'.tools/strix-mcp.json')
+fs.writeFileSync(cliConfig,'{}\n',{mode:0o600})
+fs.writeFileSync(mcpConfig,'{"mcpServers":{}}\n',{mode:0o600})
 console.log('Primer escaneo OpenAI: umbral estimado US$4, margen respecto del presupuesto de US$5. No es un límite exacto de facturación.')
 console.log(`Objetivo aislado: ${target}`)
-const result=spawnSync(executable,['--target',target,'--instruction-file',path.join(target,'STRIX_SCOPE.md'),'--scan-mode','quick','--scope-mode','full','--non-interactive','--max-budget','4','--max-turns','40'],{cwd:root,env,stdio:'inherit'})
+const result=spawnSync(executable,['--config',cliConfig,'--mcp-config',mcpConfig,'--target',target,'--instruction-file',path.join(target,'STRIX_SCOPE.md'),'--scan-mode','quick','--scope-mode','full','--non-interactive','--max-budget','4','--max-turns','40'],{cwd:root,env,stdio:'inherit'})
 process.exit(result.status??1)
