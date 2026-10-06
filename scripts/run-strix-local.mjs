@@ -18,9 +18,19 @@ const docker=spawnSync('docker',['info','--format','{{.ServerVersion}}'],{env,en
 if(docker.status!==0)fail('Docker no está disponible o su máquina virtual aún no está iniciada.')
 const help=spawnSync(executable,['--help'],{env,encoding:'utf8',timeout:30000})
 if(help.status!==0||!help.stdout.includes('--max-budget')||!help.stdout.includes('--max-turns'))fail('Esta versión de Strix no confirma los controles de presupuesto y turnos. Se cancela sin llamadas al modelo.')
-const prepared=spawnSync(process.execPath,[path.join(root,'scripts/prepare-strix-target.mjs')],{cwd:root,encoding:'utf8'})
-if(prepared.status!==0)fail('No se pudo preparar la copia aislada.')
-const target=prepared.stdout.match(/^Prepared isolated source target: (.+)$/m)?.[1]
+const resume=process.argv[2]
+let target
+if(resume){
+  if(!/^[a-z0-9_-]+$/.test(resume))fail('Identificador de escaneo inválido.')
+  const saved=JSON.parse(fs.readFileSync(path.join(root,'strix_runs',resume,'run.json'),'utf8'))
+  if(saved.targets_info?.length!==1||saved.targets_info[0].type!=='local_code')fail('Sólo se permite retomar un objetivo local aislado.')
+  target=saved.targets_info[0].details.target_path
+  if(!fs.realpathSync(target).startsWith('/private/tmp/harmonigrid-security/'))fail('El objetivo guardado no pertenece al entorno aislado.')
+}else{
+  const prepared=spawnSync(process.execPath,[path.join(root,'scripts/prepare-strix-target.mjs')],{cwd:root,encoding:'utf8'})
+  if(prepared.status!==0)fail('No se pudo preparar la copia aislada.')
+  target=prepared.stdout.match(/^Prepared isolated source target: (.+)$/m)?.[1]
+}
 if(!target)fail('No se pudo identificar la copia aislada.')
 // Do not inherit unrelated user MCP connections or scan configuration.
 const cliConfig=path.join(root,'.tools/strix-cli.json')
@@ -38,13 +48,15 @@ const relay=await startBudgetRelay(values.LLM_API_KEY,path.join(root,'.tools'),f
 env.LLM_API_KEY=relay.token
 env.LLM_API_BASE=relay.base
 env.STRIX_API_TYPE='chat_completions'
-env.STRIX_REASONING_EFFORT='medium'
+// GPT-5.4 function tools on Chat Completions require reasoning_effort=none.
+env.STRIX_REASONING_EFFORT='none'
 env.STRIX_TELEMETRY='false'
 let status=1
 try {
   status=await new Promise((resolve,reject)=>{
-    const child=spawn(executable,['--config',cliConfig,'--mcp-config',mcpConfig,'--target',target,'--instruction-file',path.join(target,'STRIX_SCOPE.md'),'--scan-mode','quick','--scope-mode','full','--non-interactive','--max-budget','4','--max-turns','40'],{cwd:root,env,stdio:'inherit'})
+    const selection=resume?['--resume',resume]:['--target',target,'--instruction-file',path.join(target,'STRIX_SCOPE.md')]
+    const child=spawn(executable,['--config',cliConfig,'--mcp-config',mcpConfig,...selection,'--scan-mode','quick','--scope-mode','full','--non-interactive','--max-budget','4','--max-turns','40'],{cwd:root,env,stdio:'inherit'})
     child.once('error',reject);child.once('exit',code=>resolve(code??1))
   })
-}finally{relay.close();console.log(`Guardia local: ${relay.state.calls} llamadas reservadas; cota conservadora US$${(relay.state.reservedMicros/1000000).toFixed(2)}. No es una lectura de la factura.`)}
+}finally{await relay.close();console.log(`Guardia local: ${relay.state.calls} llamadas reservadas; cota conservadora US$${(relay.state.reservedMicros/1000000).toFixed(2)}. No es una lectura de la factura.`)}
 process.exitCode=status
