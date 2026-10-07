@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node tests/regression.mjs && node tests/history-lyrics.mjs && node tests/render-contract.mjs && node tests/project-safety.mjs && node tests/supabase-config.mjs && node tests/cloud-projects.mjs && node tests/edit-preservation.mjs && node tests/free-launch.mjs && node tests/release-config.mjs && node tests/google-auth.mjs && node tests/music-theory.mjs && node tests/security-boundaries.mjs && node tests/system-stability.mjs && node tests/cloud-host.mjs && node tests/connector-updates.mjs && node tests/pdf-rhythm.mjs",
+    "test:pdf:stress": "node tests/pdf-stress.mjs",
     "test:supabase:rls": "node tests/supabase-rls.mjs",
     "benchmark": "node tests/stability.mjs",
     "benchmark:editing": "node tests/editing-benchmark.mjs",

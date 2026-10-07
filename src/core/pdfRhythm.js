@@ -26,10 +26,31 @@ export function buildRhythmEvents(states, {unit, measureIndex, lyrics=false, rhy
   return events
 }
 
-export function positionRhythmEvents(events,x,width,beats) {
+// Engraving space may expand for text, but both voices use this same time map.
+export function createRhythmTimeGrid(events,x,width,beats) {
+  const times=[...new Set([0,beats,...Array.from({length:beats},(_,i)=>i),...events.map(e=>e.start)].map(t=>+t.toFixed(9)))].sort((a,b)=>a-b)
+  const widths=times.map(t=>Math.max(2.4,...events.filter(e=>Math.abs(e.start-t)<1e-8).map(e=>e.labelWidth||2.4)))
+  const left=Math.max(5,widths[0]/2+1),right=5
+  const gaps=times.slice(1).map((t,i)=>Math.max(3.5,(widths[i]+widths[i+1])/2+1.2))
+  const minimum=gaps.reduce((sum,v)=>sum+v,0)
+  const scale=Math.min(1,width/(minimum+left+right))
+  const spare=Math.max(0,width-(minimum+left+right)*scale)
+  let current=x+left*scale
+  const points=[{time:times[0],x:current}]
+  for(let i=0;i<gaps.length;i++){current+=gaps[i]*scale+spare*(times[i+1]-times[i])/beats;points.push({time:times[i+1],x:current})}
+  return {points,scale}
+}
+
+export function positionRhythmEvents(events,x,width,beats,timeline=null) {
   // Equal onsets in either voice always map to the same x, including long notes.
   const inset=5,span=Math.max(1,width-2*inset)
-  return events.map(event=>({...event,x:x+inset+event.start/beats*span}))
+  return events.map(event=>{
+    if(!timeline)return {...event,x:x+inset+event.start/beats*span}
+    const exact=timeline.points.find(p=>Math.abs(p.time-event.start)<1e-8)
+    if(exact)return {...event,x:exact.x}
+    const next=timeline.points.findIndex(p=>p.time>event.start),a=timeline.points[next-1],b=timeline.points[next]
+    return {...event,x:a.x+(b.x-a.x)*(event.start-a.time)/(b.time-a.time)}
+  })
 }
 
 export function drawRhythmVoice(doc,events,y,{slash=false,grouping=[1],unit=4}={}) {
@@ -37,7 +58,7 @@ export function drawRhythmVoice(doc,events,y,{slash=false,grouping=[1],unit=4}={
   const boundaries=[];let sum=0
   for(const size of grouping){sum+=size;boundaries.push(sum)}
   const groupOf=e=>boundaries.findIndex(end=>e.start<end-1e-8)
-  const levels=e=>e.tuplet? (unit===8?2:1) : e.duration<0.249?3:e.duration<0.499?2:e.duration<0.999?1:0
+  const levels=e=>{const written=e.duration*(e.tuplet===3?3/2:e.tuplet===5?5/4:1);return written<0.249?3:written<0.499?2:written<0.999?1:0}
   doc.setDrawColor(0,0,0);doc.setFillColor(0,0,0);doc.setLineWidth(.28)
   const stemX=e=>e.x+(slash?-1.1:1.1)
   const head=e=>{
@@ -63,7 +84,7 @@ export function drawRhythmVoice(doc,events,y,{slash=false,grouping=[1],unit=4}={
     if(e.duration<4-1e-8)doc.line(stemX(e),y,stemX(e),stemEnd)
     head(e)
     if(levels(e)){
-      if(run.length && (groupOf(run.at(-1))!==groupOf(e) || Math.abs(run.at(-1).start+run.at(-1).duration*unit/4-e.start)>1e-7))flush()
+      if(run.length && (((e.tuplet || run.at(-1).tuplet) && (e.tuplet!==run.at(-1).tuplet || e.beatIndex!==run.at(-1).beatIndex)) || groupOf(run.at(-1))!==groupOf(e) || Math.abs(run.at(-1).start+run.at(-1).duration*unit/4-e.start)>1e-7))flush()
       run.push(e)
     }else flush()
     if(i===events.length-1)flush()
@@ -93,4 +114,10 @@ export function drawRhythmTie(doc,x1,x2,y,down=false) {
   const points=[];let px=x1,py=y
   for(let i=1;i<=16;i++){const t=i/16,u=1-t;const x=x1+(x2-x1)*t;const yy=y+3*u*t*height;points.push([x-px,yy-py]);px=x;py=yy}
   doc.setDrawColor(0,0,0);doc.setLineWidth(.3);doc.lines(points,x1,y,[1,1],'S',false)
+}
+
+export function splitPdfChord(chordStr) {
+  if(!chordStr || chordStr==='-')return {main:'-',bass:''}
+  const bass=chordStr.match(/\/([A-G](?:#{1,2}|b{1,2})?)$/)
+  return {main:bass?chordStr.slice(0,bass.index):chordStr,bass:bass?bass[0]:''}
 }

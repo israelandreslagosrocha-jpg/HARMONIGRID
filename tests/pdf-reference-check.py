@@ -16,5 +16,6 @@ for after in root.glob('*-after.pdf'):
     if any(mode in after.name for mode in ['lyrics-free','lyrics-synced']):
         old=''.join(p.extract_text() for p in PdfReader(before).pages)
         new=''.join(p.extract_text() for p in PdfReader(after).pages)
-        assert Counter(re.sub(r'\s+','',old))==Counter(re.sub(r'\s+','',new)),after.name
-print('Five formats: 100 measures, page bounds and section labels preserved; free/synced text unchanged')
+        removed=Counter({'G':100}) if '--deduplicate-labels' in sys.argv else Counter()
+        assert Counter(re.sub(r'\s+','',old))==Counter(re.sub(r'\s+','',new))+removed,after.name
+print('Five formats: 100 measures, page bounds and section labels preserved; free/synced content preserved apart from explicitly tested repeated chord labels')
