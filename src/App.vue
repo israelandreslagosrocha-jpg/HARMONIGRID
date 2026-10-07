@@ -2,7 +2,7 @@
 import { ref, shallowRef, reactive, computed, nextTick, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import { cloneMeasuresForPaste, pasteInternalTies } from './core/copyMeasures.js'
 import { validateProjectDocument } from './core/projectDocument.js'
-const CloudWorkspace = defineAsyncComponent(() => import('./components/CloudWorkspace.vue'))
+const CloudWorkspace = defineAsyncComponent(() => import('./components/CloudWorkspaceHost.vue'))
 import ScoreViewport from './components/ScoreViewport.vue'
 import ScoreSystem from './components/ScoreSystem.vue'
 import LaunchNotice from './components/LaunchNotice.vue'
@@ -1317,7 +1317,7 @@ const availableWidth = computed(() => {
     return w - 24
   }
 })
-const systems = computed(() => {
+const systems = computed((previous) => {
   const result = []
   let currentSystem = []
   let currentSystemWidth = 0
@@ -1359,7 +1359,16 @@ const systems = computed(() => {
     })
   }
   
-  return result
+  // Preserve row identity when a nested edit leaves its grouping unchanged.
+  // Measures remain reactive, so the edited row still updates its own content.
+  const stable = result.map((system, index) => {
+    const existing = previous?.[index]
+    return existing && existing.measures.length === system.measures.length &&
+      system.measures.every((measure, i) => measure === existing.measures[i])
+      ? existing : system
+  })
+  return previous && previous.length === stable.length &&
+    stable.every((system, index) => system === previous[index]) ? previous : stable
 })
 const getSuggestionsForSystemLocal = (system) => {
   if (!system || !system.measures || system.measures.length === 0) return []
@@ -8371,14 +8380,18 @@ const handleSlotLyricsDblClick = (event, measure) => {
     assignPendingSelection(measure)
   }
 }
-watch([showLyricsGlobal, hoveredChordId, hoveredAnchor], () => {
+const notationMode = ref('chords') // 'chords' | 'roman'
+// Global presentation can move connectors without changing row membership.
+watch([showLyricsGlobal, hoveredChordId, hoveredAnchor, notationMode, viewMode,
+  defaultMeasuresPerSystem, globalShowObligado, globalShowSubdivisions, globalGroove], () => {
   updateConnectors()
 })
+// Structural reflow updates connectors here. Nested musical/lyric edits already
+// schedule them in the per-measure normalization watchers; avoid traversing the
+// entire composition a second time for every keystroke.
 watch(() => currentPlan.value === 'PRO' && showLyricsGlobal.value ? systems.value : null, () => {
   updateConnectors()
-}, { deep: true })
-const notationMode = ref('chords') // 'chords' | 'roman'
-
+})
 const toggleNotationMode = () => {
   if (currentPlan.value !== 'PRO') {
     upgradeReason.value = 'roman_numerals'
@@ -9214,6 +9227,7 @@ const cloudDocument = computed(() => measures.value.length ? {
     measuresPerSystem: defaultMeasuresPerSystem.value, bpm: playbackBpm.value,
     audio: Object.fromEntries(Object.entries(cloudAudioRefs).map(([name,state]) => [name,state.value]))}
 } : null)
+const cloudWorkspaceContext = {document: cloudDocument}
 const cloudAudioRefs = {startMeasure: playbackStartMeasure, bassOnly: playbackBassOnly,
   metronome: playbackMetronome, metronomeSound: playbackMetronomeSound,
   instrument: playbackInstrument, chordsActive: playbackChordsActive,
@@ -9258,7 +9272,7 @@ function hydrateProjectDocument(document) {
 <template>
   <div class="h-[100dvh] w-full flex flex-col bg-[#F5FCE6] text-[#1C1C1E] font-sans antialiased overflow-hidden">
     
-    <CloudWorkspace :document="cloudDocument" :generation="cloudProjectGeneration" @load="hydrateProjectDocument" @clear-account="clearAccountWorkspace" />
+    <CloudWorkspace :context="cloudWorkspaceContext" :generation="cloudProjectGeneration" @load="hydrateProjectDocument" @clear-account="clearAccountWorkspace" />
     <div v-if="isFreeLaunch" class="px-4 py-1 text-center text-xs text-gray-600 bg-white border-b border-gray-100">Próximamente: nuevas herramientas musicales.</div>
     <LaunchNotice v-if="isFreeLaunch && isUpgradeModalOpen"
       :message="upgradeReason === 'limit' ? 'Puedes crear hasta 20 compases por composición FREE. Tu composición se conserva completa.' : 'Próximamente: nuevas herramientas musicales.'"

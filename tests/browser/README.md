@@ -14,3 +14,11 @@ Abrir `http://127.0.0.1:4173/HARMONIGRID/tests/browser/index.html`. Elegir canti
 La reproducción se mide durante aproximadamente 8 segundos; se comprueba avance de posición y detención. Los intervalos de RAF miden fluidez visual, no latencia ni calidad del sonido. El navegador puede limitar RAF en segundo plano; las tareas largas ofrecen evidencia independiente de bloqueos. La vista 390 × 844 es emulación de tamaño, no prueba en hardware móvil.
 
 Las nuevas pruebas incluyen navegación al último compás y ligaduras entre los dos primeros. Los registros guardan fecha y hash combinado de los componentes. Para guardar una sesión aparte, iniciar preview con `HG_BROWSER_RESULTS=docs/stabilization/browser-optimized-final.ndjson`. Evitar compilaciones y renderizadores PDF concurrentes durante las mediciones. Cada carga vuelve el scroll al inicio. Las herramientas modifican fixtures en memoria; no probar con composiciones personales.
+
+## Comparación de rendimiento del 7 de octubre de 2026
+
+El botón **Ejecutar serie completa** carga 20, 100, 300 y 999 compases, mide tres ediciones de acorde/letra/historia por tamaño, reproducción de ocho segundos y navegación al último compás. La carga restablece selección, foco y proyecto; no conserva un compás fijado de la prueba anterior. La edición de acorde actualiza también la primera subdivisión visible. `stateFlushMs` incluye la mutación y el flush de Vue; `paintMs` añade dos RAF. `idle-paint` mide dos RAF sin edición para detectar variación del navegador. Viewport y altura se registran junto con fase, escenario y hash de fuentes.
+
+Este banco usa el backend simulado de `tests/cloud-browser/mock-supabase.js`. No inicia sesiones reales ni consulta/escribe composiciones en Supabase. Se mide el motor avanzado retenido, con datos sintéticos y letras visibles; no modifica los límites FREE del producto. Una ventana de 390 × 844 es emulación de tamaño, no un iPhone/Android físico.
+
+Para compilar una referencia anterior sin sobrescribir el checkout, `HG_APP_SOURCE=/ruta/absoluta/App.vue HG_BENCH_PHASE=baseline npm run build -- --config tests/browser/vite.config.mjs`. Luego compilar la fuente actual con `HG_BENCH_PHASE=optimized`. Este selector y la exposición de refs existen sólo en la configuración de pruebas; nunca desplegar ese build.

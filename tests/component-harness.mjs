@@ -6,8 +6,8 @@ import {parse,compileScript} from '@vue/compiler-sfc';
 import {effectScope} from 'vue';
 const root=fileURLToPath(new URL('../',import.meta.url));
 let serial=0;
-export async function createEditor(sourcePath=path.join(root,'src/App.vue'), {freeLaunch=false}={}) {
- const {descriptor}=parse(fs.readFileSync(sourcePath,'utf8'));
+export async function createEditor(sourcePath=path.join(root,'src/App.vue'), {freeLaunch=false,transformSource=source=>source}={}) {
+ const {descriptor}=parse(transformSource(fs.readFileSync(sourcePath,'utf8')));
  let compiled=compileScript(descriptor,{id:'regression'}).content;
  // Historical engine fixtures intentionally exercise retained advanced tools.
  if(!freeLaunch) compiled=compiled.replace('const isFreeLaunch = true','const isFreeLaunch = false');
