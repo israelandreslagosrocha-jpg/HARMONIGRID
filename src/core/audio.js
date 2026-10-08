@@ -157,30 +157,69 @@ export function getVoiceLedMidi(chordObj, prevMidiNotes, triadVoicingStyle = 'fu
     return currentFund
   }
 
-  // Si tiene un bajo modificado explícito, conservamos el bajo en su octava baja
-  // y aplicamos voice leading en las voces superiores.
-  if (chordObj.bass) {
-    const bassMidi = currentFund[0]
-    const upperFund = currentFund.slice(1)
-    const upperPrev = prevMidiNotes.slice(1)
+  // Keep the written slash bass fixed. Upper voices may move independently.
+  const bass = chordObj.bass ? currentFund[0] : null
+  const target = bass === null ? currentFund : currentFund.slice(1)
+  const previous = (bass === null ? prevMidiNotes : prevMidiNotes.slice(1))
+    .filter(Number.isFinite).slice().sort((a, b) => a - b)
+  if (!previous.length || !target.length) return currentFund
+  return bass === null ? closestVoiceDistribution(target, previous) :
+    [bass, ...closestVoiceDistribution(target, previous, bass)]
 
-    if (upperPrev.length === 0) return currentFund
+}
 
-    const upperVoiced = upperFund.map((n, idx) => {
-      const p = upperPrev[Math.min(idx, upperPrev.length - 1)]
-      const k = Math.round((p - n) / 12)
-      return n + 12 * k
-    })
-
-    return [bassMidi, ...upperVoiced]
-  } else {
-    // Voice leading general para todas las notas
-    return currentFund.map((n, idx) => {
-      const p = prevMidiNotes[Math.min(idx, prevMidiNotes.length - 1)]
-      const k = Math.round((p - n) / 12)
-      return n + 12 * k
-    })
+// A bounded dynamic program assigns every chord tone exactly once to an
+// ascending voice. Unlike matching array indices, it can retain common tones
+// and move different voices in opposite directions without crossing them.
+const voiceDistributionCache = new Map()
+function closestVoiceDistribution(target, previous, bass = -1) {
+  const cacheKey = `${bass}|${target.join(',')}|${previous.join(',')}`
+  if (voiceDistributionCache.has(cacheKey)) return [...voiceDistributionCache.get(cacheKey)]
+  const pcs = target.map(n => ((n % 12) + 12) % 12)
+  const count = pcs.length
+  const references = Array.from({length: count}, (_, i) => {
+    if (count === 1) return previous[Math.floor((previous.length - 1) / 2)]
+    const at = i * (previous.length - 1) / (count - 1)
+    const lower = Math.floor(at)
+    return previous[lower] + (previous[Math.ceil(at)] - previous[lower]) * (at - lower)
+  })
+  const low = Math.max(0, bass + 1, Math.floor(previous[0]) - 12)
+  const high = Math.min(127, Math.ceil(previous[previous.length - 1]) + 12)
+  const candidates = pcs.map(pc => {
+    const notes = []
+    for (let midi = low + ((pc - low) % 12 + 12) % 12; midi <= high; midi += 12) notes.push(midi)
+    return notes
+  })
+  const memo = new Map()
+  const full = (1 << count) - 1
+  function solve(mask, last, depth) {
+    if (mask === full) return {distance: 0, changes: 0, notes: []}
+    const key = mask * 129 + last + 1
+    if (memo.has(key)) return memo.get(key)
+    let best = null
+    const tried = new Set()
+    for (let tone = 0; tone < count; tone++) {
+      if ((mask & (1 << tone)) || tried.has(pcs[tone])) continue
+      tried.add(pcs[tone])
+      for (const midi of candidates[tone]) {
+        if (midi <= last) continue
+        const tail = solve(mask | (1 << tone), midi, depth + 1)
+        if (!tail) continue
+        const distance = Math.abs(midi - references[depth]) + tail.distance
+        const changes = (previous.includes(midi) ? 0 : 1) + tail.changes
+        if (!best || distance < best.distance ||
+            (distance === best.distance && changes < best.changes)) {
+          best = {distance, changes, notes: [midi, ...tail.notes]}
+        }
+      }
+    }
+    memo.set(key, best)
+    return best
   }
+  const result = solve(0, bass, 0)?.notes || target.slice().sort((a, b) => a - b)
+  if (voiceDistributionCache.size >= 256) voiceDistributionCache.delete(voiceDistributionCache.keys().next().value)
+  voiceDistributionCache.set(cacheKey, result)
+  return [...result]
 }
 
 /**
