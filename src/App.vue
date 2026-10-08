@@ -9772,11 +9772,11 @@ function hydrateProjectDocument(document) {
           <div class="w-full max-w-[1450px] mx-auto flex flex-col md:flex-row gap-4 md:gap-4 px-1 md:px-2">
             
             <!-- GLOBAL INDICATORS -->
-            <div class="flex flex-row md:flex-col items-center pt-2 flex-shrink-0 select-none text-center w-full md:w-auto overflow-x-auto md:overflow-x-visible gap-3 pb-3 md:pb-0 scrollbar-none scroll-smooth">
+            <div class="mobile-music-cabins grid grid-cols-2 md:flex md:flex-col items-start md:items-center pt-2 flex-shrink-0 select-none text-center w-full md:w-auto gap-3 pb-3 md:pb-0">
               <!-- Interactive Key Signature Info Badge (Now above Time Signature) -->
               <button 
                 @click="isKeyInfoOpen = true; isVerMasExpanded = false" 
-                class="flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-32 md:w-full h-20 md:h-auto flex-shrink-0 text-center shadow-sm animate-scale-up"
+                class="flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-full md:w-full h-20 md:h-auto flex-shrink-0 text-center shadow-sm animate-scale-up"
                 :class="{'hover:border-violet-500': currentPlan === 'PRO'}"
               >
                 <span class="text-[10px] md:text-[11px] font-black text-gray-700 leading-tight uppercase tracking-wider block w-full truncate">
@@ -9790,7 +9790,7 @@ function hydrateProjectDocument(document) {
                 </span>
               </button>
               <!-- Interactive Global Time Signature Button (Opens Educational / Metric Selection Modal) -->
-              <div class="relative w-28 md:w-full flex justify-center mt-0 md:mt-2 select-none z-35 flex-shrink-0">
+              <div class="relative w-full md:w-full flex justify-center mt-0 md:mt-2 select-none z-35 flex-shrink-0">
                 <button
                   @click.stop="isMetricInfoModalOpen = true"
                   class="group flex flex-col items-center justify-center p-2 rounded-xl border border-gray-200 bg-gray-50/90 hover:bg-gray-100 hover:border-[#8EE000] active:scale-[0.97] transition-all w-full h-20 md:h-auto text-center shadow-sm"
@@ -9813,7 +9813,7 @@ function hydrateProjectDocument(document) {
               </div>
 
               <!-- Notation Mode Toggle (Grados Romanos vs Acordes - PRO) -->
-              <div v-show="!isFreeLaunch" class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+              <div v-show="!isFreeLaunch" class="w-full md:w-full mt-0 md:mt-2 flex-shrink-0">
                 <button
                   @click="toggleNotationMode"
                   class="w-full flex items-center justify-between px-2 py-2 rounded-xl border transition-all shadow-sm active:scale-98"
@@ -9831,7 +9831,7 @@ function hydrateProjectDocument(document) {
               </div>
               
               <!-- Global Subdivisions Toggle (visible per-score in sidebar) -->
-              <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+              <div class="w-full md:w-full mt-0 md:mt-2 flex-shrink-0">
                 <label v-show="!isFreeLaunch" class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1.5 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Mostrar/ocultar subdivisiones en todos los compases">
                   <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-tight">‖ Sub</span>
                   <div class="relative">
@@ -9848,7 +9848,7 @@ function hydrateProjectDocument(document) {
                 </label>
               </div>
               <!-- Global showObligado (Modo Rítmico / Ritmo Armónico) Toggle -->
-              <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+              <div class="w-full md:w-full mt-0 md:mt-2 flex-shrink-0">
                 <label v-show="!isFreeLaunch" class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Modo Rítmico: Los acordes respetarán la duración exacta de las figuras">
                   <div class="flex flex-col text-center md:text-left">
                     <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-none">♩ Ritmo</span>
@@ -9868,7 +9868,7 @@ function hydrateProjectDocument(document) {
                 </label>
               </div>
               <!-- Global showLyrics Toggle -->
-              <div class="w-32 md:w-full mt-0 md:mt-2 flex-shrink-0">
+              <div class="w-full md:w-full mt-0 md:mt-2 flex-shrink-0">
                 <label class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1 md:gap-2 px-2 py-2 rounded-xl border border-gray-200 bg-gray-50/80 cursor-pointer hover:bg-gray-100 transition-colors h-20 md:h-auto" title="Mostrar/ocultar letras y anotaciones en los compases">
                   <div class="flex flex-col text-center md:text-left">
                     <span class="text-[9px] font-black text-gray-500 uppercase tracking-wider leading-none">✎ Letras</span>
@@ -9888,7 +9888,7 @@ function hydrateProjectDocument(document) {
               </div>
               
               <!-- Suggestions Toggle Button -->
-              <div v-show="!isFreeLaunch" class="w-28 md:w-full mt-0 md:mt-2 flex-shrink-0 animate-scale-up">
+              <div v-show="!isFreeLaunch" class="w-full md:w-full mt-0 md:mt-2 flex-shrink-0 animate-scale-up">
                 <button
                   @click="isSuggestionsPanelOpen = !isSuggestionsPanelOpen"
                   class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-1.5 md:gap-2 px-2 py-2 rounded-xl border w-full h-20 md:h-auto hover:bg-gray-100 transition-colors"
@@ -9905,14 +9905,14 @@ function hydrateProjectDocument(document) {
               </div>
 
               <!-- SIDEBAR PLAYBACK & AUDIO CONTROLLER (Below Ideas) -->
-              <div class="w-28 md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-gray-200/90 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left">
+              <div class="col-span-2 w-full md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-gray-200/90 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left">
                 <div class="flex items-center justify-between border-b border-gray-100 pb-1">
                   <span class="text-[8.5px] md:text-[9px] font-black uppercase tracking-wider text-gray-500 flex items-center gap-1">
                     <span>🎧</span> Audio & Play
                   </span>
                   <button 
                     @click="isAudioSettingsOpen = !isAudioSettingsOpen"
-                    class="text-[10px] px-1.5 py-0.5 rounded-lg border transition-all"
+                    class="min-h-10 min-w-10 md:min-h-0 md:min-w-0 text-[10px] px-1.5 py-0.5 rounded-lg border transition-all"
                     :class="isAudioSettingsOpen ? 'border-[#8EE000] bg-[#8EE000]/20 text-[#6CA600]' : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100'"
                     title="Ajustes de Sonido, Voicings y Continuidad"
                   >
@@ -10050,7 +10050,7 @@ function hydrateProjectDocument(document) {
               <!-- SIDEBAR VOICING & NOTE ORDER INSPECTOR -->
               <div 
                 v-if="activeChordVoicingList" 
-                class="w-28 md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-violet-200/80 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left animate-scale-up"
+                class="col-span-2 w-full md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-violet-200/80 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left animate-scale-up"
               >
                 <div class="flex items-center justify-between border-b border-violet-100 pb-1">
                   <div class="flex items-center gap-1">
@@ -10082,7 +10082,7 @@ function hydrateProjectDocument(document) {
                 <div class="space-y-1.5">
                   <div class="flex items-center justify-between">
                     <span class="text-[8px] font-extrabold text-violet-900/70 uppercase tracking-wider">Orden de notas (Voicing):</span>
-                    <span class="text-[7.5px] font-bold text-gray-400" title="Arrastra cualquier nota hacia arriba o abajo">✋ Arrastra para ordenar</span>
+                    <span class="hidden md:inline text-[7.5px] font-bold text-gray-400" title="Arrastra cualquier nota hacia arriba o abajo">✋ Arrastra para ordenar</span>
                   </div>
                   <div class="flex flex-col gap-1">
                     <div 
@@ -10112,10 +10112,13 @@ function hydrateProjectDocument(document) {
                         <span class="text-[8px] text-gray-400 font-normal">({{ n.interval }})</span>
                       </div>
                       
+                      <button v-if="idx > 0" @click.stop="reorderActiveChordVoicing(idx, 0)"
+                        class="md:hidden min-h-10 px-2 rounded-lg border border-violet-200 text-violet-800 text-xs"
+                        :aria-label="'Usar ' + n.noteName + ' como bajo'">Bajo</button>
                       <!-- Mute / Unmute Note Button -->
                       <button 
                         @click.stop="toggleVoicingNoteMute(n)" 
-                        class="w-5 h-5 rounded-lg border flex items-center justify-center text-[10px] transition-all active:scale-90 shrink-0"
+                        class="w-10 h-10 md:w-5 md:h-5 rounded-lg border flex items-center justify-center text-[10px] transition-all active:scale-90 shrink-0"
                         :class="n.isMuted ? 'bg-red-50 border-red-200 text-red-600' : 'bg-gray-50 border-gray-200 text-gray-500 hover:text-violet-600 hover:border-violet-300'"
                         :title="n.isMuted ? 'Activar nota ' + n.noteName : 'Silenciar (mutear) nota ' + n.noteName"
                       >
@@ -10124,6 +10127,10 @@ function hydrateProjectDocument(document) {
                     </div>
                   </div>
                 </div>
+              </div>
+              <div v-if="!activeChordVoicingList" class="md:hidden col-span-2 w-full rounded-2xl border border-violet-200 bg-white p-3 text-left">
+                <p class="text-sm font-bold text-violet-900">🎼 Voicing &amp; Notas</p>
+                <p class="mt-1 text-sm text-gray-600">Añade un acorde y selecciona su compás para ver y ajustar sus notas.</p>
               </div>
             </div>
             
@@ -12600,6 +12607,12 @@ function hydrateProjectDocument(document) {
   </div>
 </template>
 <style>
+@media (max-width: 767px) {
+  .mobile-music-cabins > * { min-width: 0; }
+  .mobile-music-cabins span { font-size: max(12px, 1em); }
+  .mobile-music-cabins select { min-height: 44px; max-width: 100%; font-size: 14px; }
+}
+
 /* CSS Reset Minimal & Utilities */
 :root { --sat: env(safe-area-inset-top); --sab: env(safe-area-inset-bottom); }
 .pb-safe { padding-bottom: max(1.5rem, var(--sab)); }
