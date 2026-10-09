@@ -5,6 +5,7 @@ import { validateProjectDocument } from './core/projectDocument.js'
 const CloudWorkspace = defineAsyncComponent(() => import('./components/CloudWorkspaceHost.vue'))
 import ScoreViewport from './components/ScoreViewport.vue'
 import ScoreSystem from './components/ScoreSystem.vue'
+import MobileScoreOverview from './components/MobileScoreOverview.vue'
 import LaunchNotice from './components/LaunchNotice.vue'
 import logoUrl from './assets/logo.jpg'
 import { getDiatonicChords, SCALES, getScaleNotes, getScaleDegreeLabels } from './core/scales.js'
@@ -67,6 +68,37 @@ const activeSyllableSelection = ref(null)
 const lyricsTiedSlots = ref(new Set())
 // --- RESPONSIVE STATE FOR AUTO-ORDERING ---
 const windowWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1200)
+// Mobile navigation changes presentation only; composition data and export layout stay intact.
+const mobilePanel = ref(null)
+const mobileFocusedIndex = ref(null)
+const editorScrollHost = ref(null)
+let mobileOverviewScroll = 0
+const isMobileEditor = computed(() => windowWidth.value < 768)
+const toggleMobilePanel = panel => { mobilePanel.value = mobilePanel.value === panel ? null : panel }
+const openMobileMeasure = async index => {
+  if (mobileFocusedIndex.value === null) mobileOverviewScroll = editorScrollHost.value?.scrollTop || 0
+  const measure = displayedMeasures.value[index]
+  if (!measure) return
+  mobileFocusedIndex.value = index
+  selectedMeasureIndex.value = measure.originalMeasureIndex
+  selectedBeat.value = null
+  mobilePanel.value = null
+  await nextTick()
+  if (editorScrollHost.value) editorScrollHost.value.scrollTop = 0
+  editorScrollHost.value?.querySelector('[data-mobile-detail-heading]')?.focus()
+}
+const closeMobileMeasure = async () => {
+  const index = mobileFocusedIndex.value
+  mobileFocusedIndex.value = null
+  mobilePanel.value = null
+  await nextTick()
+  if (editorScrollHost.value) editorScrollHost.value.scrollTop = mobileOverviewScroll
+  editorScrollHost.value?.querySelectorAll('.overview-measure')[index]?.focus({preventScroll:true})
+}
+const mobileFocusedSystem = computed(() => {
+  const measure = displayedMeasures.value[mobileFocusedIndex.value]
+  return measure ? {id:'mobile-detail-' + measure.id,measures:[measure]} : null
+})
 const handleResize = () => {
   windowWidth.value = window.innerWidth
   updateConnectors()
@@ -9234,6 +9266,7 @@ const cloudAudioRefs = {startMeasure: playbackStartMeasure, bassOnly: playbackBa
   continuity: playbackContinuity, fillChords: playbackFillChords,
   triadVoicing: playbackTriadVoicing, tetradVoicing: playbackTetradVoicing}
 function closeProjectEditors() {
+  mobileFocusedIndex.value = null; mobilePanel.value = null; mobileOverviewScroll = 0
   selectedBeat.value = null; selectedMeasureIndex.value = null; selectedRangeStart.value = null; selectedRangeEnd.value = null
   activeEditingLyricsIndex.value = null; activeSyllableSelection.value = null
   pendingSelection.value = null; activeDropdown.value = null
@@ -9768,11 +9801,21 @@ function hydrateProjectDocument(document) {
           </span>
         </div>
         <!-- GRID AREA -->
-        <main class="flex-1 overflow-y-auto px-2 py-6 md:px-4 md:py-8 relative" @click="closeDropdowns">
+        <main ref="editorScrollHost" class="flex-1 overflow-y-auto px-2 py-6 md:px-4 md:py-8 relative" @click="closeDropdowns">
+          <nav v-if="isMobileEditor" class="mobile-editor-toolbar" aria-label="Controles musicales">
+            <button @click.stop="togglePlayback" :class="{'mobile-stop':isPlaying}" :aria-label="isPlaying ? 'Detener reproducción' : 'Reproducir composición'">{{ isPlaying ? '■ Detener' : '▶ Play' }}</button>
+            <button @click.stop="toggleMobilePanel('audio')" :aria-expanded="mobilePanel === 'audio'" aria-controls="music-cabins">Audio</button>
+            <button @click.stop="toggleMobilePanel('voicing')" :aria-expanded="mobilePanel === 'voicing'" aria-controls="music-cabins">Voicings</button>
+            <button @click.stop="toggleMobilePanel('tools')" :aria-expanded="mobilePanel === 'tools'" aria-controls="music-cabins">Letras / más</button>
+          </nav>
           <div class="w-full max-w-[1450px] mx-auto flex flex-col md:flex-row gap-4 md:gap-4 px-1 md:px-2">
             
             <!-- GLOBAL INDICATORS -->
-            <div class="mobile-music-cabins grid grid-cols-2 md:flex md:flex-col items-start md:items-center pt-2 flex-shrink-0 select-none text-center w-full md:w-auto gap-3 pb-3 md:pb-0">
+            <div id="music-cabins" :data-mobile-panel="mobilePanel || 'closed'" class="mobile-music-cabins grid grid-cols-2 md:flex md:flex-col items-start md:items-center pt-2 flex-shrink-0 select-none text-center w-full md:w-auto gap-3 pb-3 md:pb-0">
+              <div v-if="isMobileEditor && mobilePanel" class="mobile-panel-header col-span-2 flex justify-between items-center w-full">
+                <strong>{{ mobilePanel === 'audio' ? 'Audio y reproducción' : mobilePanel === 'voicing' ? 'Voicings del acorde seleccionado' : 'Letras y herramientas' }}</strong>
+                <button @click.stop="mobilePanel = null" class="min-h-11 px-3" aria-label="Cerrar ajustes">Cerrar</button>
+              </div>
               <!-- Interactive Key Signature Info Badge (Now above Time Signature) -->
               <button 
                 @click="isKeyInfoOpen = true; isVerMasExpanded = false" 
@@ -9905,7 +9948,7 @@ function hydrateProjectDocument(document) {
               </div>
 
               <!-- SIDEBAR PLAYBACK & AUDIO CONTROLLER (Below Ideas) -->
-              <div class="col-span-2 w-full md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-gray-200/90 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left">
+              <div data-cabin="audio" class="col-span-2 w-full md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-gray-200/90 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left">
                 <div class="flex items-center justify-between border-b border-gray-100 pb-1">
                   <span class="text-[8.5px] md:text-[9px] font-black uppercase tracking-wider text-gray-500 flex items-center gap-1">
                     <span>🎧</span> Audio & Play
@@ -10049,7 +10092,7 @@ function hydrateProjectDocument(document) {
 
               <!-- SIDEBAR VOICING & NOTE ORDER INSPECTOR -->
               <div 
-                v-if="activeChordVoicingList" 
+                data-cabin="voicing" v-if="activeChordVoicingList"
                 class="col-span-2 w-full md:w-full mt-2 flex-shrink-0 bg-white/90 backdrop-blur-md border border-violet-200/80 rounded-2xl p-2 md:p-3 shadow-sm space-y-2 text-left animate-scale-up"
               >
                 <div class="flex items-center justify-between border-b border-violet-100 pb-1">
@@ -10128,7 +10171,7 @@ function hydrateProjectDocument(document) {
                   </div>
                 </div>
               </div>
-              <div v-if="!activeChordVoicingList" class="md:hidden col-span-2 w-full rounded-2xl border border-violet-200 bg-white p-3 text-left">
+              <div data-cabin="voicing" v-if="!activeChordVoicingList" class="md:hidden col-span-2 w-full rounded-2xl border border-violet-200 bg-white p-3 text-left">
                 <p class="text-sm font-bold text-violet-900">🎼 Voicing &amp; Notas</p>
                 <p class="mt-1 text-sm text-gray-600">Añade un acorde y selecciona su compás para ver y ajustar sus notas.</p>
               </div>
@@ -10205,9 +10248,29 @@ function hydrateProjectDocument(document) {
                   "{{ GROOVE_DETAILS[globalGroove]?.description }}"
                 </div>
               </div>
+              <template v-if="isMobileEditor && !isSelectionMode && !isOrderingModeActive">
+                <template v-if="mobileFocusedSystem && mobileFocusedIndex !== null">
+                  <div class="mobile-detail-header">
+                    <button @click="closeMobileMeasure">← Vista general</button>
+                    <h2 data-mobile-detail-heading tabindex="-1">Compás {{ mobileFocusedSystem.measures[0].originalMeasureIndex + 1 }}</h2>
+                    <div class="flex gap-2">
+                      <button :disabled="mobileFocusedIndex === 0" @click="openMobileMeasure(mobileFocusedIndex - 1)" aria-label="Compás anterior">←</button>
+                      <button :disabled="mobileFocusedIndex >= displayedMeasures.length - 1" @click="openMobileMeasure(mobileFocusedIndex + 1)" aria-label="Compás siguiente">→</button>
+                    </div>
+                  </div>
+                  <p class="text-sm text-gray-600 mb-4">Toca un pulso para asignar el acorde. Los cambios se conservan al volver.</p>
+                  <div class="mobile-detail-score overflow-x-auto pb-6">
+                    <ScoreSystem :system="mobileFocusedSystem" :index="-1" :context="scoreRenderContext" />
+                  </div>
+                </template>
+                <MobileScoreOverview v-else :measures="displayedMeasures" :playback="playbackRenderState" :selected="mobileFocusedIndex"
+                  :can-add="currentPlan === 'PRO' || measures.length < FREE_MEASURE_LIMIT" @open="openMobileMeasure" @add="addMeasure" />
+              </template>
+              <template v-else>
               <ScoreViewport v-for="(system, sIdx) in systems" :key="system.id" :system="system" :index="sIdx" :context="scoreRenderContext" :virtual="displayedMeasures.length > 80" @register="registerSystemViewport" @visibility-change="updateConnectors">
                 <ScoreSystem :system="system" :index="sIdx" :context="scoreRenderContext" />
               </ScoreViewport>
+              </template>
           </div>
         </div>
         </main>
@@ -12608,9 +12671,27 @@ function hydrateProjectDocument(document) {
 </template>
 <style>
 @media (max-width: 767px) {
+  .mobile-editor-toolbar {position:sticky;top:0;z-index:35;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;background:#f7fee9;border:1px solid #d9e8c2;border-radius:12px;padding:5px;margin-bottom:14px;box-shadow:0 2px 6px #0000000d}
+  .mobile-editor-toolbar button {min-height:44px;font-size:12px;font-weight:700;border-radius:8px;color:#365900}
+  .mobile-editor-toolbar button:first-child {background:#8ee000;color:#111}
+  .mobile-editor-toolbar button.mobile-stop {background:#b91c1c;color:white}
+  .mobile-editor-toolbar button[aria-expanded="true"] {background:#e0ebcc}
+  .mobile-music-cabins[data-mobile-panel="closed"] {display:none}
+  .mobile-music-cabins[data-mobile-panel="audio"] > :not([data-cabin="audio"]):not(.mobile-panel-header),
+  .mobile-music-cabins[data-mobile-panel="voicing"] > :not([data-cabin="voicing"]):not(.mobile-panel-header),
+  .mobile-music-cabins[data-mobile-panel="tools"] > [data-cabin] {display:none}
+  .mobile-panel-header {font-size:14px;color:#334155;border-bottom:1px solid #cbd5e1}
+  .mobile-detail-header {display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+  .mobile-detail-header h2 {font-size:16px;font-weight:700}
+  .mobile-detail-header button {min-height:44px;min-width:44px;font-size:14px;color:#365900;background:white;border:1px solid #cbd5e1;border-radius:8px;padding:8px}
+  .mobile-detail-header button:disabled {opacity:.4}
+  .mobile-editor-toolbar button:focus-visible,.mobile-detail-header button:focus-visible {outline:3px solid #6d28d9;outline-offset:2px}
   .mobile-music-cabins > * { min-width: 0; }
   .mobile-music-cabins span { font-size: max(12px, 1em); }
-  .mobile-music-cabins select { min-height: 44px; max-width: 100%; font-size: 14px; }
+  .mobile-music-cabins select { min-height: 44px; max-width: 100%; font-size: 16px; }
+  .mobile-music-cabins input:not([type="checkbox"]) {min-height:44px;font-size:16px;min-width:64px}
+  .mobile-music-cabins button {min-height:44px}
+  .mobile-detail-score textarea {font-size:16px}
 }
 
 /* CSS Reset Minimal & Utilities */
