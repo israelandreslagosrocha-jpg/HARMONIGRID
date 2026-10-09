@@ -43,3 +43,11 @@ Browser verification at 320 and 375 px confirmed no document horizontal overflow
 On mobile, Selecting measures now keeps the overview cards rather than mounting detailed score rows. From/To fields select an inclusive range of original measure numbers. The first tap chooses a start; the second chooses the end (in either direction), and a subsequent tap begins a new range. Fields follow tap selections. Invalid, missing, fractional or out-of-bounds endpoints do not replace a valid selection. Copy/paste/repeat use the existing editor actions and original indices; clear resets both methods.
 
 Thirty engine-level tests cover reversed ranges, single measures, invalid input, copied source indices, repeat boundaries and composition preservation. Browser checks confirmed touch selection 2–5, typed selection 3–6, four highlighted cards, unchanged 104 px card height and no detailed score mounted. At 320 px, the form fits in 281 px with no document horizontal overflow. Completing Repeat created the existing repeat entry “Compás 3 al 6 (x2)”, verified in the repeat list. Physical touch/keyboard acceptance remains pending on the user's phones.
+
+## FREE audio and account follow-up
+
+- Groove controls (global and per measure) and override badge are hidden in the FREE launch; retained project data and PRO engine are unchanged.
+- Play and chord preview await AudioContext readiness; interrupted/closed contexts are handled, pending starts can be stopped, and activation/scheduler errors are visible instead of silently failing.
+- Account menu, authentication and saved composition cards use the HarmoniGrid lime/pale-green palette, with 44px buttons and 16px inputs.
+- Automated audio-start fixture covers delayed resume, immediate first chord, cancellation, rejected activation and closed-context recreation. Actual synth timing is unchanged.
+- Browser check at 375×812: guest account dialog fits, Groove absent from the tools panel, Cmaj7 playback enters playing state with no console errors. Audible playback on physical iPhone/Android remains to be confirmed.

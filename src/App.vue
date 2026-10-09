@@ -880,9 +880,9 @@ const loadChordIntoBuilder = (chordObj) => {
   }
 }
 
-const previewBuilderAudio = () => {
+const previewBuilderAudio = async () => {
   if (!constructedChord.value || !constructedChord.value.root) return
-  initAudio()
+  try { await initAudio() } catch (error) { showToast(error.message); return }
   const midiNotes = getRootPositionMidi(constructedChord.value, 'fundamental', 'fundamental')
   if (audioCtx && midiNotes.length > 0) {
     playChordNotes(audioCtx, audioCtx.currentTime, midiNotes, 1.2, playbackInstrument.value || 'rhodes')
@@ -8833,14 +8833,16 @@ const onVoicingDragEnd = () => {
   dragOverVoicingIndex.value = null
 }
 
-const initAudio = () => {
-  if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)()
-  }
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume()
-  }
+const initAudio = async () => {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext
+  if (!AudioContextClass) throw new Error('Este navegador no admite audio. Prueba con Safari o Chrome actualizado.')
+  if (!audioCtx || audioCtx.state === 'closed') audioCtx = new AudioContextClass()
+  // Resume inside the button gesture, including Safari's interrupted state.
+  if (audioCtx.state !== 'running') await audioCtx.resume()
+  if (audioCtx.state !== 'running') throw new Error('No se pudo activar el audio. Vuelve a pulsar Play.')
 }
+let playbackStartToken = 0
+let playbackStarting = false
 
 // Bucle de programación (look-ahead scheduler)
 let schedulerTimer = null
@@ -9085,11 +9087,22 @@ const updatePlayhead = () => {
   animationFrameId = requestAnimationFrame(updatePlayhead)
 }
 
-const startPlayback = () => {
+const startPlayback = async () => {
   if (measuresWithKey.value.length === 0) return
   try { void playbackSequence.value } catch (error) { showToast(error.message); return }
-  initAudio()
-  
+  if (playbackStarting || isPlaying.value) return
+  const token = ++playbackStartToken
+  playbackStarting = true
+  try {
+    await initAudio()
+  } catch (error) {
+    if (token === playbackStartToken) showToast(error.message || 'No se pudo activar el audio.')
+    return
+  } finally {
+    if (token === playbackStartToken) playbackStarting = false
+  }
+  if (token !== playbackStartToken) return
+
   isPlaying.value = true
   lastVoicedNotes = null
   
@@ -9101,14 +9114,18 @@ const startPlayback = () => {
   nextNoteTime = audioCtx.currentTime + 0.05
   visualQueue.length = 0
   
+  // Schedule the first chord immediately after audio is ready.
+  try { scheduler() } catch (error) { stopPlayback(); showToast('No se pudo reproducir: ' + error.message); return }
   schedulerTimer = setInterval(() => {
-    scheduler()
+    try { scheduler() } catch (error) { stopPlayback(); showToast('No se pudo reproducir: ' + error.message) }
   }, 25)
   
   animationFrameId = requestAnimationFrame(updatePlayhead)
 }
 
 const stopPlayback = () => {
+  playbackStartToken++
+  playbackStarting = false
   isPlaying.value = false
   if (schedulerTimer) {
     clearInterval(schedulerTimer)
@@ -9126,7 +9143,7 @@ const stopPlayback = () => {
 }
 
 const togglePlayback = () => {
-  if (isPlaying.value) {
+  if (isPlaying.value || playbackStarting) {
     stopPlayback()
   } else {
     startPlayback()
@@ -9616,7 +9633,7 @@ function hydrateProjectDocument(document) {
               </transition>
             </div>
             <!-- Custom Global Groove Dropdown -->
-            <div class="mobile-groove-control relative dropdown-container">
+            <div v-if="!isFreeLaunch && currentPlan === 'PRO'" class="mobile-groove-control relative dropdown-container">
               <button @click="toggleDropdown('globalGroove')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1.5 hover:border-[#8EE000] transition-colors">
                 <span>🎵 Groove: {{ translateGrooveName(globalGroove) }}</span>
                 <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
@@ -10595,7 +10612,7 @@ function hydrateProjectDocument(document) {
               </div>
               
               <!-- Groove del Compás -->
-              <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+              <div v-if="!isFreeLaunch && currentPlan === 'PRO'" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
                 <span class="block text-xs font-bold text-gray-400 uppercase tracking-wider">🥁 Ritmo del Compás</span>
                 
                 <div class="flex flex-col gap-2">

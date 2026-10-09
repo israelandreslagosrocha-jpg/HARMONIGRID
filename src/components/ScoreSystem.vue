@@ -206,7 +206,7 @@ export default {
                       </template>
                       <!-- Measure groove override indicator -->
                       <div
-                        v-if="measure.groove && measure.groove !== 'global'"
+                        v-if="!isFreeLaunch && currentPlan === 'PRO' && measure.groove && measure.groove !== 'global'"
                         class="bg-violet-100 text-violet-750 border border-violet-200 px-1.5 py-0.5 text-[8px] font-black rounded uppercase tracking-wide pointer-events-auto"
                         title="Anulación de groove en este compás"
                       >

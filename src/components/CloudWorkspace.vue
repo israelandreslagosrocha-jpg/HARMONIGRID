@@ -165,7 +165,7 @@ onBeforeUnmount(()=>{
 <template>
   <Teleport :to="toolbarTarget || 'body'" :disabled="!toolbarTarget">
     <button ref="accountButton" type="button" @click="toggleAccountMenu" aria-label="Cuenta y composiciones" :aria-expanded="menuOpen" aria-controls="account-navigation"
-      :title="label" class="account-icon relative flex items-center justify-center w-11 h-11 rounded-full text-gray-900 hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-700">
+      :title="label" class="account-icon relative flex items-center justify-center w-11 h-11 rounded-full text-gray-900 hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#244000]">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-6 h-6" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0114 0v2"/></svg>
       <span v-if="user" class="absolute right-1 top-1 w-2 h-2 rounded-full" :class="['error','conflict'].includes(saveState.status) ? 'bg-red-700' : saveState.dirty ? 'bg-amber-600' : 'bg-green-700'"></span>
       <span role="status" aria-live="polite" class="sr-only">{{ label }} {{ saveState.message }}</span>
@@ -173,8 +173,8 @@ onBeforeUnmount(()=>{
   </Teleport>
   <Teleport to="body">
     <div v-if="menuOpen" class="fixed inset-0 z-[190]" @click.self="menuOpen=false" @keydown.esc.prevent="menuOpen=false">
-      <nav id="account-navigation" ref="accountMenu" aria-label="Menú de cuenta" :style="{top:menuTop+'px'}" class="absolute right-3 w-80 max-w-[calc(100vw-24px)] max-h-[70dvh] overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-3 space-y-2 text-sm text-gray-800">
-        <div class="flex items-center justify-between"><strong>Cuenta</strong><button @click="menuOpen=false" aria-label="Cerrar menú de cuenta" class="min-h-11 px-3">✕</button></div>
+      <nav id="account-navigation" ref="accountMenu" aria-label="Menú de cuenta" :style="{top:menuTop+'px'}" class="hg-account-menu absolute right-3 w-80 max-w-[calc(100vw-24px)] max-h-[70dvh] overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-3 space-y-2 text-sm text-gray-800">
+        <div class="flex items-center justify-between"><strong>HarmoniGrid · Cuenta</strong><button @click="menuOpen=false" aria-label="Cerrar menú de cuenta" class="min-h-11 px-3">✕</button></div>
         <p class="text-gray-600">{{ label }}</p>
         <p v-if="saveState.message" role="alert" class="text-red-700 break-words">{{ saveState.message }}</p>
         <button @click="showAccount" class="block w-full text-left min-h-11 rounded-lg px-3 hover:bg-gray-100">{{ user ? '☰ Mis composiciones y cuenta' : '☰ Iniciar sesión / crear cuenta' }}</button>
@@ -184,7 +184,7 @@ onBeforeUnmount(()=>{
     </div>
   </Teleport>
   <div v-if="open" class="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-3" @click.self="!busy && (open=false)">
-    <section ref="dialog" role="dialog" aria-modal="true" aria-labelledby="account-heading" @keydown="trapKeys" class="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90dvh] overflow-y-auto p-5 space-y-4 text-sm">
+    <section ref="dialog" role="dialog" aria-modal="true" aria-labelledby="account-heading" @keydown="trapKeys" class="hg-account-dialog bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90dvh] overflow-y-auto p-5 space-y-4 text-sm">
       <header class="flex justify-between items-center gap-3">
         <h2 id="account-heading" class="text-xl font-bold">{{ user ? 'Mis composiciones' : 'Tu cuenta HarmoniGrid' }}</h2>
         <button :disabled="busy" @click="open=false" aria-label="Cerrar cuenta y proyectos" class="px-3 py-2 border rounded-lg">Cerrar</button>
@@ -202,7 +202,7 @@ onBeforeUnmount(()=>{
           <label v-if="mode!=='reset'" class="block">{{ mode==='password' ? 'Nueva contraseña' : 'Contraseña' }}
             <input v-model="password" type="password" :autocomplete="mode==='login'?'current-password':'new-password'" :minlength="mode==='login'?6:8" required :disabled="busy || !ready" class="mt-1 w-full rounded-lg border p-3" />
           </label>
-          <button :disabled="busy || !ready" class="w-full bg-violet-700 text-white rounded-lg px-4 py-3 disabled:opacity-50">{{ busy ? 'Procesando…' : mode==='register' ? 'Crear cuenta' : mode==='reset' ? 'Enviar enlace de recuperación' : mode==='password' ? 'Actualizar contraseña' : 'Iniciar sesión' }}</button>
+          <button :disabled="busy || !ready" class="hg-account-primary w-full bg-[#8EE000] text-[#172600] rounded-lg px-4 py-3 disabled:opacity-50">{{ busy ? 'Procesando…' : mode==='register' ? 'Crear cuenta' : mode==='reset' ? 'Enviar enlace de recuperación' : mode==='password' ? 'Actualizar contraseña' : 'Iniciar sesión' }}</button>
         </form>
         <nav class="flex flex-wrap gap-3" aria-label="Opciones de cuenta">
           <button :disabled="busy" @click="mode='login'; message=''">Iniciar sesión</button>
@@ -223,7 +223,7 @@ onBeforeUnmount(()=>{
           <button v-for="draft in drafts" :key="draft.checkpoint" :disabled="busy" @click="load(draft,true)" class="block w-full text-left border rounded-lg p-3">Recuperar: {{ draft.document.title }} · {{ new Date(draft.recovered_at).toLocaleString() }}</button>
         </div>
         <p v-if="!projects.length" class="text-gray-500">Aún no hay composiciones guardadas en esta cuenta.</p>
-        <button v-for="project in projects" :key="project.id" :disabled="busy" @click="load(project)" class="block w-full text-left border rounded-xl p-3 hover:bg-gray-50">
+        <button v-for="project in projects" :key="project.id" :disabled="busy" @click="load(project)" class="hg-composition block w-full text-left border rounded-xl p-3 hover:bg-gray-50">
           <span class="block font-semibold break-words">{{ project.title }}</span>
           <span class="block text-xs text-gray-500">{{ new Date(project.updated_at).toLocaleString() }}</span>
         </button>
@@ -233,3 +233,25 @@ onBeforeUnmount(()=>{
     </section>
   </div>
 </template>
+
+<style scoped>
+.hg-account-menu, .hg-account-dialog {
+  color: #172600;
+  background: linear-gradient(135deg, #f5fce6, #fff 65%);
+  border: 1px solid #cde7a2;
+  box-shadow: 0 16px 48px #17260026;
+}
+.hg-account-dialog header { border-bottom: 3px solid #8ee000; padding-bottom: 14px; }
+.hg-account-menu strong, .hg-account-dialog h2 { color: #244000; }
+.hg-account-menu button, .hg-account-dialog button { min-height: 44px; transition: background-color .15s; }
+.hg-account-menu button:hover:not(:disabled), .hg-account-dialog button:hover:not(:disabled) { background: #e9f7d0; }
+.hg-account-dialog input { font-size: 16px; border-color: #b9ce9b; background: #fff; }
+.hg-account-dialog input:focus-visible, .hg-account-dialog button:focus-visible, .hg-account-menu button:focus-visible {
+  outline: 2px solid #477000; outline-offset: 3px;
+}
+.hg-account-primary { font-weight: 700; border: 1px solid #6ca600; }
+.hg-account-dialog .hg-account-primary:hover:not(:disabled) { background: #7bca00; }
+.hg-composition { border-color: #cde7a2; background: #fff; border-left: 4px solid #8ee000; }
+.hg-account-dialog nav button { color: #365600; text-decoration: underline; text-underline-offset: 4px; }
+.hg-account-dialog button:disabled { opacity: .5; }
+</style>
