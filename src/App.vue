@@ -3292,6 +3292,10 @@ const modulationAnalysis = computed(() => {
   }
 })
 const isSelectionMode = ref(false)
+const mobileRangeFrom = ref('')
+const mobileRangeTo = ref('')
+const mobileRangeAnchor = ref(null)
+const mobileRangeError = ref('')
 const selectedRangeStart = ref(null)
 const selectedRangeEnd = ref(null)
 const isSelectionDragging = ref(false)
@@ -3317,11 +3321,44 @@ const isCasillasAvailable = computed(() => {
   // This lets user select just the last measure of a repeat for casilla
   return repeats.value.some(r => r.type === 'simple' && r.startMeasure <= end && r.endMeasure >= end)
 })
+// Mobile taps choose an inclusive range in original measure coordinates.
+const selectMobileMeasure = index => {
+  if (!Number.isInteger(index) || index < 0 || index >= measures.value.length) return
+  mobileRangeError.value = ''
+  if (mobileRangeAnchor.value === null) {
+    mobileRangeAnchor.value = index
+    selectedRangeStart.value = index
+    selectedRangeEnd.value = index
+  } else {
+    selectedRangeStart.value = Math.min(mobileRangeAnchor.value,index)
+    selectedRangeEnd.value = Math.max(mobileRangeAnchor.value,index)
+    mobileRangeAnchor.value = null
+  }
+}
+const applyMobileRange = () => {
+  const from = Number(mobileRangeFrom.value), to = Number(mobileRangeTo.value)
+  if (String(mobileRangeFrom.value).trim() === '' || String(mobileRangeTo.value).trim() === '' ||
+      !Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < 1 || from > measures.value.length || to > measures.value.length) {
+    mobileRangeError.value = `Escribe números enteros entre 1 y ${measures.value.length}.`
+    return false
+  }
+  selectedRangeStart.value = Math.min(from,to)-1
+  selectedRangeEnd.value = Math.max(from,to)-1
+  mobileRangeAnchor.value = null
+  mobileRangeError.value = ''
+  return true
+}
+watch([selectedRangeStart,selectedRangeEnd],([start,end]) => {
+  mobileRangeFrom.value = start === null ? '' : Math.min(start,end ?? start)+1
+  mobileRangeTo.value = end === null ? '' : Math.max(start ?? end,end)+1
+})
 const toggleSelectionMode = () => {
   isSelectionMode.value = !isSelectionMode.value
+  if (isMobileEditor.value) {mobileFocusedIndex.value = null; mobilePanel.value = null}
   clearSelection()
 }
 const clearSelection = () => {
+  mobileRangeAnchor.value = null; mobileRangeError.value = ''; mobileRangeFrom.value = ''; mobileRangeTo.value = ''
   selectedRangeStart.value = null
   selectedRangeEnd.value = null
   isSelectionDragging.value = false
@@ -10252,8 +10289,8 @@ function hydrateProjectDocument(document) {
                   "{{ GROOVE_DETAILS[globalGroove]?.description }}"
                 </div>
               </div>
-              <template v-if="isMobileEditor && !isSelectionMode && !isOrderingModeActive">
-                <template v-if="mobileFocusedSystem && mobileFocusedIndex !== null">
+              <template v-if="isMobileEditor && !isOrderingModeActive">
+                <template v-if="!isSelectionMode && mobileFocusedSystem && mobileFocusedIndex !== null">
                   <div class="mobile-detail-header">
                     <button @click="closeMobileMeasure">← Vista general</button>
                     <h2 data-mobile-detail-heading tabindex="-1">Compás {{ mobileFocusedSystem.measures[0].originalMeasureIndex + 1 }}</h2>
@@ -10267,8 +10304,23 @@ function hydrateProjectDocument(document) {
                     <ScoreSystem :system="mobileFocusedSystem" :index="-1" :context="scoreRenderContext" />
                   </div>
                 </template>
-                <MobileScoreOverview v-else :measures="displayedMeasures" :playback="playbackRenderState" :selected="mobileFocusedIndex"
-                  :can-add="currentPlan === 'PRO' || measures.length < FREE_MEASURE_LIMIT" @open="openMobileMeasure" @add="addMeasure" />
+                <template v-else>
+                  <form v-if="isSelectionMode" @submit.prevent="applyMobileRange" class="mobile-range-form mb-3" aria-label="Seleccionar rango de compases">
+                    <div class="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+                      <label class="text-xs font-semibold text-gray-700">Desde
+                        <input v-model="mobileRangeFrom" @input="mobileRangeError = ''" type="number" inputmode="numeric" min="1" :max="measures.length" step="1" class="block w-full min-w-0 h-11 mt-1 px-2 rounded-lg border border-gray-300 text-base bg-white" />
+                      </label>
+                      <label class="text-xs font-semibold text-gray-700">Hasta
+                        <input v-model="mobileRangeTo" @input="mobileRangeError = ''" type="number" inputmode="numeric" min="1" :max="measures.length" step="1" class="block w-full min-w-0 h-11 mt-1 px-2 rounded-lg border border-gray-300 text-base bg-white" />
+                      </label>
+                      <button type="submit" class="h-11 px-3 rounded-lg bg-[#8EE000] text-sm font-bold">Seleccionar</button>
+                    </div>
+                    <p v-if="mobileRangeError" role="alert" class="text-sm text-red-700 mt-2">{{ mobileRangeError }}</p>
+                  </form>
+                  <MobileScoreOverview :measures="displayedMeasures" :playback="playbackRenderState" :selected="mobileFocusedIndex"
+                    :selection-mode="isSelectionMode" :range-start="selectedRangeStart" :range-end="selectedRangeEnd" :range-anchor="mobileRangeAnchor"
+                    :can-add="!isSelectionMode && (currentPlan === 'PRO' || measures.length < FREE_MEASURE_LIMIT)" @select="selectMobileMeasure" @open="openMobileMeasure" @add="addMeasure" />
+                </template>
               </template>
               <template v-else>
               <ScoreViewport v-for="(system, sIdx) in systems" :key="system.id" :system="system" :index="sIdx" :context="scoreRenderContext" :virtual="displayedMeasures.length > 80" @register="registerSystemViewport" @visibility-change="updateConnectors">
@@ -10320,7 +10372,7 @@ function hydrateProjectDocument(document) {
         <transition name="fade">
           <div 
             v-if="isSelectionMode && selectedRangeStart !== null && selectedRangeEnd !== null" 
-            class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[92%] max-w-xl bg-white/85 backdrop-blur-xl border border-gray-200/80 rounded-2xl shadow-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 transition-all"
+            class="mobile-selection-actions fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[92%] max-w-xl bg-white/85 backdrop-blur-xl border border-gray-200/80 rounded-2xl shadow-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 transition-all"
             :class="currentPlan === 'PRO' ? 'border-violet-200 shadow-violet-100/50' : 'border-[#8EE000]/20 shadow-green-100/50'"
           >
             <div class="flex items-center gap-3">
@@ -10382,7 +10434,7 @@ function hydrateProjectDocument(document) {
         <!-- Floating Instruction Tip (when in selection mode but nothing selected yet) -->
         <transition name="fade">
           <div 
-            v-if="isSelectionMode && (selectedRangeStart === null || selectedRangeEnd === null)" 
+            v-if="!isMobileEditor && isSelectionMode && (selectedRangeStart === null || selectedRangeEnd === null)"
             class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 text-white backdrop-blur-md px-4 py-2.5 rounded-full text-xs font-bold shadow-lg flex items-center gap-2 select-none"
           >
             <span class="w-2 h-2 bg-[#8EE000] rounded-full animate-ping" :class="{'bg-violet-400': currentPlan === 'PRO'}"></span>
@@ -12675,6 +12727,10 @@ function hydrateProjectDocument(document) {
 </template>
 <style>
 @media (max-width: 767px) {
+  .mobile-selection-actions.mobile-selection-actions {bottom:max(8px,env(safe-area-inset-bottom));padding:8px;gap:8px;width:calc(100% - 16px)}
+  .mobile-selection-actions > div:first-child > div:first-child {display:none}
+  .mobile-selection-actions button {min-height:44px;font-size:12px;padding:6px 8px}
+  .mobile-score-overview[data-selecting="true"] {padding-bottom:170px}
   .editor-command-toolbar.editor-command-toolbar {display:grid;grid-template-columns:44px minmax(0,1fr) minmax(0,1fr);padding:4px 8px;gap:4px}
   .editor-command-toolbar > div {display:contents}
   .editor-command-toolbar .mobile-groove-control {display:none;grid-column:1 / -1;order:10}

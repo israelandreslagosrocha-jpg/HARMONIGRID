@@ -8,7 +8,7 @@ The mobile editor opens a lightweight map with two measures per row (three from 
 
 A fixed toolbar directly below the compact command rows exposes Play/Stop, Audio, Voicings, and Lyrics/more. Each settings section reuses the original controls and can be collapsed. Numeric audio controls use 16 px text and 44 px height on mobile. The overview avoids mounting every detailed score row; only the selected detailed measure mounts. No new library, musical engine, payment feature or PRO entitlement is introduced.
 
-Desktop retains its existing sidebar and score rows. Range selection and ordering deliberately retain the original score interface, preserving existing repeat operations. Account workspace changes and project hydration reset mobile navigation. The PDF layout remains independent of the mobile map.
+Desktop retains its existing sidebar and score rows. Mobile range selection uses the same compact map, with typed endpoints or two taps. Desktop range selection and ordering retain the original score interface. Account workspace changes and project hydration reset mobile navigation. The PDF layout remains independent of the mobile map.
 
 ## Verification
 
@@ -17,7 +17,7 @@ Desktop retains its existing sidebar and score rows. Range selection and orderin
 - Interactive flow: open measure 2, assign Fmaj7, return to map, reopen and navigate to measure 3. Chord retained and shown on the correct card.
 - Enable lyrics, enter text in measure 2, return to map and resize to desktop: text retained in both views.
 - Audio panel exposes continuity and inversion settings; voicings shows the selected Fmaj7 notes. Final build numeric audio controls confirmed at 16 px / 44 px.
-- Range-selection mode retains the original measure view. Desktop displays two detailed score rows for the eight-measure test composition; mobile summary is absent at 1280 px.
+- Mobile range selection retains compact cards; desktop displays two detailed score rows for the eight-measure test composition; mobile summary is absent at 1280 px.
 
 These are browser viewport checks, not physical iOS/Android keyboard, audio or screen-reader acceptance tests. Complex measures retain horizontal scrolling within the focused editor if their existing rhythmic layout requires more width. The existing large-bundle warning remains.
 
@@ -37,3 +37,9 @@ The account launcher now lives in the green title header (and the setup header) 
 Mobile announcement/caption strips no longer consume editor space; the upcoming-tools notice is available in the account menu. The mobile command area occupies two 44 px rows plus padding (101 px measured). Groove remains available when Lyrics/more is expanded. The playback toolbar is outside the scrolling score area, contiguous with the commands and main scroll container, so no sticky offset opens a gap while scrolling. Desktop retains its command layout, with its account launcher integrated into the title header as well.
 
 Browser verification at 320 and 375 px confirmed no document horizontal overflow, one account icon and identical tool-bottom/play-top coordinates (157 px), with play-bottom/main-top at 210 px, including after 159 px of score scrolling. Guest menu and existing Google/email/recovery dialog were exercised without signing into an account. The previous roughly 470 px first-card position at 375 px is reduced to roughly 254 px. Physical-device keyboard/audio and authenticated remote saving still require device acceptance; cloud regression tests cover the existing save pipeline.
+
+## Compact range selection
+
+On mobile, Selecting measures now keeps the overview cards rather than mounting detailed score rows. From/To fields select an inclusive range of original measure numbers. The first tap chooses a start; the second chooses the end (in either direction), and a subsequent tap begins a new range. Fields follow tap selections. Invalid, missing, fractional or out-of-bounds endpoints do not replace a valid selection. Copy/paste/repeat use the existing editor actions and original indices; clear resets both methods.
+
+Thirty engine-level tests cover reversed ranges, single measures, invalid input, copied source indices, repeat boundaries and composition preservation. Browser checks confirmed touch selection 2–5, typed selection 3–6, four highlighted cards, unchanged 104 px card height and no detailed score mounted. At 320 px, the form fits in 281 px with no document horizontal overflow. Completing Repeat created the existing repeat entry “Compás 3 al 6 (x2)”, verified in the repeat list. Physical touch/keyboard acceptance remains pending on the user's phones.
