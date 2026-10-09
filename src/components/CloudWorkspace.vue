@@ -7,9 +7,20 @@ import {projectRecovery} from '../services/projectRecovery.js'
 import {createProjectAutosave} from '../core/projectAutosave.js'
 import {validateProjectDocument} from '../core/projectDocument.js'
 
-const props=defineProps({document:Object,generation:Number})
+const props=defineProps({document:Object,generation:Number,toolbarTarget:Object})
 const emit=defineEmits(['load','clear-account'])
 const user=shallowRef(null),open=ref(false),dialog=ref(null),accountButton=ref(null),mode=ref('login'),email=ref(''),password=ref(''),busy=ref(false),message=ref(''),projects=ref([]),drafts=ref([]),more=ref(false),ready=ref(false)
+const menuOpen=ref(false),accountMenu=ref(null),menuTop=ref(64)
+function toggleAccountMenu() {
+  menuTop.value=(accountButton.value?.getBoundingClientRect().bottom||56)+4
+  menuOpen.value=!menuOpen.value
+}
+function showAccount() {menuOpen.value=false;open.value=true}
+watch(menuOpen,async value=>{
+  await nextTick()
+  if(value)accountMenu.value?.querySelector('button')?.focus()
+  else if(!open.value)accountButton.value?.focus()
+})
 const saveState=shallowRef({status:'guest',dirty:false,id:null,message:''})
 let client,repository,autosave,subscription,applying=false,authEpoch=0,disposed=false
 const labels={guest:'Inicia sesión para guardar',unsaved:'Composición sin guardar',pending:'Cambios pendientes',saving:'Guardando…',saved:'Guardado en tu cuenta',error:'No se pudo guardar',conflict:'Conflicto entre versiones'}
@@ -152,14 +163,26 @@ onBeforeUnmount(()=>{
 })
 </script>
 <template>
-  <div class="shrink-0 flex flex-wrap items-center justify-between gap-2 bg-white border-b border-gray-200 px-3 py-2 text-xs">
-    <span role="status" aria-live="polite" class="min-w-0 text-gray-600">{{ label }}</span>
-    <div class="flex gap-2">
-      <button v-if="user && document" :disabled="busy || !ready" @click="save()" class="rounded-lg bg-violet-700 text-white px-3 py-2 disabled:opacity-50">{{ saveState.id ? 'Guardar ahora' : 'Guardar en mi cuenta' }}</button>
-      <button ref="accountButton" @click="open=true" class="rounded-lg border border-gray-300 px-3 py-2">{{ user ? 'Mis composiciones' : 'Cuenta' }}</button>
+  <Teleport :to="toolbarTarget || 'body'" :disabled="!toolbarTarget">
+    <button ref="accountButton" type="button" @click="toggleAccountMenu" aria-label="Cuenta y composiciones" :aria-expanded="menuOpen" aria-controls="account-navigation"
+      :title="label" class="account-icon relative flex items-center justify-center w-11 h-11 rounded-full text-gray-900 hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-700">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-6 h-6" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0114 0v2"/></svg>
+      <span v-if="user" class="absolute right-1 top-1 w-2 h-2 rounded-full" :class="['error','conflict'].includes(saveState.status) ? 'bg-red-700' : saveState.dirty ? 'bg-amber-600' : 'bg-green-700'"></span>
+      <span role="status" aria-live="polite" class="sr-only">{{ label }} {{ saveState.message }}</span>
+    </button>
+  </Teleport>
+  <Teleport to="body">
+    <div v-if="menuOpen" class="fixed inset-0 z-[190]" @click.self="menuOpen=false" @keydown.esc.prevent="menuOpen=false">
+      <nav id="account-navigation" ref="accountMenu" aria-label="Menú de cuenta" :style="{top:menuTop+'px'}" class="absolute right-3 w-80 max-w-[calc(100vw-24px)] max-h-[70dvh] overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-3 space-y-2 text-sm text-gray-800">
+        <div class="flex items-center justify-between"><strong>Cuenta</strong><button @click="menuOpen=false" aria-label="Cerrar menú de cuenta" class="min-h-11 px-3">✕</button></div>
+        <p class="text-gray-600">{{ label }}</p>
+        <p v-if="saveState.message" role="alert" class="text-red-700 break-words">{{ saveState.message }}</p>
+        <button @click="showAccount" class="block w-full text-left min-h-11 rounded-lg px-3 hover:bg-gray-100">{{ user ? '☰ Mis composiciones y cuenta' : '☰ Iniciar sesión / crear cuenta' }}</button>
+        <button v-if="user && document" :disabled="busy || !ready" @click="save()" class="block w-full text-left min-h-11 rounded-lg px-3 hover:bg-gray-100 disabled:opacity-50">{{ saveState.id ? 'Guardar ahora' : 'Guardar en mi cuenta' }}</button>
+        <p class="border-t border-gray-100 pt-2 text-xs text-gray-500">Próximamente: nuevas herramientas musicales.</p>
+      </nav>
     </div>
-    <p v-if="saveState.message" class="w-full text-red-700">{{ saveState.message }}</p>
-  </div>
+  </Teleport>
   <div v-if="open" class="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-3" @click.self="!busy && (open=false)">
     <section ref="dialog" role="dialog" aria-modal="true" aria-labelledby="account-heading" @keydown="trapKeys" class="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90dvh] overflow-y-auto p-5 space-y-4 text-sm">
       <header class="flex justify-between items-center gap-3">

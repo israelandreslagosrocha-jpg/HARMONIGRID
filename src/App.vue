@@ -72,6 +72,7 @@ const windowWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1200
 const mobilePanel = ref(null)
 const mobileFocusedIndex = ref(null)
 const editorScrollHost = ref(null)
+const accountToolbarHost = ref(null)
 let mobileOverviewScroll = 0
 const isMobileEditor = computed(() => windowWidth.value < 768)
 const toggleMobilePanel = panel => { mobilePanel.value = mobilePanel.value === panel ? null : panel }
@@ -9305,8 +9306,8 @@ function hydrateProjectDocument(document) {
 <template>
   <div class="h-[100dvh] w-full flex flex-col bg-[#F5FCE6] text-[#1C1C1E] font-sans antialiased overflow-hidden">
     
-    <CloudWorkspace :context="cloudWorkspaceContext" :generation="cloudProjectGeneration" @load="hydrateProjectDocument" @clear-account="clearAccountWorkspace" />
-    <div v-if="isFreeLaunch" class="px-4 py-1 text-center text-xs text-gray-600 bg-white border-b border-gray-100">Próximamente: nuevas herramientas musicales.</div>
+    <CloudWorkspace :context="cloudWorkspaceContext" :generation="cloudProjectGeneration" :toolbar-target="accountToolbarHost" @load="hydrateProjectDocument" @clear-account="clearAccountWorkspace" />
+    <div v-if="isFreeLaunch" class="hidden md:block px-4 py-1 text-center text-xs text-gray-600 bg-white border-b border-gray-100">Próximamente: nuevas herramientas musicales.</div>
     <LaunchNotice v-if="isFreeLaunch && isUpgradeModalOpen"
       :message="upgradeReason === 'limit' ? 'Puedes crear hasta 20 compases por composición FREE. Tu composición se conserva completa.' : 'Próximamente: nuevas herramientas musicales.'"
       @close="isUpgradeModalOpen = false" />
@@ -9315,10 +9316,10 @@ function hydrateProjectDocument(document) {
       <!-- ==================== WIZARD (GREEN ACCENT) ==================== -->
       <div v-if="isSetupMode" class="flex-1 flex flex-col w-full h-full overflow-y-auto">
         <div class="max-w-2xl mx-auto w-full pt-12 pb-8 px-4 sm:px-6">
-          <div class="flex items-center justify-between mb-8 px-4">
-            <div class="flex items-center gap-3">
-              <img :src="logoUrl" alt="HarmoniGrid Logo" class="w-10 h-10 rounded-xl object-cover shadow-sm border border-gray-250/50" />
-              <h1 class="text-[34px] leading-tight font-bold text-black tracking-tight flex items-center gap-2">
+          <div class="flex items-center justify-between mb-8 px-0 sm:px-4 gap-1">
+            <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+              <img :src="logoUrl" alt="HarmoniGrid Logo" class="w-8 h-8 sm:w-10 sm:h-10 shrink-0 rounded-xl object-cover shadow-sm border border-gray-250/50" />
+              <h1 class="text-[24px] sm:text-[34px] leading-tight font-bold text-black tracking-tight flex items-center gap-2">
                 HarmoniGrid
                 <span v-if="currentPlan === 'PRO'" class="bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-[12px] px-2.5 py-0.5 rounded-full font-black shadow-sm">PRO</span>
               </h1>
@@ -9341,6 +9342,7 @@ function hydrateProjectDocument(document) {
                 👑 PRO
               </button>
             </div>
+            <div ref="accountToolbarHost" class="shrink-0"></div>
           </div>
           <div class="space-y-6">
             <!-- Bloque 1: General -->
@@ -9502,7 +9504,7 @@ function hydrateProjectDocument(document) {
       <div v-else class="flex-1 flex flex-col h-full bg-[#F5FCE6] relative">
         
         <!-- HEADER -->
-        <header class="flex items-center justify-between px-2 sm:px-4 h-16 bg-[#8EE000] border-b border-[#8EE000]/25 z-20 sticky top-0 shadow-sm">
+        <header class="flex items-center justify-between px-2 sm:px-4 h-14 md:h-16 shrink-0 bg-[#8EE000] border-b border-[#8EE000]/25 z-20 sticky top-0 shadow-sm">
           <div class="flex items-center gap-1.5 sm:gap-3">
             <img :src="logoUrl" alt="HarmoniGrid Logo" class="w-8 h-8 rounded-lg object-cover border border-black/15 shadow-sm cursor-pointer hover:scale-105 transition-transform hidden sm:block" @click="isSetupMode = true" />
             <button @click="isSetupMode = true" class="text-black font-black text-[14px] sm:text-[16px] flex items-center hover:opacity-75 transition-opacity">
@@ -9537,10 +9539,11 @@ function hydrateProjectDocument(document) {
             <button @click="exportPdf" class="text-white bg-black hover:bg-gray-900 px-2 py-1 sm:px-3 sm:py-1.5 rounded-full font-black text-[12px] sm:text-[14px] w-20 sm:w-24 text-center shadow-md shadow-black/10 transition-all">
               Exportar
             </button>
+            <div ref="accountToolbarHost" class="shrink-0"></div>
           </div>
         </header>
         <!-- TOOLBAR (Key & Repeats) -->
-        <div class="px-4 py-3 bg-white border-b border-gray-200 flex flex-wrap justify-between items-center z-40 gap-3">
+        <div :class="{'mobile-controls-expanded':mobilePanel === 'tools'}" class="editor-command-toolbar px-4 py-3 bg-white border-b border-gray-200 flex flex-wrap justify-between items-center z-40 gap-3 shrink-0">
           
           <div class="flex flex-wrap items-center gap-2">
             <!-- Custom Main Key Dropdown -->
@@ -9576,7 +9579,7 @@ function hydrateProjectDocument(document) {
               </transition>
             </div>
             <!-- Custom Global Groove Dropdown -->
-            <div class="relative dropdown-container">
+            <div class="mobile-groove-control relative dropdown-container">
               <button @click="toggleDropdown('globalGroove')" class="text-[15px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1.5 hover:border-[#8EE000] transition-colors">
                 <span>🎵 Groove: {{ translateGrooveName(globalGroove) }}</span>
                 <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
@@ -9663,7 +9666,7 @@ function hydrateProjectDocument(document) {
             <!-- Modo Selección Toggle -->
             <button 
               @click="toggleSelectionMode" 
-              class="text-[14px] font-bold flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all border"
+              class="mobile-range-toggle text-[14px] font-bold flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all border"
               :class="isSelectionMode 
                 ? (currentPlan === 'PRO' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white border-transparent shadow-sm' : 'bg-[#8EE000] text-black border-transparent shadow-sm') 
                 : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-200'"
@@ -9680,7 +9683,7 @@ function hydrateProjectDocument(document) {
                 @click="toggleDropdown('extraTools')" 
                 class="text-[14px] bg-gray-50 border border-gray-200 text-gray-800 font-bold rounded-lg px-3 py-1.5 outline-none flex items-center gap-1.5 hover:border-[#8EE000] transition-colors"
               >
-                <span>🛠️ Herramientas</span>
+                <span>Herramientas</span>
                 <svg class="w-3.5 h-3.5 text-gray-400 transition-transform" :class="{'rotate-180': activeDropdown === 'extraTools'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
               </button>
               <transition name="dropdown">
@@ -9790,7 +9793,7 @@ function hydrateProjectDocument(document) {
           </div>
         </div>
         <!-- SUB-TOOLBAR PROMO/EXPLANATION CAPTION -->
-        <div class="px-4 py-1.5 bg-gray-50 border-b border-gray-200/80 text-[12px] text-gray-500 flex items-center gap-1.5 select-none shrink-0">
+        <div class="px-4 py-1.5 bg-gray-50 border-b border-gray-200/80 text-[12px] text-gray-500 hidden md:flex items-center gap-1.5 select-none shrink-0">
           <span v-if="currentPlan === 'FREE'" class="flex items-center gap-1.5">
             <span class="w-2 h-2 bg-[#8EE000] rounded-full animate-ping"></span>
             <span><strong>FREE:</strong> Usa repeticiones para optimizar tu estructura.</span>
@@ -9800,14 +9803,15 @@ function hydrateProjectDocument(document) {
             <span><strong v-show="!isFreeLaunch">PRO:</strong> Expande tu música y visualízala completamente, sin límites ni repeticiones ocultas.</span>
           </span>
         </div>
-        <!-- GRID AREA -->
-        <main ref="editorScrollHost" class="flex-1 overflow-y-auto px-2 py-6 md:px-4 md:py-8 relative" @click="closeDropdowns">
           <nav v-if="isMobileEditor" class="mobile-editor-toolbar" aria-label="Controles musicales">
             <button @click.stop="togglePlayback" :class="{'mobile-stop':isPlaying}" :aria-label="isPlaying ? 'Detener reproducción' : 'Reproducir composición'">{{ isPlaying ? '■ Detener' : '▶ Play' }}</button>
             <button @click.stop="toggleMobilePanel('audio')" :aria-expanded="mobilePanel === 'audio'" aria-controls="music-cabins">Audio</button>
             <button @click.stop="toggleMobilePanel('voicing')" :aria-expanded="mobilePanel === 'voicing'" aria-controls="music-cabins">Voicings</button>
             <button @click.stop="toggleMobilePanel('tools')" :aria-expanded="mobilePanel === 'tools'" aria-controls="music-cabins">Letras / más</button>
           </nav>
+        <!-- GRID AREA -->
+        <main ref="editorScrollHost" class="flex-1 overflow-y-auto px-2 py-3 md:px-4 md:py-8 relative" @click="closeDropdowns">
+
           <div class="w-full max-w-[1450px] mx-auto flex flex-col md:flex-row gap-4 md:gap-4 px-1 md:px-2">
             
             <!-- GLOBAL INDICATORS -->
@@ -12671,7 +12675,16 @@ function hydrateProjectDocument(document) {
 </template>
 <style>
 @media (max-width: 767px) {
-  .mobile-editor-toolbar {position:sticky;top:0;z-index:35;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;background:#f7fee9;border:1px solid #d9e8c2;border-radius:12px;padding:5px;margin-bottom:14px;box-shadow:0 2px 6px #0000000d}
+  .editor-command-toolbar.editor-command-toolbar {display:grid;grid-template-columns:44px minmax(0,1fr) minmax(0,1fr);padding:4px 8px;gap:4px}
+  .editor-command-toolbar > div {display:contents}
+  .editor-command-toolbar .mobile-groove-control {display:none;grid-column:1 / -1;order:10}
+  .editor-command-toolbar.mobile-controls-expanded .mobile-groove-control {display:block}
+  .editor-command-toolbar > div > div {min-width:0}
+  .editor-command-toolbar > div > button,.editor-command-toolbar > div > div > button {min-height:44px;font-size:12px;padding:4px 6px;gap:4px;max-width:100%;white-space:nowrap}
+  .editor-command-toolbar > div > div > button {width:100%;justify-content:center}
+  .editor-command-toolbar > div > div > button > span {overflow:hidden;text-overflow:ellipsis}
+  .editor-command-toolbar .mobile-range-toggle {grid-column:1 / span 2;justify-content:center}
+  .mobile-editor-toolbar {position:relative;flex-shrink:0;z-index:35;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;background:white;border-bottom:1px solid #d9e8c2;padding:4px 8px;margin:0}
   .mobile-editor-toolbar button {min-height:44px;font-size:12px;font-weight:700;border-radius:8px;color:#365900}
   .mobile-editor-toolbar button:first-child {background:#8ee000;color:#111}
   .mobile-editor-toolbar button.mobile-stop {background:#b91c1c;color:white}
