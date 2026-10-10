@@ -8834,6 +8834,13 @@ const onVoicingDragEnd = () => {
 }
 
 const initAudio = async () => {
+  // iOS can report a running context while muting Web Audio on the ringer channel.
+  // Request media playback on the user's Play gesture; other browsers may omit this API.
+  try {
+    if (typeof navigator !== 'undefined' && navigator.audioSession) {
+      navigator.audioSession.type = 'playback'
+    }
+  } catch { /* Optional API: keep normal AudioContext playback available. */ }
   const AudioContextClass = window.AudioContext || window.webkitAudioContext
   if (!AudioContextClass) throw new Error('Este navegador no admite audio. Prueba con Safari o Chrome actualizado.')
   if (!audioCtx || audioCtx.state === 'closed') audioCtx = new AudioContextClass()

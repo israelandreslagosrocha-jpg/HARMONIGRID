@@ -51,3 +51,8 @@ Thirty engine-level tests cover reversed ranges, single measures, invalid input,
 - Account menu, authentication and saved composition cards use the HarmoniGrid lime/pale-green palette, with 44px buttons and 16px inputs.
 - Automated audio-start fixture covers delayed resume, immediate first chord, cancellation, rejected activation and closed-context recreation. Actual synth timing is unchanged.
 - Browser check at 375×812: guest account dialog fits, Groove absent from the tools panel, Cmaj7 playback enters playing state with no console errors. Audible playback on physical iPhone/Android remains to be confirmed.
+
+### iOS playback session follow-up
+
+WebKit documents that a running Web Audio context may still be muted by the iOS silent switch. Audio initialization now requests navigator.audioSession.type='playback' synchronously on Play/preview, when supported. Unsupported or rejected optional API leaves existing audio available. Automated tests cover session selection before resume, absence and rejection of the API. Physical phone verification is still required; this does not establish the cause on an unspecified Android device.
+Reference: https://bugs.webkit.org/show_bug.cgi?id=237322
