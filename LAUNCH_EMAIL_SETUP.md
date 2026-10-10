@@ -9,9 +9,9 @@ Actualización: 10 de octubre de 2026. Rama codex/security-performance; main sin
 - Plantillas HTML de confirmación y recuperación con la paleta HarmoniGrid, sin publicidad PRO ni pagos.
 - Los enlaces usan {{ .ConfirmationURL }} generado por Supabase; no se construyen tokens en la aplicación.
 
-## Pendiente del propietario
+## Configuración y pendientes de lanzamiento
 
-El propietario confirmó la cuenta oficial community@harmonigrid.com en Zoho Mail y la configuración del dominio harmonigrid.com. Nombre visible: HarmoniGrid. harmonigrid.com es la landing y el dominio administrativo; harmonigrid.app es la aplicación. Los tres MX, SPF y DKIM se guardaron en Hostinger; el propietario confirmó que todo está configurado. SMTP en Supabase y entrega/recuperación reales siguen pendientes; no se infieren de la configuración DNS. No asumir host, región o plan SMTP hasta ver los ajustes reales de Zoho.
+El propietario confirmó la cuenta oficial community@harmonigrid.com en Zoho Mail y la configuración del dominio harmonigrid.com. Nombre visible: HarmoniGrid. harmonigrid.com es la landing y el dominio administrativo; harmonigrid.app es la aplicación. Los tres MX, SPF y DKIM se guardaron en Hostinger; el propietario confirmó que todo está configurado. SMTP personalizado quedó guardado en Supabase con smtppro.zoho.com, puerto 465 SSL, usuario community@harmonigrid.com y credencial ingresada directamente por el propietario. El host y puerto se comprobaron en los ajustes de la cuenta Zoho. La entrega y recuperación se probaron con Gmail; no equivalen a una validación de capacidad para grandes volúmenes.
 
 1. Verificar el dominio con el TXT exacto que entregue Zoho.
 2. Configurar MX para recibir correo y SPF/DKIM con los valores de la consola. Si ya existe SPF, integrar los emisores en un único registro, no duplicarlo. Revisar DMARC después de verificar los emisores autorizados. No sustituir los registros web de Vercel por los de correo.
@@ -33,6 +33,12 @@ El propietario confirmó la cuenta oficial community@harmonigrid.com en Zoho Mai
 
 ## Evidencia acumulada
 
-El propietario confirmó recuperación de una composición desde Supabase, ausencia de la canción de otra cuenta en la UI y audio en iPhone SE. Esto no acredita pruebas directas de API A/B, correo SMTP, recuperación de contraseña ni iPhone 15/Android.
+El propietario confirmó recuperación de una composición desde Supabase, ausencia de la canción de otra cuenta en la UI y audio en iPhone SE. Además, el propietario confirmó entrega del correo de registro a teomusicrecords@gmail.com. Supabase mostró correo confirmado e inicio de sesión. La recuperación llegó a Gmail, abrió el formulario con dos campos de contraseña y mostró «Contraseña actualizada»; el propietario confirmó un nuevo inicio de sesión con ella.
+
+Las plantillas de confirmación y recuperación en español se guardaron en Supabase y sus vistas previas se revisaron conservando {{ .ConfirmationURL }}. Falta comprobar la entrega y apariencia de estas nuevas plantillas en Gmail y otro proveedor, así como los encabezados de autenticación y la capacidad de envío.
+
+Se aplicó, con autorización explícita, una excepción de protección Vercel sólo para harmonigrid-git-codex-security-performance-lagosrocha.vercel.app; el propietario confirmó acceso desde otra cuenta sin sesión Vercel. No se publicó main ni se conectó harmonigrid.app.
+
+La API real rechaza lectura anónima. Pasaron 58 comprobaciones PostgreSQL aisladas de RLS, límites y recursos. La prueba API A/B sigue pendiente de dos credenciales locales. iPhone 15 y Android siguen pendientes.
 
 Fuentes: https://supabase.com/docs/guides/auth/auth-smtp ; https://supabase.com/docs/guides/auth/auth-email-templates ; https://www.zoho.com/mail/help/zoho-smtp.html ; https://www.zoho.com/mail/help/adminconsole/domain-verification.html
