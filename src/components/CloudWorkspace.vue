@@ -1,6 +1,7 @@
 <script setup>
 import {ref,shallowRef,computed,watch,onMounted,onBeforeUnmount,nextTick} from 'vue'
 import {preserveGoogleDraft,restoreGoogleDraft,clearGoogleDraft,prepareGoogleLogin} from '../services/googleAuth.js'
+import {requestAccountEmail} from '../services/accountEmail.js'
 import {getSupabaseClient} from '../services/supabase.js'
 import {createProjectRepository} from '../services/projects.js'
 import {projectRecovery} from '../services/projectRecovery.js'
@@ -105,9 +106,9 @@ async function authenticate() {
     if(mode.value==='register') {
       result=await client.auth.signUp({email:email.value.trim(),password:password.value,options:{emailRedirectTo:redirect()}})
       if(!result.error)message.value='Revisa tu correo para confirmar tu cuenta. Si ya está registrada, inicia sesión o recupera el acceso.'
-    }else if(mode.value==='reset') {
-      result=await client.auth.resetPasswordForEmail(email.value.trim(),{redirectTo:redirect()})
-      if(!result.error)message.value='Si existe una cuenta con ese correo, recibirás un enlace para recuperar el acceso.'
+    }else if(mode.value==='reset'||mode.value==='confirm') {
+      message.value=await requestAccountEmail(client,mode.value==='confirm'?'confirmation':'recovery',email.value,redirect())
+      result={error:null}
     }else if(mode.value==='password') {
       result=await client.auth.updateUser({password:password.value})
       if(!result.error){message.value='Contraseña actualizada.';mode.value='login'}
@@ -199,15 +200,16 @@ onBeforeUnmount(()=>{
           <label v-if="mode!=='password'" class="block">Correo electrónico
             <input v-model="email" type="email" autocomplete="email" required :disabled="busy || !ready" class="mt-1 w-full rounded-lg border p-3" />
           </label>
-          <label v-if="mode!=='reset'" class="block">{{ mode==='password' ? 'Nueva contraseña' : 'Contraseña' }}
+          <label v-if="mode!=='reset' && mode!=='confirm'" class="block">{{ mode==='password' ? 'Nueva contraseña' : 'Contraseña' }}
             <input v-model="password" type="password" :autocomplete="mode==='login'?'current-password':'new-password'" :minlength="mode==='login'?6:8" required :disabled="busy || !ready" class="mt-1 w-full rounded-lg border p-3" />
           </label>
-          <button :disabled="busy || !ready" class="hg-account-primary w-full bg-[#8EE000] text-[#172600] rounded-lg px-4 py-3 disabled:opacity-50">{{ busy ? 'Procesando…' : mode==='register' ? 'Crear cuenta' : mode==='reset' ? 'Enviar enlace de recuperación' : mode==='password' ? 'Actualizar contraseña' : 'Iniciar sesión' }}</button>
+          <button :disabled="busy || !ready" class="hg-account-primary w-full bg-[#8EE000] text-[#172600] rounded-lg px-4 py-3 disabled:opacity-50">{{ busy ? 'Procesando…' : mode==='register' ? 'Crear cuenta' : mode==='confirm' ? 'Reenviar confirmación' : mode==='reset' ? 'Enviar enlace de recuperación' : mode==='password' ? 'Actualizar contraseña' : 'Iniciar sesión' }}</button>
         </form>
         <nav class="flex flex-wrap gap-3" aria-label="Opciones de cuenta">
           <button :disabled="busy" @click="mode='login'; message=''">Iniciar sesión</button>
           <button :disabled="busy" @click="mode='register'; message=''">Crear cuenta</button>
           <button :disabled="busy" @click="mode='reset'; message=''">Recuperar acceso</button>
+          <button :disabled="busy" @click="mode='confirm'; message=''">Reenviar confirmación</button>
         </nav>
         <p class="text-xs text-gray-500">Confirma tu correo para acceder. Tus composiciones se guardan vinculadas a tu cuenta.</p>
       </template>
