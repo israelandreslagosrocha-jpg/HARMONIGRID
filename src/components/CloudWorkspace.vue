@@ -11,6 +11,8 @@ import {validateProjectDocument} from '../core/projectDocument.js'
 const props=defineProps({document:Object,generation:Number,toolbarTarget:Object})
 const emit=defineEmits(['load','clear-account'])
 const user=shallowRef(null),open=ref(false),dialog=ref(null),accountButton=ref(null),mode=ref('login'),email=ref(''),password=ref(''),busy=ref(false),message=ref(''),projects=ref([]),drafts=ref([]),more=ref(false),ready=ref(false)
+const passwordConfirmation=ref('')
+watch(mode,()=>{password.value='';passwordConfirmation.value=''})
 const menuOpen=ref(false),accountMenu=ref(null),menuTop=ref(64)
 function toggleAccountMenu() {
   menuTop.value=(accountButton.value?.getBoundingClientRect().bottom||56)+4
@@ -100,6 +102,10 @@ async function googleLogin() {
   }catch(error){message.value=`No se pudo iniciar el acceso con Google: ${error.message}`}finally{busy.value=false}
 }
 async function authenticate() {
+  if(mode.value==='password' && password.value!==passwordConfirmation.value) {
+    message.value='Las contraseñas no coinciden. Revisa ambos campos.'
+    return
+  }
   busy.value=true;message.value=''
   try {
     let result
@@ -114,7 +120,7 @@ async function authenticate() {
       if(!result.error){message.value='Contraseña actualizada.';mode.value='login'}
     }else result=await client.auth.signInWithPassword({email:email.value.trim(),password:password.value})
     if(result.error)throw result.error
-    password.value=''
+    password.value='';passwordConfirmation.value=''
   }catch(error){message.value=error.message}finally{busy.value=false}
 }
 async function save(copy=false) {
@@ -203,6 +209,9 @@ onBeforeUnmount(()=>{
           </label>
           <label v-if="mode!=='reset' && mode!=='confirm'" class="block">{{ mode==='password' ? 'Nueva contraseña' : 'Contraseña' }}
             <input v-model="password" type="password" :autocomplete="mode==='login'?'current-password':'new-password'" :minlength="mode==='login'?6:8" required :disabled="busy || !ready" class="mt-1 w-full rounded-lg border p-3" />
+          </label>
+          <label v-if="mode==='password'" class="block">Confirmar nueva contraseña
+            <input v-model="passwordConfirmation" type="password" autocomplete="new-password" minlength="8" required :disabled="busy || !ready" class="mt-1 w-full rounded-lg border p-3" />
           </label>
           <button :disabled="busy || !ready" class="hg-account-primary w-full bg-[#8EE000] text-[#172600] rounded-lg px-4 py-3 disabled:opacity-50">{{ busy ? 'Procesando…' : mode==='register' ? 'Crear cuenta' : mode==='confirm' ? 'Reenviar confirmación' : mode==='reset' ? 'Enviar enlace de recuperación' : mode==='password' ? 'Actualizar contraseña' : 'Iniciar sesión' }}</button>
         </form>
