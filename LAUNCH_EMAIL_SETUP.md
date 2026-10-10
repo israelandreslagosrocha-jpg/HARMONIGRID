@@ -11,7 +11,7 @@ Actualización: 10 de octubre de 2026. Rama codex/security-performance; main sin
 
 ## Pendiente del propietario
 
-Crear la cuenta oficial en Zoho Mail y verificar harmonigrid.app. Remitente sugerido (todavía no creado ni aprobado): cuentas@harmonigrid.app; nombre visible HarmoniGrid. No asumir host, región o plan SMTP hasta ver los ajustes reales de Zoho.
+El propietario confirmó la cuenta oficial community@harmonigrid.com en Zoho Mail y la configuración del dominio harmonigrid.com. Nombre visible: HarmoniGrid. harmonigrid.com es la landing y el dominio administrativo; harmonigrid.app es la aplicación. Los tres MX, SPF y DKIM se guardaron en Hostinger; el propietario confirmó que todo está configurado. SMTP en Supabase y entrega/recuperación reales siguen pendientes; no se infieren de la configuración DNS. No asumir host, región o plan SMTP hasta ver los ajustes reales de Zoho.
 
 1. Verificar el dominio con el TXT exacto que entregue Zoho.
 2. Configurar MX para recibir correo y SPF/DKIM con los valores de la consola. Si ya existe SPF, integrar los emisores en un único registro, no duplicarlo. Revisar DMARC después de verificar los emisores autorizados. No sustituir los registros web de Vercel por los de correo.
