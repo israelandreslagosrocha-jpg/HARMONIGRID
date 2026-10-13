@@ -2,6 +2,14 @@
 
 Estado: propuesta de implementación, sin cambios en producción ni garantía de cumplimiento legal.
 
+## Base técnica preparada
+
+Migración `202610120005_parental_authorization_foundation.sql`, pendiente de aplicar, y prueba `tests/parental-authorization.mjs`. Define autorizaciones privadas pending → approved → revoked, participantes inmutables, referencia opaca de evidencia y versión de aviso. El navegador sólo puede consultar campos limitados de sus propias autorizaciones; no puede escribirlas ni leer evidencia. El servidor con rol privilegiado registra las decisiones; sus credenciales nunca van al cliente.
+
+La función de elegibilidad evalúa sólo al usuario actual y devuelve false sin aprobación vigente o si el adulto pierde su cuenta permanente verificada. No demuestra que el titular sea adulto o tutor: eso corresponde al método de verificación pendiente. La migración tampoco clasifica edades ni altera políticas de composiciones. Por sí sola NO bloquea el registro o guardado infantil actual. No ejecutarla como solución completa de consentimiento ni activarla para usuarios reales sin el flujo previo y las políticas de servidor.
+
+25 comprobaciones aprobadas en PostgreSQL aislado: falta integración y pruebas del flujo completo. La evidencia de prueba usa un método ficticio, sin valor legal.
+
 ## Decisión de producto
 
 El público incluye niños de 8 años o menos. Mantener creación, reproducción y exportación sin exigir cuenta. Para guardar datos infantiles en la nube, preparar un proceso supervisado por adulto con autorización verificable, antes de recolectar datos del niño para ese propósito. No sustituirlo por una casilla, Google OAuth ni por usar simplemente el correo de un adulto.
