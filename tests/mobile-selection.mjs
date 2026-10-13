@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {nextTick} from 'vue'
 import {createEditor,clone} from './component-harness.mjs'
+import {buildExpandedSequence} from '../src/core/repeatSequence.js'
 const {editor:e,stop}=await createEditor(undefined,{freeLaunch:true})
 let checks=0
 const eq=(a,b)=>{assert.deepEqual(a,b);checks++}
@@ -26,5 +27,19 @@ try {
  eq(clone(e.measures.value),document.measures);eq(e.isSelectionMode.value,false);eq(e.mobileRangeAnchor.value,null)
  e.toggleSelectionMode();e.mobileRangeFrom.value=1;e.mobileRangeTo.value=1;e.applyMobileRange();e.clearSelection();await nextTick()
  eq([e.mobileRangeFrom.value,e.mobileRangeTo.value],['','']);eq(e.selectedRangeStart.value,null)
+ // Desktop two clicks must extend the range rather than restart at the end.
+ e.windowWidth.value=1440
+ e.startSelectionDrag(0);e.handleGlobalMouseUp();e.toggleMeasureSelection(0)
+ e.startSelectionDrag(3);e.handleGlobalMouseUp();e.toggleMeasureSelection(3)
+ eq([e.minSelectedMeasure.value,e.maxSelectedMeasure.value],[1,4])
+ e.confirmTimes(2);await nextTick()
+ eq(e.repeats.value.map(r=>[r.startMeasure,r.endMeasure,r.times]),[[1,4,2]])
+ eq(buildExpandedSequence(e.measures.value,e.repeats.value).map(m=>m.originalMeasureIndex),[0,1,2,3,0,1,2,3,4,5,6,7])
+ eq([e.getRepeatStart(0),Boolean(e.getRepeatEnd(3)),e.getRepeatStart(3)],[true,true,false])
+ // Mouse dragging still preserves an inclusive range, including reverse drag.
+ e.clearSelection();e.startSelectionDrag(5);e.continueSelectionDrag(1);e.handleGlobalMouseUp();e.toggleMeasureSelection(1)
+ eq([e.minSelectedMeasure.value,e.maxSelectedMeasure.value],[2,6])
+ e.clearSelection();e.startSelectionDrag(2);e.handleGlobalMouseUp();e.toggleMeasureSelection(2)
+ eq([e.minSelectedMeasure.value,e.maxSelectedMeasure.value],[3,3])
  console.log(`${checks} mobile typed/touch range, original indices, copy, repeat, rejection and document preservation checks passed`)
 }finally{stop()}

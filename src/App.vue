@@ -3394,24 +3394,24 @@ const pasteCopiedMeasures = () => {
   syncMeasuresBeats();clearSelection();showToast('Compases pegados con éxito')
 }
 let wasAlreadySelectedBeforeMousedown = false
+let selectionDragOrigin = null
+let selectionDragMoved = false
 const toggleMeasureSelection = (index) => {
-  if (wasAlreadySelectedBeforeMousedown) {
-    clearSelection()
-  } else {
-    if (selectedRangeStart.value === selectedRangeEnd.value) {
-      selectedRangeStart.value = index
-      selectedRangeEnd.value = index
-    }
-  }
+  if (selectionDragMoved) {mobileRangeAnchor.value = null; return}
+  if (wasAlreadySelectedBeforeMousedown && mobileRangeAnchor.value === index) {clearSelection();return}
+  selectMobileMeasure(index)
 }
 const startSelectionDrag = (index) => {
   isSelectionDragging.value = true
+  selectionDragOrigin = index
+  selectionDragMoved = false
   wasAlreadySelectedBeforeMousedown = (selectedRangeStart.value === index && selectedRangeEnd.value === index)
   selectedRangeStart.value = index
   selectedRangeEnd.value = index
 }
 const continueSelectionDrag = (index) => {
   if (isSelectionDragging.value) {
+    if (index !== selectionDragOrigin) selectionDragMoved = true
     selectedRangeEnd.value = index
   }
 }
@@ -10342,7 +10342,7 @@ function hydrateProjectDocument(document) {
                     <p v-if="mobileRangeError" role="alert" class="text-sm text-red-700 mt-2">{{ mobileRangeError }}</p>
                   </form>
                   <MobileScoreOverview :measures="displayedMeasures" :playback="playbackRenderState" :selected="mobileFocusedIndex"
-                    :selection-mode="isSelectionMode" :range-start="selectedRangeStart" :range-end="selectedRangeEnd" :range-anchor="mobileRangeAnchor"
+                    :repeats="viewMode === 'compact' ? repeats : []" :selection-mode="isSelectionMode" :range-start="selectedRangeStart" :range-end="selectedRangeEnd" :range-anchor="mobileRangeAnchor"
                     :can-add="!isSelectionMode && (currentPlan === 'PRO' || measures.length < FREE_MEASURE_LIMIT)" @select="selectMobileMeasure" @open="openMobileMeasure" @add="addMeasure" />
                 </template>
               </template>
