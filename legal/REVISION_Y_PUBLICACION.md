@@ -6,7 +6,7 @@ Pendientes antes de aprobación y publicación:
 - Confirmar país desde el que opera el responsable y datos de contacto públicos necesarios. No se ha añadido domicilio ni jurisdicción contractual por suposición.
 - Confirmar regiones, conservación de registros y respaldos y condiciones de proveedores. El código por sí solo no verifica toda su operación.
 - Definir atención efectiva de solicitudes de eliminación: el cliente no tiene DELETE autorizado; el responsable debe disponer de un procedimiento administrativo seguro que respete claves foráneas y respaldos. No basta con prometer un botón inexistente.
-- Definir edades admitidas y tratamiento de menores, según público objetivo y países. No inventar un límite de edad sin decisión del responsable.
+- Público objetivo confirmado: incluye niños de 8 años o menos. Enfoque aceptado: herramientas sin cuenta y futuro guardado infantil supervisado. Validar edades, países y método verificable de autorización antes de habilitarlo; no presentar una edad mínima inventada ni el flujo propuesto como implementado. Ver MENOR_EDAD_PLAN.md.
 - Confirmar alcance real de permisos Google en la consola antes de publicar las declaraciones de acceso básico.
 - Revisar la normativa aplicable y el consentimiento necesario antes de activar aceptación contractual. No implementar aceptación automática basada sólo en visitar el sitio.
 - Preparar rutas estáticas públicas /privacidad/ y /terminos/ en harmonigrid.app, con enlaces visibles desde la app; no enviar URLs inexistentes a Google.

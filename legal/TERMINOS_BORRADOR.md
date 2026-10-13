@@ -13,7 +13,11 @@ Para guardar composiciones en la nube necesitas una cuenta verificada. Mantén t
 
 La versión FREE permite hasta 20 composiciones por cuenta, 20 compases por composición nueva y 50 MiB de almacenamiento de documentos por cuenta. Existen límites técnicos de frecuencia para proteger el servicio. Las funciones PRO y la colaboración no están habilitadas en este lanzamiento; no existe una suscripción pagada que se contrate mediante estos términos.
 
-## Tus creaciones
+## Uso por menores: propuesta pendiente
+
+Las herramientas musicales pueden servir a niños y adolescentes. El guardado infantil supervisado y su autorización parental requieren un proceso específico que aún no está habilitado. Este borrador no autoriza a menores a contratar por sí solos ni afirma que una casilla de aceptación resuelva el consentimiento para tratar sus datos. El acceso infantil a la nube se definirá y validará antes de anunciarlo como disponible; no habrá publicación ni colaboración abierta por defecto.
+
+## Derechos sobre tus creaciones
 
 Conservas los derechos que te correspondan sobre tus composiciones y letras. Debes contar con los derechos o permisos necesarios sobre el material que incorporas. El almacenamiento no transfiere la propiedad de tu obra al responsable de HarmoniGrid.
 

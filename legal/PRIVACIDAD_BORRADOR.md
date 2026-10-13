@@ -28,7 +28,13 @@ Utilizamos Supabase para autenticación y almacenamiento de composiciones; Verce
 
 El navegador conserva información necesaria para mantener la sesión y recuperarla. También puede guardar borradores locales de recuperación y un borrador temporal durante el acceso con Google. Cerrar sesión no equivale necesariamente a borrar todos los datos locales del navegador. En dispositivos compartidos, cierra sesión y elimina los datos del sitio cuando termines; antes exporta o guarda el trabajo que quieras conservar.
 
-## Conservación y solicitudes
+## Público infantil: estado actual y propuesta
+
+HarmoniGrid tiene finalidad creativa y educativa y contempla que niños pequeños puedan utilizar sus herramientas musicales. El uso sin cuenta no exige introducir nombre ni correo para crear y escuchar música; esto no significa que el alojamiento deje de procesar registros técnicos.
+
+El proceso específico de autorización parental para guardado infantil en la nube todavía no está implementado. No se ofrece en este borrador como una función disponible. El modelo previsto es un acceso supervisado por un adulto responsable, con autorización verificable antes de tratar datos del niño para esa finalidad, datos mínimos y composiciones privadas. El uso de Google o una declaración del niño no acreditan por sí solos el consentimiento parental. Antes de habilitar ese modelo se publicará su funcionamiento, sus finalidades y los medios de acceso, revocación y eliminación correspondientes.
+
+## Conservación y solicitudes de datos
 
 Las composiciones guardadas se conservan para que puedas retomarlas mientras mantengas tu cuenta. Los registros técnicos y copias de respaldo dependen de la configuración y los ciclos de retención de los proveedores. No afirmamos que una solicitud elimine instantáneamente todas las copias de respaldo.
 
