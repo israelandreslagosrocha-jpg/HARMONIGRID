@@ -13,7 +13,7 @@
 
 ## Pendientes, no acreditados por la publicación
 
-- Supabase está abierto con otra cuenta/organización sin acceso a HARMONIGRID. Iniciar sesión con su administrador para añadir https://harmonigrid.app/ como retorno exacto y Site URL; conservar los retornos de desarrollo aprobados.
+- Supabase: Site URL y retorno exacto https://harmonigrid.app/ guardados y comprobados con el administrador correcto. Retorno exacto de preview conservado, sin comodines. Configuración terminada; pruebas de acceso desde el dominio oficial pendientes.
 - Probar acceso Google, registro, confirmación y recuperación desde harmonigrid.app. El callback Google hacia Supabase sigue siendo el mismo; revisar estado de publicación/usuarios de prueba en Google Auth.
 - Auditoría API con dos cuentas: las credenciales locales siguen rechazadas; no se creó la composición de auditoría.
 - Pruebas físicas iPhone 15 y Android; iPhone SE tenía audio confirmado en preview.
