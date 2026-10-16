@@ -6,6 +6,7 @@ const CloudWorkspace = defineAsyncComponent(() => import('./components/CloudWork
 import ScoreViewport from './components/ScoreViewport.vue'
 import ScoreSystem from './components/ScoreSystem.vue'
 import MobileScoreOverview from './components/MobileScoreOverview.vue'
+import FreeHarmonyGuide from './components/FreeHarmonyGuide.vue'
 import LaunchNotice from './components/LaunchNotice.vue'
 import logoUrl from './assets/logo.jpg'
 import { getDiatonicChords, SCALES, getScaleNotes, getScaleDegreeLabels } from './core/scales.js'
@@ -10244,6 +10245,7 @@ function hydrateProjectDocument(document) {
             
             <!-- MEASURES SYSTEMS GRID -->
             <div class="flex-1 space-y-8 min-w-0 overflow-x-auto md:overflow-x-visible">
+              <FreeHarmonyGuide :tonic="key" :scale="scaleType" />
               <!-- Asistente de Sugerencias Panel -->
               <transition name="fade">
                 <div v-if="!isFreeLaunch && isSuggestionsPanelOpen" class="bg-gradient-to-tr from-amber-50/80 to-amber-100/35 backdrop-blur-md border border-amber-250/70 rounded-3xl p-5 shadow-lg shadow-amber-100/10 animate-scale-up space-y-4">
