@@ -1,4 +1,5 @@
 <script setup>
+import CommunityLinks from './CommunityLinks.vue'
 import {ref,shallowRef,computed,watch,onMounted,onBeforeUnmount,nextTick} from 'vue'
 import {preserveGoogleDraft,restoreGoogleDraft,clearGoogleDraft,prepareGoogleLogin} from '../services/googleAuth.js'
 import {requestAccountEmail} from '../services/accountEmail.js'
@@ -187,6 +188,7 @@ onBeforeUnmount(()=>{
         <button @click="showAccount" class="block w-full text-left min-h-11 rounded-lg px-3 hover:bg-gray-100">{{ user ? '☰ Mis composiciones y cuenta' : '☰ Iniciar sesión / crear cuenta' }}</button>
         <button v-if="user && document" :disabled="busy || !ready" @click="save()" class="block w-full text-left min-h-11 rounded-lg px-3 hover:bg-gray-100 disabled:opacity-50">{{ saveState.id ? 'Guardar ahora' : 'Guardar en mi cuenta' }}</button>
         <p class="border-t border-gray-100 pt-2 text-xs text-gray-500">Próximamente: nuevas herramientas musicales.</p>
+        <CommunityLinks compact />
         <a href="mailto:community@harmonigrid.com" class="flex items-center min-h-11 text-[#365600] underline underline-offset-4">Contacto oficial</a>
       </nav>
     </div>

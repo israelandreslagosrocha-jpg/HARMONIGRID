@@ -7,6 +7,7 @@ import ScoreViewport from './components/ScoreViewport.vue'
 import ScoreSystem from './components/ScoreSystem.vue'
 import MobileScoreOverview from './components/MobileScoreOverview.vue'
 import FreeHarmonyGuide from './components/FreeHarmonyGuide.vue'
+import CommunityLinks from './components/CommunityLinks.vue'
 import LaunchNotice from './components/LaunchNotice.vue'
 import logoUrl from './assets/logo.jpg'
 import { getDiatonicChords, SCALES, getScaleNotes, getScaleDegreeLabels } from './core/scales.js'
@@ -9560,6 +9561,7 @@ function hydrateProjectDocument(document) {
           <button @click="startProject" class="w-full mt-8 bg-[#8EE000] active:bg-[#6FA300] text-black font-black text-[18px] py-4 rounded-2xl shadow-lg shadow-[#8EE000]/30 transition-all transform active:scale-[0.98]">
             Crear Partitura
           </button>
+          <CommunityLinks />
         </div>
       </div>
       <!-- ==================== MAIN EDITOR ==================== -->
