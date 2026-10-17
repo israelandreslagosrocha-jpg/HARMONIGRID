@@ -1,6 +1,27 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import logoUrl from '../assets/logo.jpg'
+import { LEARNING_RESOURCES } from '../core/learningPdf.js'
 import { SCALES, getScaleNotes, getDiatonicChords } from '../core/scales.js'
+const downloading = ref(false)
+const downloadError = ref('')
+let logoData
+const downloadResource = async resource => {
+  if (downloading.value) return
+  downloading.value = true
+  downloadError.value = ''
+  try {
+    const { createLearningPdf } = await import('../core/learningPdf.js')
+    if (!logoData) {
+      const response = await fetch(logoUrl)
+      if (!response.ok) throw new Error('Logo unavailable')
+      const blob = await response.blob()
+      logoData = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(blob) })
+    }
+    createLearningPdf({tonic:props.tonic, scale:props.scale, resource, logo:logoData}).save(`HarmoniGrid-${resource}-${props.tonic}-${props.scale}.pdf`)
+  } catch { downloadError.value = 'No se pudo preparar el PDF. Intenta descargarlo nuevamente.' }
+  finally { downloading.value = false }
+}
 const props = defineProps({ tonic: { type: String, required: true }, scale: { type: String, required: true } })
 const spanish = note => note.replace(/^[CDEFGAB]/, letter => ({ C:'Do', D:'Re', E:'Mi', F:'Fa', G:'Sol', A:'La', B:'Si' })[letter])
 const supported = computed(() => ['major', 'minor'].includes(props.scale))
@@ -55,7 +76,17 @@ const example = computed(() => [0, 3, 4, 0].map(index => chords.value[index]?.la
         <p v-if="minor">Este ejemplo usa i–iv–v–i, con el quinto menor de la escala natural. No lo confundas con i–iv–V–i, que usa la sensible elevada.</p>
         <p v-else>Este recorrido I–IV–V–I ilustra reposo → preparación → tensión → reposo. Es un punto de partida para escuchar, no una obligación al componer.</p>
       </section>
-      <a href="https://musictheory.pugetsound.edu/mt21c/HarmonicFunction.html" target="_blank" rel="noopener noreferrer">Profundizar: Music Theory for the 21st-Century Classroom</a>
+      <section aria-label="Recursos para descargar">
+        <h2>Recursos para descargar</h2>
+        <p>Tus tips en PDF, con ejemplos en {{ spanish(tonic) }} {{ definition.name }}. Guárdalos, imprímelos o compártelos.</p>
+        <div class="guide-resources">
+          <button v-for="resource in LEARNING_RESOURCES" :key="resource.id" :disabled="downloading" @click="downloadResource(resource.id)">
+            <strong>{{ resource.title }}</strong><span>{{ resource.description }}</span><b>{{ downloading ? 'Preparando…' : 'Descargar PDF' }}</b>
+          </button>
+        </div>
+        <p v-if="downloadError" role="alert">{{ downloadError }}</p>
+        <p v-if="downloading" role="status">Preparando tu ficha de HarmoniGrid…</p>
+      </section>
     </div>
   </details>
 </template>
@@ -67,6 +98,6 @@ summary::before{content:'▸'}details[open]>summary::before{content:'▾'}summar
 .guide-key{font-size:11px;font-weight:600;color:#536047;margin-left:auto}
 .guide-content{padding:0 16px 16px;max-height:65vh;overflow-y:auto;overscroll-behavior:contain;font-size:14px;line-height:1.65;border-top:1px solid #e1e8d8}
 section{margin-top:20px}h2{font-size:15px;font-weight:800;margin-bottom:6px}p{margin:8px 0}.guide-intro{color:#536047}.guide-formula,.guide-example{font-weight:800;background:#f0fadf;border-radius:8px;padding:10px}.guide-notes{font-weight:700}
-.guide-table-wrap{overflow-x:auto;margin:12px 0}table{border-collapse:collapse;width:100%;font-size:13px}caption{text-align:left;font-weight:700;padding:6px 0}th,td{text-align:left;padding:8px;border-bottom:1px solid #e3e8dc}thead{background:#f4f8ed}a{display:inline-block;color:#456913;text-decoration:underline;margin-top:16px}
+.guide-table-wrap{overflow-x:auto;margin:12px 0}table{border-collapse:collapse;width:100%;font-size:13px}caption{text-align:left;font-weight:700;padding:6px 0}th,td{text-align:left;padding:8px;border-bottom:1px solid #e3e8dc}thead{background:#f4f8ed}.guide-resources{display:grid;gap:10px}.guide-resources button{text-align:left;border:1px solid #cbdcab;border-radius:10px;padding:12px;display:grid;gap:4px;background:#f6faee;min-height:44px}.guide-resources button:focus-visible{outline:3px solid #608e16}.guide-resources button:disabled{opacity:.6}.guide-resources span{font-size:12px}.guide-resources b{color:#385a09;font-size:12px}a{display:inline-block;color:#456913;text-decoration:underline;margin-top:16px}
 @media(max-width:767px){summary{padding:10px}.guide-content{padding:0 12px 12px;max-height:60vh}th,td{padding:7px 5px}}
 </style>
